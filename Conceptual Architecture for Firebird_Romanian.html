@@ -1,0 +1,256 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"> 
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ro"
+      lang="ro"> 
+  <head> 
+    <meta http-equiv="Content-Type"
+          content="text/html;charset=utf-8" /> 
+
+<h2>Arhitectura Conceptuala pentru Firebird</h2>
+
+<P>
+Autorii Originali:
+Hubert Chan and Dmytro Yashkir<BR>
+Faculty of Mathematical, Statistical and Computer Sciences<BR>
+University of Waterloo, Canada.<BR>
+January 29, 2002</P>
+<p>Adusa la zi : Popa Adrian Marius<br> 
+12 Decembrie 2010
+</p>
+<H4>Introducere</H4>
+<p>
+In aceasta lucrare, investigam arhitectura conceptuala pentru sistemul de baze de date Firebird. Identificam componentele majore si interctiunile intre ele. Cateva din aceste componente au o arhitectura proprie pe care deasemeni o vom discuta.Prezentam cateva scenarii care ilustreaza interactiunile dintre aceste componente.V-om arata ca arhitectura de baza este organizata dupa o arhitectura pipe(teava) si filtru cu fiecare componente avand stil propriu de architectura. 
+</p>
+<P><B>Cuprins</B></P>
+<P>Architectura conceptuala pentru Firebird 2.5</P>
+<UL>
+<LI>Introducere
+<LI>Architectura de nivel superior
+<LI>Comunicarea la distanţă
+<LI>Translatorul SQL
+<LI>JRD
+<LI>JRD si modulul Lock (Blocare)
+<LI>Scenarii de utilizare
+<LI>Extensibilitatea sistemului Firebird
+<li>Concluzii
+</ul>
+<h4>Introducere</H4>
+<p>
+Arhitectura Software le prezinta dezvoltatorilor o unealta sa organizeze sisteme mari ,complexe 
+in componente variate permitand dezvoltatorilor o mai buna intelegere a sistemului ca intreg si 
+reducand numarul de componente ce trebuie tinute in minte.Ii permite fiecarui dezvoltator sa se
+concentreze pe o bucata mai mica din sistem si astfel ii permite echipei de dezvolatare sa integreze
+munca sa prin specificare unor interfete intre diversele parti intr-o maniera curata/concisa si bine definita.
+</p>
+<p>
+Existam mai multe tipuri de vederi arhitecturale, Architectura conceptuala este o vedere de nivel inalt cu relativ 
+putine detalii , si este in mod particular bine potrivita pentru descrierea functionalitatii unui sistem.
+</p>
+<p>
+In aceasta lucrare , ne intereseaza arhitectura conceptuala pentru sistemul relational Firebird.
+Interbase a fost dezvoltat de Borland , apoi o versiune (Interbase 6.0) a fost facuta libera cu sursele deschise
+si lansata in anul 2000 (Iulie) sub licenta InterBase Public License (derivata din Mozilla Public License). Totusi , 
+datorita atitudinii Borland impotriva comunitatii de dezvoltatori , proiectul Firebird a fost creat si dezvolta propriu 
+sistem relational pornind de la sursele publicate de Borland. 
+</p>
+<p>
+Firebird include multe instrumente si utilităţi pentru dezvoltare si administrare a bazeleor de date,
+codul de baza (svn repository) contine si cod din versiunile mai vechi precum si ramuri experimentale (Firebird 3.0 cu 
+proceduri externe scrise in Java, C++). Nu vom considera acestea in analiza noastra.
+</p>
+
+<p>
+Incepem prin a discuta arhitectura globală a sistemului, Dupa care ne uitam la arhitectura unora din subsisteme, in final 
+prezentam cateva scenarii care sa ne ajute sa ilustram comportamentul sistemului in raspus la interogările generate de clienti
+</p>
+
+<h4>Architectura de nivel superior</h4>
+<p>
+Sistemul Firebird poate fi divizat in patru componente majore (vezi Figura 1): 
+sistemul de conexiune la distanta, translatorul SQL , motorul relational , si manager de 
+blocare (Lock Manager).Sagetile in diagrama indica fluxul de date.Include clientii in diagrama pentru a 
+indica relatia lor cu restul sistemului.
+</p>
+<img src="http://www.ibphoenix.com/images/doc_25_1.gif" align=middle border=0>
+<p><i>Figura 1: Architectura de nivel superior</i></p>
+<p><b>Sistemul de conexiune la distanta (REMOTE):</b>	Acest subsistem permite clientilor aflati la distanta sa se conecteze la baza de date
+folosind diferite protocoale de retea.Este compus din doua parti pe partea de client 
+si pe partea de server.
+
+<p> 
+<p><b>Translatorul SQL (DSQL):</b>	Acest subsistem translateaza cererile din SQL in BLR, limbajul nativ al sitemului relational.<p>
+<p><b>Motorul relational al sistemului(JRD):</b> Acest subsistem efectuează si executa interogarile. </p>
+<p><b>Sistemul de blocare (LOCK):</b> Acest subsistem asigura sincronizarea intre tranzactii .</p>
+<p>Acest aranjament intre Sistemul de conexiune la distanta , Translatorul SQL si Motorul relational poate fi privit ca o arhitectura tip teava si filtru: o cerere curge prin conexiunea la distanta pana la translatorul SQL , de unde este convertit in limbajul BLR.BLR merge prin sistemul relational (motor) si întoarce o cerere prin sistemul de conexiune la distanta</p>
+<h4>Sistemul de conexiune la distanta</h4>
+<p>Sistemul de conexiune la distanta , REMOTE permite clientilor sa comunice 
+la distanta sau local cu serverul. Permite comunicarea folosind protocoale diferite 
+precum TCP/IP ,IPC (XNET) , Lan Manager. Subsistemul este impartit in doua parti : partea 
+de server si partea de client. Contine cod generic pentru comunicarea client-server precum si 
+cod specific pentru fiecare protocol.</p> 
+<p>Poate fi privit ca un sistem stratificat: conceptual , clientul trimite cereri 
+spre server , printr-un canal,nivel generic de comunicare. Straturile generice comunica
+printr-un protocol specific fiecarui nivel, si fiecare nivel specific protocolului comunica prin 
+nivelul de retea al sistemului. Aceasta seamana cu un model de retea OSI stratificat pe doua nivele.
+<p>
+<p>
+<img src="http://www.ibphoenix.com/images/doc_25_2.gif" align=middle border=0>
+</p>
+<P><I>Figura 2: Sistemul de conexiune la distanta</I></P>
+<p>Clientul de asemeni poate sa comunice cu serverul local folosind un modul ce emuleaza conexiunea prin retea
+insa folosind memoria parajata (implementat cu XNET)</p> 
+<h4>Translatorul SQL</h4>
+</p>Translatorul SQL , >DSQL, converteste interogarile SQL in limbajul nativ BLR.
+Arhitectura sa este asemanatoare cu a unui compilator simplificat: contine un lexer , parser, 
+tabel de simboluri si un generator de cod.</p> 
+
+<p>
+<img src="http://www.ibphoenix.com/images/doc_25_3.gif" align=middle border=0>
+</p>
+<p><I>Figura 3:  Translatorul SQL</I></P>
+<p>Ca in cazul oricarui compilator , lexerul , parserul si generatorul de cod sunt aranjate 
+conceptual in teava. Lexerul imparte intrarea (textul interogarii) in tokenuri (jetoane), 
+parserul determina sensul (corectitudinea) interogarii , bazat pe jetoane (tokenuri), si 
+generatorul de cod emite cod BLR care este echivalent interogarii SQL initiale.<p>
+<h4>Motorul relational - JRD</h4>
+<p> Subsistemul JRD executa cererile si intoarce rezultatul lor. Acesta manipuleaza
+accessul la disk printr-ul sistem Virtual IO (Intrare/Iesire),verifica daca constrangerile
+de securitate sun respectate, si asigura ca tranzactiile sa fie procesate in mod atomic.
+</p> 
+<P>Requests first pass through a
+compiler, which translates from BLR into an internal representation of the
+request. It calls the metadata subsystem, MET, to get metadata pertaining to
+the request, and to ensure that the requested tables are present.
+</P>
+<>
+<P>
+<img src="http://www.ibphoenix.com/images/doc_25_4.gif" align=middle border=0>
+</P>
+<P><I>Figure 4: Motorul relational</I></P>
+<P>The Exec subsystem then
+processes the requests, using the B-tree subsystem for indexing, the security
+subsystem to check user priviledges, the transation subsystem to ensure atomic
+execution of a series of requests, the sort subsystem to sort, and the lock
+manager to ensure concurrency. It uses a virtual IO system to access the disk,
+and it uses the metadata subsystem to operate on metadata. </P>
+<P>The virtual IO subsystem is a
+layered system with three layers. The top layer presents an abstract method for
+accessing the data on the disk. The second layer, the cache manager, handes
+caching of the data, to speed up data access. It is the last layer which has a
+concept of structured data in the database. The final layer is a physical IO
+layer which is specific to the operating system on which the engine is run, and
+makes the system calls to access the disk.</P>
+<H4>JRD and Lock module</H4>
+<P>The main purpose of the lock
+module is concurrency control, when multiple users are accessing same database
+file simultaneously. Such situations are a common occurrence during the normal
+operation of any DBMS.  </P>
+<P>Lock handling is separated into
+two major parts: the lock handler sub-module inside the JRD and the Lock module
+that handles concurrent access to the lock table. Figure 5 illustrates
+relationship between these parts.</P>
+<P>
+<img src="http://www.ibphoenix.com/images/doc_25_5.gif" align=middle border=0>
+</P>
+<P><I>Figure 5: JRD and Lock module</I></P>
+<P>Requests that need access
+to the lock mechanism are divided into two major categories, metadata
+modification requests and usual data requests. Both of these categories use
+lock the handler to be able to access the lock mechanism. </P>
+<P>Normally when modification is
+needed, a lock on the appropriate data is requested. Then modification is
+performed and the lock is released. If it is impossible to gain a lock, the
+lock handler can wait certain amount of time for the other lock handler to
+release the lock and then resume normal execution.</P>
+<P>The Lock module itself waits for
+the requests from lock handlers. From their requests it performs modifications
+to the lock table.</P>
+<H4>Use scenarios</H4>
+<P>This section describes two common
+scenarios of the InterBase operation. These help better understanding of the
+DBMS architecture.</P>
+<H5>Scenario 1: New table creation</H5>
+<P>This scenario describes the
+creation of a new table in the database. When reading through the following
+description, please refer to the appropriate diagrams above.</P>
+<OL>
+<LI>Request originates from the user
+application, and is passed to Remote module client side</LI>
+<LI>Requests is packaged depending on the network used and passed through the network
+to the Remote server
+side</LI>
+<LI>DSQL is called to transform
+request from SQL to BLR</LI>
+<LI>JRD is called, CMP is called to compile the request</LI>
+<LI>Exec is called to execute the request, MET is called</LI>
+<LI>Request begins execution in MET since it modifies metadata for the DB</LI>
+<LI>Lock handler is called to obtain a lock on the metadata of the DB</LI>
+<LI>Lock handler calls Lock, which adds appropriate lock to the lock table</LI>
+<LI>MET calls virtual IO library to commit changes to the disk</LI>
+<LI>Appropriate disk handling routine is called depending on the file system</LI>
+<LI>MET calls Lock handler, which calls Lock to remove lock from the Lock table</LI>
+<LI>JRD calls Remote module to return success message to the user program</LI>
+<LI>Remote moves the message through the network and get it to the user application</LI>
+</OL>
+<H5>Scenario 2: Search for a row by index field</H5>
+<P>This scenario describes simple
+search request to the database.</P>
+<OL>
+<LI>Request is created in the user application and passed to the Remote client side</LI>
+<LI>Remote moves request to the server side and calls DSQL</LI>
+<LI>DSQL transform SQL of the request into BLR</LI>
+<LI>JRD is called and CMP compiles the request</LI>
+<LI>EXEC starts executing the request</LI>
+<LI>Virtual IO is called to get appropriate table</LI>
+<LI>Cache is checked for the data requested</LI>
+<LI>Search routine in B-tree module is called to find row with appropriate index</LI>
+<LI>Remote is called and returns result of the search to the user application</LI>
+</OL>
+<H4>Extensibility of InterBase</H4>
+<P>A good test for any system
+architecture is how it can accommodate future changes and expansions. InterBase
+existed under different names since 1985; obviously large number of changes and
+enhancements was implemented since then. However the basic conceptual
+architecture did not change.</P>
+<P>First, let's examine some changes
+made in the Remote module. With the appearance of a large number of new LAN
+standards, Remote was modified to allow it to work with them. Since all of the
+network communication routines are isolated in the remote module, these changes
+do not affect other parts of the system. An example of such a modification is
+the addition of the IPSERVER module inside Remote. It was added to allow users
+to run InterBase on a single Windows-based machine where client and server
+share one machine. This modification was relatively simple, even though there
+is no LAN involved whatsoever in this implementation.</P>
+<P>A second example of modifications
+is the addition of the Windows file system to the Virtual IO module. To add the
+ability to run InterBase on a machine using the Windows file system, the only
+modification required was to add another subsystem in the IO system that
+enables operation with the Windows file system.</P>
+<H4>Conclusion</H4>
+<P>In this paper, we discuss the conceptual architecture for InterBase. The system is
+composed of four major compenents, arranged in a pipe and filter style. We also look at
+the architecture within some of the subsystems. We provide scenarios illustrating
+the behaviour of the system in response to different client requests and the
+interactions between the subsystems, and we demonstrate how the architecture
+allows for extensions to the system, such as new network protocols or file
+systems.</P>
+<H5>References</H5>
+<P><A HREF="http://www.cs.cmu.edu/~garlan/">Garlan, David </A>and
+<A HREF="http://www.cs.cmu.edu/afs/cs.cmu.edu/user/shaw/www/Shaw-home.html">Shaw, Mary</A>
+,&ldquo;
+<A HREF="http://web.archive.org/web/20010208083910/http://www.cs.cmu.edu/afs/cs/project/able/www/paper_abstracts/intro_softarch.html">An
+Introduction to Software Architecture&rdquo;</A>, <I>Advances in Software
+Engineering and Knowledge Engineering</I>, Volume 1, World Scientific
+Publishing Co., 1993.<BR>
+Harrison, Ann and Beach, Paul; &ldquo;
+<A HREF="http://web.archive.org/web/20020406105328/http://www.ibphoenix.com/ibp_source_guide.html">InterBase
+Source Code Guide</A>&rdquo;; IBPhoenix; October 2001.<BR>
+Harrison, Ann; &ldquo;
+<A HREF="http://web.archive.org/web/20020213052216/http://www.ibphoenix.com/ibp_source_overview.html">High-level Description
+of the InterBase 6.0 Source Code</A>&rdquo;; IBPhoenix.<BR>
+Kruchten,
+Phillipe B., <a href="http://www.cs.ubc.ca/~gregor/teaching/papers/4+1view-architecture.pdf">The
+4+1 Views Model of Architecture</A>, IEEE Software, Nov 95, pp
+42-50.<br>
+<a href=http://ibphoenix.com/main.nfs?a=ibphoenix&page=vul_y_valve>Y-Valve Architecture</a> , From Jim Starkey on the Firebird Development List 13th December 2003<br>
+<a href=http://ibphoenix.com/main.nfs?a=ibphoenix&page=vul_architecture> Vulcan Architecture</a> 30th Apr 2004 Vulcan Development page<br> 
+</P>
