@@ -207,16 +207,16 @@ standards, Remote was modified to allow it to work with them. Since all of the
 network communication routines are isolated in the remote module, these changes
 do not affect other parts of the system. An example of such a modification is
 the addition of the IPSERVER module inside Remote. It was added to allow users
-to run InterBase on a single Windows-based machine where client and server
+to run Firebird on a single Windows-based machine where client and server
 share one machine. This modification was relatively simple, even though there
 is no LAN involved whatsoever in this implementation.</P>
 <P>A second example of modifications
 is the addition of the Windows file system to the Virtual IO module. To add the
-ability to run InterBase on a machine using the Windows file system, the only
+ability to run Firebird on a machine using the Windows file system, the only
 modification required was to add another subsystem in the IO system that
 enables operation with the Windows file system.</P>
 <H4>Conclusion</H4>
-<P>In this paper, we discuss the conceptual architecture for InterBase. The system is
+<P>In this paper, we discuss the conceptual architecture for Firebird. The system is
 composed of four major compenents, arranged in a pipe and filter style. We also look at
 the architecture within some of the subsystems. We provide scenarios illustrating
 the behaviour of the system in response to different client requests and the
