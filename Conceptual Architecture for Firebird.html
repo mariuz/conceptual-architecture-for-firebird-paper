@@ -56,15 +56,15 @@ the diagram indicate the flow of data. We include the clients in the diagram to
 illustrate their relationship with the rest of the system.</P>
 <img src="http://www.ibphoenix.com/images/doc_25_1.gif" align=middle border=0>
 <P><I>Figure 1: Top-level architecture</I></P>
-<P><B>remote connection system <a href=http://firebird.svn.sourceforge.net/viewvc/firebird/firebird/branches/B2_5_Release/src/remote/>(REMOTE)</a>:</B> This subsystem allows remote clients
+<P><B>remote connection system <a href=http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/remote/>(REMOTE)</a>:</B> This subsystem allows remote clients
 to connect to the database over different network protocols. It is composed of
 two parts: a client-side component and a server-side component.
 </P>
-<P><B>SQL translator <a href=http://firebird.svn.sourceforge.net/viewvc/firebird/firebird/branches/B2_5_Release/src/dsql/>(DSQL)</a>:</B> This subsystem translates requests from SQL into
+<P><B>SQL translator <a href=http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/dsql/>(DSQL)</a>:</B> This subsystem translates requests from SQL into
 BLR, the native language of the database.</P>
-<P><B>relational database engine <a href=http://firebird.svn.sourceforge.net/viewvc/firebird/firebird/branches/B2_5_Release/src/jrd/>(JRD)</a>:</B> This subsystem performs the actual
+<P><B>relational database engine <a href=http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/jrd/>(JRD)</a>:</B> This subsystem performs the actual
 queries.</P>
-<P><B>lock manager <a href=http://firebird.svn.sourceforge.net/viewvc/firebird/firebird/branches/B2_5_Release/src/lock/>(LOCK)</a>:</B> This subsystem handles synchronization among
+<P><B>lock manager <a href=http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/lock/>(LOCK)</a>:</B> This subsystem handles synchronization among
 transactions.</P>
 <P>The arrangement of the remote connection system, SQL translator, and relational
 database engine, can be seen as a pipe and filter style of architecture: a request
@@ -75,7 +75,7 @@ remote connection system.</P>
 <H4>Remote communication</H4>
 <P>The remote communication subsystem, REMOTE, allows clients to communicate
 remotely, or locally, with the server. It enables communication over several
-different network protocols, such as TCP/IP, <a href=https://firebird.svn.sourceforge.net/svnroot/firebird/firebird/branches/B2_5_Release/doc/README.xnet>XNET</a> (replaced the former IPC/IPServer and is firebird implementation of the local transport protocol)
+different network protocols, such as TCP/IP, <a href=http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/doc/README.xnet>XNET</a> (replaced the former IPC/IPServer and is firebird implementation of the local transport protocol)
 The subsystem is split roughly into two parts: a server side, and a client side. It
 contains generic code for client-server communication, as well as
 protocol-specific code.</P>
