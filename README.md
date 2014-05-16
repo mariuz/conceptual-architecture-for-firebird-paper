@@ -10,7 +10,6 @@ January 29, 2002
 
 Updated by : Popa Adrian Marius
 
-May 16, 2014
 
 #### Abstract
 
