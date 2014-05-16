@@ -94,8 +94,7 @@ database, which returns a request through the remote connection system.
 
 The remote communication subsystem, REMOTE, allows clients to communicate
 remotely, or locally, with the server. It enables communication over several
-different network protocols, such as TCP/IP, [XNET](http://sourceforge.net/p/f
-irebird/code/HEAD/tree/firebird/branches/B2_5_Release/doc/README.xnet)
+different network protocols, such as TCP/IP, [XNET](https://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/doc/README.xnet)
 (replaced the former IPC/IPServer and is firebird implementation of the local
 transport protocol) The subsystem is split roughly into two parts: a server
 side, and a client side. It contains generic code for client-server
