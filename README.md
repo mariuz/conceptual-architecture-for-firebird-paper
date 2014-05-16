@@ -6,8 +6,6 @@ Faculty of Mathematical, Statistical and Computer Sciences
 
 University of Waterloo, Canada.
 
-January 29, 2002
-
 Updated by : Popa Adrian Marius
 
 
