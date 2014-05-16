@@ -292,6 +292,6 @@ Apr 2004 Vulcan Development page.
 ](http://www.ibphoenix.com/resources/documents/design/doc_33) The Philosophy,
 The Model , The API ,Layering and Implementation Rules.
 
-[DDL execution architecture in Firebird - why we need to move
-on](http://asfernandes.blogspot.ro/2009/08/ddl-execution-architecture-in-
-firebird_4841.html)
+[DDL execution architecture in Firebird] ](http://asfernandes.blogspot.ro/2009/08/ddl-execution-architecture-in-
+firebird_4841.html) - Why we need to move
+on (in Firebird 3)
