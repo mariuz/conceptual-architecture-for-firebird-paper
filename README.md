@@ -245,15 +245,6 @@ using the Windows file system, the only modification required was to add
 another subsystem in the IO system that enables operation with the Windows
 file system.
 
-#### Conclusion
-
-In this paper, we discuss the conceptual architecture for Firebird. The system
-is composed of four major compenents, arranged in a pipe and filter style. We
-also look at the architecture within some of the subsystems. We provide
-scenarios illustrating the behaviour of the system in response to different
-client requests and the interactions between the subsystems, and we
-demonstrate how the architecture allows for extensions to the system, such as
-new network protocols or file systems.
 
 ##### References
 
