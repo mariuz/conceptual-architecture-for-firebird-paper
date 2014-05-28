@@ -238,6 +238,16 @@ module inside Remote. It was added to allow users to run Firebird on a single
 Windows-based machine where client and server share one machine. This
 modification was relatively simple, even though there is no LAN involved
 whatsoever in this implementation.
+Firebird has replaced the former implementation of the local transport protocol 
+(IPServer) with a new one, named XNET.
+It serves exactly the same goal, to provide an efficient way to connect to server 
+located on the same machine as the connecting client without a remote node name in 
+the connection string. The new implementation is different and addresses the known 
+issues with the old protocol.
+
+Like the old IPServer implementation, the XNET implementation uses shared memory for 
+inter-process communication. However, XNET eliminates the use of window messages to 
+deliver attachment requests and it also implements a different synchronization logic.
 
 A second example of modifications is the addition of the Windows file system
 to the Virtual IO module. To add the ability to run Firebird on a machine
