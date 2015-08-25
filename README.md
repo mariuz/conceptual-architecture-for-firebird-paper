@@ -269,9 +269,7 @@ Harrison, Ann and Beach, Paul; " [A Cut Out and Keep Guide to the Firebird
 Source Code](http://www.ibphoenix.com/resources/documents/search/doc_32)";
 IBPhoenix; October 2001.
 
-Harrison, Ann; " [High-level Description of the InterBase 6.0 Source Code](htt
-p://web.archive.org/web/20020213052216/http://www.ibphoenix.com/ibp_source_ove
-rview.html)"; IBPhoenix.
+Harrison, Ann; " [High-level Description of the InterBase 6.0 Source Code](https://www.ibphoenix.com/resources/documents/development/doc_31)"; IBPhoenix.
 
 Kruchten, Phillipe B., [The 4+1 Views Model of
 Architecture](http://www.cs.ubc.ca/~gregor/teaching/papers/4+1view-
