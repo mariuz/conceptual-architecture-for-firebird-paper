@@ -287,4 +287,6 @@ The Model , The API ,Layering and Implementation Rules.
 
 [DDL execution architecture in Firebird](http://asfernandes.blogspot.ro/2009/08/ddl-execution-architecture-in-firebird_4841.html) - Why we need to move on (in Firebird 3)
 
-[Understandung Firebird optimizer](http://www.slideshare.net/ibsurgeon/undestandung-firebird-optimizer-by-dmitry-yemanov-in-english), by Dmitry Yemanov 
+[Understandung Firebird optimizer](http://www.slideshare.net/ibsurgeon/undestandung-firebird-optimizer-by-dmitry-yemanov-in-english), by Dmitry Yemanov
+
+[How Firebird transactions work](http://www.slideshare.net/ibsurgeon/3-how-transactionswork) , by Alexey Kovyazin
