@@ -53,7 +53,7 @@ database.
 Firebird includes many tools and utilities for developing and administering a
 database, and the code base includes code from older versions, as well as some
 experimental branches (Firebird devel branch:
-[trunk](http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/trunk/) ).
+[master](https://github.com/FirebirdSQL/core) ).
 We will not be considering these in our analysis.
 
 We begin by discussing the overall architecture of the system. We then look at
