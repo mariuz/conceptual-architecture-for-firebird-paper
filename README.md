@@ -290,3 +290,5 @@ The Model , The API ,Layering and Implementation Rules.
 [Understandung Firebird optimizer](http://www.slideshare.net/ibsurgeon/undestandung-firebird-optimizer-by-dmitry-yemanov-in-english), by Dmitry Yemanov
 
 [How Firebird transactions work](http://www.slideshare.net/ibsurgeon/3-how-transactionswork) , by Alexey Kovyazin
+
+[Firebird transaction Simulator](http://www.felix-colibri.com/papers/db/firebird_transaction_simulator/firebird_transaction_simulator.html), by Felix J. Colibri 
