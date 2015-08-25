@@ -73,13 +73,13 @@ the system.
 
 _Figure 1: Top-level architecture_
 
-**remote connection system [(REMOTE)](http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/remote/):** This subsystem allows remote clients to connect to the database over different network protocols. It is composed of two parts: a client-side component and a server-side component. 
+**remote connection system [(REMOTE)](https://github.com/FirebirdSQL/core/tree/B2_5_Release/src/remote/):** This subsystem allows remote clients to connect to the database over different network protocols. It is composed of two parts: a client-side component and a server-side component. 
 
-**SQL translator [(DSQL)](http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/dsql/):** This subsystem translates requests from SQL into BLR, the native language of the database.
+**SQL translator [(DSQL)](https://github.com/FirebirdSQL/core/tree/B2_5_ReleaseB2_5_Release/src/dsql/):** This subsystem translates requests from SQL into BLR, the native language of the database.
 
-**relational database engine [(JRD)](http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/jrd/):** This subsystem performs the actual queries.
+**relational database engine [(JRD)](https://github.com/FirebirdSQL/core/tree/B2_5_Release/src/jrd/):** This subsystem performs the actual queries.
 
-**lock manager [(LOCK)](http://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/lock/):** This subsystem handles synchronization among transactions.
+**lock manager [(LOCK)](https://github.com/FirebirdSQL/core/tree/B2_5_Release/src/lock/):** This subsystem handles synchronization among transactions.
 
 The arrangement of the remote connection system, SQL translator, and
 relational database engine, can be seen as a pipe and filter style of
@@ -91,7 +91,7 @@ database, which returns a request through the remote connection system.
 
 The remote communication subsystem, REMOTE, allows clients to communicate
 remotely, or locally, with the server. It enables communication over several
-different network protocols, such as TCP/IP, [XNET](https://sourceforge.net/p/firebird/code/HEAD/tree/firebird/branches/B2_5_Release/src/remote/xnet.cpp)
+different network protocols, such as TCP/IP, [XNET](https://github.com/FirebirdSQL/core/tree/B2_5_Release/src/remote/xnet.cpp)
 (is firebird implementation of the local
 transport protocol) The subsystem is split roughly into two parts: a server
 side, and a client side. It contains generic code for client-server
