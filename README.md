@@ -260,9 +260,7 @@ file system.
 
 [Garlan, David ](http://www.cs.cmu.edu/~garlan/)and [Shaw,
 Mary](http://www.cs.cmu.edu/afs/cs.cmu.edu/user/shaw/www/Shaw-home.html) ,"
-[An Introduction to Software Architecture"](http://web.archive.org/web/2001020
-8083910/http://www.cs.cmu.edu/afs/cs/project/able/www/paper_abstracts/intro_so
-ftarch.html), _Advances in Software Engineering and Knowledge Engineering_,
+[An Introduction to Software Architecture"](http://repository.cmu.edu/compsci/724/), _Advances in Software Engineering and Knowledge Engineering_,
 Volume 1, World Scientific Publishing Co., 1993.
 
 Harrison, Ann and Beach, Paul; " [A Cut Out and Keep Guide to the Firebird
