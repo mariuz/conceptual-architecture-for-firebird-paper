@@ -75,7 +75,7 @@ _Figure 1: Top-level architecture_
 
 **remote connection system [(REMOTE)](https://github.com/FirebirdSQL/core/tree/B2_5_Release/src/remote/):** This subsystem allows remote clients to connect to the database over different network protocols. It is composed of two parts: a client-side component and a server-side component. 
 
-**SQL translator [(DSQL)](https://github.com/FirebirdSQL/core/tree/B2_5_ReleaseB2_5_Release/src/dsql/):** This subsystem translates requests from SQL into BLR, the native language of the database.
+**SQL translator [(DSQL)](https://github.com/FirebirdSQL/core/tree/B2_5_Release/src/dsql/):** This subsystem translates requests from SQL into BLR, the native language of the database.
 
 **relational database engine [(JRD)](https://github.com/FirebirdSQL/core/tree/B2_5_Release/src/jrd/):** This subsystem performs the actual queries.
 
