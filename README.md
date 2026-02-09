@@ -36,7 +36,7 @@ We begin by discussing the overall architecture of the system. We then look at t
 
 Firebird can be divided into four major components (see Figure 1): the remote connection system, the SQL translator, the relational database engine, and the lock manager. The arrows in the diagram indicate the flow of data. We include the clients in the diagram to illustrate their relationship with the rest of the system.
 
-![](https://www.ibphoenix.com/images/doc_25_1.gif)
+![](doc_25_1.png)
 
 _Figure 1: Top-level architecture_
 
@@ -56,7 +56,7 @@ The remote communication subsystem, REMOTE, allows clients to communicate remote
 
 It can be viewed as a layered system: conceptually, the client sends requests to the server, through a generic communication layer. The generic layers communicate through a protocol-specific layer, and the protocol-specific layers communicate through the operating system's network stack. This is much like to a two-layered version of the OSI reference network model.
 
-![](https://www.ibphoenix.com/images/doc_25_2.gif)
+![](doc_25_2.png)
 
 _Figure 2: Remote connection_
 
@@ -66,7 +66,7 @@ The client can also communicate with the server locally, using a module which em
 
 The SQL translator, DSQL, converts SQL queries into the native BLR language. Its architecture is like that of a simplified compiler: it contains a lexer, parser, symbol table, and code generator.
 
-![](https://www.ibphoenix.com/images/doc_25_3.gif)
+![](doc_25_3.png)
 
 _Figure 3: SQL translator_
 
@@ -78,7 +78,7 @@ The JRD subsystem executes requests and returns their results. It handles the ac
 
 Requests first pass through a compiler, which translates from BLR into an internal representation of the request. It calls the metadata subsystem, MET, to get metadata pertaining to the request, and to ensure that the requested tables are present.
 
-![](https://www.ibphoenix.com/images/doc_25_4.gif)
+![](doc_25_4.png)
 
 _Figure 4: Relational database engine_
 
@@ -93,7 +93,7 @@ The main purpose of the lock module is concurrency control, when multiple users 
 
 Lock handling is separated into two major parts: the lock handler sub-module inside the JRD and the Lock module that handles concurrent access to the lock table. Figure 5 illustrates relationship between these parts.
 
-![](https://www.ibphoenix.com/images/doc_25_5.gif)
+![](doc_25_5.png)
 
 _Figure 5: JRD and Lock module_
 
