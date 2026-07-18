@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+grammar_to_mermaid.py — turn Firebird's Bison grammar into a Mermaid graph.
+
+Firebird's SQL grammar lives in a single Bison file, src/dsql/parse.y (in the
+extern/firebird submodule). This script extracts the nonterminal rule graph
+(which grammar rule references which) and emits a Mermaid `flowchart` — the
+"railroad map" of the grammar at the rule level.
+
+The full grammar has ~600 nonterminals and several thousand edges, which is too
+dense for GitHub's Mermaid renderer, so by default the script emits a readable
+sub-graph rooted at a chosen rule to a chosen depth. Use --full for the entire
+graph (render it locally with @mermaid-js/mermaid-cli, not on GitHub).
+
+Usage:
+    # readable top-level view (default): the `statement` rule, depth 2
+    python3 tools/grammar_to_mermaid.py > diagrams/firebird-grammar-top.mmd
+
+    # a subtree rooted anywhere in the grammar
+    python3 tools/grammar_to_mermaid.py --root select_expr --depth 3
+
+    # the entire grammar (huge; render with mmdc / Graphviz, not GitHub)
+    python3 tools/grammar_to_mermaid.py --full > diagrams/firebird-grammar-full.mmd
+
+    # how big is the grammar?
+    python3 tools/grammar_to_mermaid.py --stats
+
+Options:
+    --parse-y PATH   location of parse.y (default: extern/firebird/src/dsql/parse.y)
+    --root NAME      root nonterminal for a sub-graph (default: statement)
+    --depth N        how many rule levels to expand from the root (default: 2)
+    --full           emit the entire rule graph, ignoring --root/--depth
+    --direction D    Mermaid flow direction: LR (default) or TB
+    --stats          print rule/edge/token counts instead of a diagram
+"""
+import argparse
+import os
+import re
+import sys
+from collections import deque
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_PARSE_Y = os.path.join(HERE, "..", "extern", "firebird", "src", "dsql", "parse.y")
+
+
+def strip_braces(text):
+    """Remove brace-balanced C action blocks { ... } from a rule body."""
+    out, depth = [], 0
+    for ch in text:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            if depth:
+                depth -= 1
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
+def parse_grammar(path):
+    """Return (rules, tokens): rules maps LHS -> ordered list of referenced
+    nonterminals; tokens is the set of terminal (UPPERCASE) symbol names."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        src = fh.read()
+
+    tokens = set(re.findall(r"^%token(?:\s+<[^>]*>)?\s+(.+)$", src, re.M))
+    # %token lines can list several names; split them out
+    tok = set()
+    for line in tokens:
+        for name in re.split(r"[\s,]+", line.strip()):
+            if re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+                tok.add(name)
+
+    # isolate the rules section between the two %% markers
+    parts = src.split("\n%%\n")
+    body = parts[1] if len(parts) >= 2 else src
+
+    # remove /* ... */ comments and // comments
+    body = re.sub(r"/\*.*?\*/", " ", body, flags=re.S)
+    body = re.sub(r"//[^\n]*", " ", body)
+    # drop 'char' literals and, crucially, the C action blocks { ... } BEFORE
+    # splitting on ';' — action blocks contain ';' that would truncate rules
+    body = re.sub(r"'(?:[^'\\]|\\.)*'", " ", body)
+    body = strip_braces(body)
+
+    # split into rules: a LHS is an identifier starting a line, then ':' ... ';'
+    rules = {}
+    for m in re.finditer(r"(?m)^([a-z_][a-zA-Z0-9_]*)\s*\n?\s*:(.*?);",
+                         body, re.S):
+        lhs = m.group(1)
+        rhs = m.group(2)
+        refs = re.findall(r"[a-z_][a-zA-Z0-9_]*", rhs)
+        rules.setdefault(lhs, [])
+        for r in refs:
+            if r not in rules[lhs]:
+                rules[lhs].append(r)
+
+    # keep only references that are themselves nonterminals (defined LHS)
+    defined = set(rules)
+    for lhs in rules:
+        rules[lhs] = [r for r in rules[lhs] if r in defined and r != lhs]
+    return rules, tok
+
+
+def reachable(rules, root, depth):
+    """BFS from root up to `depth` levels; return the set of edges kept."""
+    if root not in rules:
+        sys.exit(f"root rule '{root}' not found in grammar")
+    edges, seen = [], {root: 0}
+    q = deque([root])
+    while q:
+        cur = q.popleft()
+        d = seen[cur]
+        if d >= depth:
+            continue
+        for nxt in rules.get(cur, []):
+            edges.append((cur, nxt))
+            if nxt not in seen:
+                seen[nxt] = d + 1
+                q.append(nxt)
+    return edges
+
+
+def all_edges(rules):
+    return [(lhs, r) for lhs in rules for r in rules[lhs]]
+
+
+def emit_mermaid(edges, direction, title):
+    # node ids are prefixed with 'r_' so grammar rule names that collide with
+    # Mermaid reserved words (call, end, class, style, default, ...) are safe;
+    # the human-readable rule name stays in the node label.
+    def nid(name):
+        return "r_" + name
+
+    print(f"%% {title}")
+    print(f"%% generated by tools/grammar_to_mermaid.py from Firebird's src/dsql/parse.y")
+    print(f"flowchart {direction}")
+    nodes = {n for e in edges for n in e}
+    for n in sorted(nodes):
+        print(f'    {nid(n)}["{n}"]')
+    for a, b in edges:
+        print(f"    {nid(a)} --> {nid(b)}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--parse-y", default=DEFAULT_PARSE_Y)
+    ap.add_argument("--root", default="statement")
+    ap.add_argument("--depth", type=int, default=2)
+    ap.add_argument("--full", action="store_true")
+    ap.add_argument("--direction", default="LR", choices=["LR", "TB"])
+    ap.add_argument("--stats", action="store_true")
+    args = ap.parse_args()
+
+    rules, tokens = parse_grammar(args.parse_y)
+
+    if args.stats:
+        edges = all_edges(rules)
+        print(f"nonterminal rules : {len(rules)}")
+        print(f"terminal tokens   : {len(tokens)}")
+        print(f"rule-graph edges  : {len(edges)}")
+        top = sorted(rules, key=lambda r: len(rules[r]), reverse=True)[:10]
+        print("most-referencing rules:")
+        for r in top:
+            print(f"    {r:<28} -> {len(rules[r])} refs")
+        return
+
+    if args.full:
+        edges = all_edges(rules)
+        title = f"Firebird SQL grammar — full rule graph ({len(rules)} rules)"
+    else:
+        edges = reachable(rules, args.root, args.depth)
+        title = f"Firebird SQL grammar — '{args.root}' to depth {args.depth}"
+
+    emit_mermaid(edges, args.direction, title)
+
+
+if __name__ == "__main__":
+    main()
