@@ -2,3 +2,5 @@ node_modules/
 build/
 *.o
 *.fdb
+__pycache__/
+*.pyc
