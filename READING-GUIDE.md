@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-four companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-five companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -28,6 +28,7 @@ flowchart TB
     subgraph T3["③ Query processing"]
         C1["grammar-and-parser"]
         C2["query-optimizer-and-execution"]
+        C3["aggregate-and-window-functions"]
     end
     subgraph T4["④ Transactions"]
         D1["transactions-and-concurrency"]
@@ -75,6 +76,7 @@ How bytes and types are laid out on disk.
 Text to results — the query lifecycle.
 - **[SQL Grammar and Parser](grammar-and-parser.md)** — the BtYacc grammar, a regenerable full-grammar Mermaid diagram, and the parser-generator comparison. Ships a reproducible generator ([`tools/grammar_to_mermaid.py`](tools/grammar_to_mermaid.py)).
 - **[Query Optimizer and Execution Engine](query-optimizer-and-execution.md)** — the cost-based optimizer, access paths, join methods, and the Volcano record-source executor, with real plans. Together these two close the arc **parse → optimize → execute**.
+- **[Aggregate, Window and Analytical Functions](aggregate-and-window-functions.md)** — `GROUP BY` aggregates (`FILTER`, `LISTAGG`, statistical), window functions (frames, ranking, navigational), and ordered/hypothetical-set aggregates (`PERCENTILE_CONT`), and how the `SortedStream`/`AggregatedStream`/`WindowedStream` operators execute them.
 
 ### ④ Transactions and concurrency
 - **[Transactions, Concurrency and Isolation Levels](transactions-and-concurrency.md)** — the multi-generational (no-undo MVCC) model, the three isolation levels, commit-order snapshots, and conflict handling, with live concurrent-transaction demos.
