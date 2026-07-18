@@ -185,6 +185,8 @@ employee 4: Bruce Young
 employee 5: Kim Lambert
 ```
 
+> **Charset gotcha.** The sample passes `encoding: 'NONE'` deliberately. The stock `employee.fdb` is a charset-`NONE` database, and with node-firebird's default `encoding: 'UTF8'` a `SELECT` of any single-byte-charset text column longer than `length/4` characters fails with a spurious server-side `string right truncation` — the driver declares the column's native byte length while the connection charset makes the engine treat that buffer as holding only `floor(bytes/4)` UTF-8 characters. Filed upstream as [hgourvest/node-firebird#422](https://github.com/hgourvest/node-firebird/issues/422); until it is fixed, set `encoding` to a single-byte charset that matches the data.
+
 ### Node.js, from scratch — [`samples/nodejs/srp-handshake.js`](samples/nodejs/srp-handshake.js)
 
 No dependencies: `BigInt`, `node:crypto` and `net` only. It performs `op_connect` → `op_cond_accept` → `op_cont_auth` → `op_crypt` → `op_attach`, printing every SRP value. Real output (note `K` beginning `00`, the leading-zero edge case discussed above):

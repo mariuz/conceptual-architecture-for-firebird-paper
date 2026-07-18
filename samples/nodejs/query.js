@@ -24,6 +24,7 @@ const options = {
     // The stock employee.fdb predates Unicode and has database charset NONE;
     // with the driver default (UTF8) node-firebird 2.11 mis-sizes NONE-charset
     // VARCHARs (length/4) and raises a spurious "string right truncation".
+    // See https://github.com/hgourvest/node-firebird/issues/422
     encoding: 'NONE',
 };
 
