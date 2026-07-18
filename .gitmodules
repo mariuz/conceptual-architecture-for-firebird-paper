@@ -1,0 +1,3 @@
+[submodule "extern/firebird"]
+	path = extern/firebird
+	url = https://github.com/FirebirdSQL/firebird.git
