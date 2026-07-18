@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-one companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -20,6 +20,7 @@ flowchart TB
         B1["on-disk-structure"]
         B2["sql-dialect-and-types"]
         B3["internationalization"]
+        B4["indexing-and-full-text-search"]
     end
     subgraph T3["③ Query processing"]
         C1["grammar-and-parser"]
@@ -62,6 +63,7 @@ How bytes and types are laid out on disk.
 - **[On-Disk Structure](on-disk-structure.md)** — the ODS 14 page format from `ods.h`, the multi-generational record versions, and why Firebird needs neither a WAL nor an undo log. The physical foundation everything else rests on.
 - **[SQL Dialect and Data Types](sql-dialect-and-types.md)** — dialects 1/2/3, the type system (INT128, DECFLOAT, named-zone timestamps), and strict-vs-dynamic typing.
 - **[Internationalization](internationalization.md)** — the INTL subsystem, per-column character sets, ICU-backed collations, and transliteration.
+- **[Indexing and Full-Text Search](indexing-and-full-text-search.md)** — the B-tree internals (prefix compression, jump nodes), the index variants (expression, partial, descending), query-time bitmap combining, and the native full-text-search gap.
 
 ### ③ Query processing
 Text to results — the query lifecycle.
