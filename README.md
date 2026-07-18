@@ -67,7 +67,7 @@ The arrangement of the remote connection system, SQL translator, and relational 
 
 ## Remote communication
 
-The remote communication subsystem, REMOTE, allows clients to communicate remotely, or locally, with the server. It enables communication over several different network protocols, such as TCP/IP, [XNET](https://github.com/FirebirdSQL/firebird/tree/master/src/remote/xnet.cpp) (is firebird implementation of the local transport protocol). The subsystem is split roughly into two parts: a server side, and a client side. It contains generic code for client-server communication, as well as protocol-specific code.
+The remote communication subsystem, REMOTE, allows clients to communicate remotely, or locally, with the server. It enables communication over several different network protocols, such as TCP/IP, [XNET](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/os/win32/xnet.cpp) (Firebird's implementation of the local transport protocol, Windows-only in current versions; on POSIX, local connections go through the embedded engine provider). The subsystem is split roughly into two parts: a server side, and a client side. It contains generic code for client-server communication, as well as protocol-specific code.
 
 It can be viewed as a layered system: conceptually, the client sends requests to the server, through a generic communication layer. The generic layers communicate through a protocol-specific layer, and the protocol-specific layers communicate through the operating system's network stack. This is much like to a two-layered version of the OSI reference network model.
 
@@ -313,25 +313,25 @@ Viewed against the extensibility argument of the previous section, the pattern h
 
 ## References
 
-* [Garlan, David](https://www.cs.cmu.edu/~garlan/) and [Shaw, Mary](https://www.cs.cmu.edu/afs/cs.cmu.edu/user/shaw/www/Shaw-home.html), "[An Introduction to Software Architecture](https://repository.cmu.edu/compsci/724/)", _Advances in Software Engineering and Knowledge Engineering_, Volume 1, World Scientific Publishing Co., 1993.
+* [Garlan, David](https://www.cs.cmu.edu/~garlan/) and [Shaw, Mary](https://www.cs.cmu.edu/afs/cs.cmu.edu/user/shaw/www/Shaw-home.html), "[An Introduction to Software Architecture](https://www.cs.cmu.edu/afs/cs/project/able/www/paper_abstracts/intro_softarch.html)", _Advances in Software Engineering and Knowledge Engineering_, Volume 1, World Scientific Publishing Co., 1993.
 
-* Harrison, Ann and Beach, Paul; "[A Cut Out and Keep Guide to the Firebird Source Code](https://www.ibphoenix.com/resources/documents/search/doc_32)"; IBPhoenix; October 2001.
+* Harrison, Ann and Beach, Paul; "[A Cut Out and Keep Guide to the Firebird Source Code](https://web.archive.org/web/20220525071255/https://www.ibphoenix.com/resources/documents/development/doc_32)" (archived); IBPhoenix; October 2001.
 
-* Harrison, Ann; "[High-level Description of the InterBase 6.0 Source Code](https://www.ibphoenix.com/resources/documents/development/doc_31)"; IBPhoenix.
+* Harrison, Ann; "[High-level Description of the InterBase 6.0 Source Code](https://web.archive.org/web/20220614101606/https://www.ibphoenix.com/resources/documents/development/doc_31)" (archived); IBPhoenix.
 
 * Kruchten, Phillipe B., [The 4+1 Views Model of Architecture](http://www.cs.ubc.ca/~gregor/teaching/papers/4+1view-architecture.pdf), IEEE Software, Nov 95, pp 42-50.
 
-* [Y-Valve Architecture](https://www.ibphoenix.com/resources/documents/search/doc_119), From Jim Starkey on the Firebird Development List 13th December 2003.
+* [Y-Valve Architecture](https://web.archive.org/web/20220525071622/https://www.ibphoenix.com/resources/documents/development/doc_119) (archived), From Jim Starkey on the Firebird Development List 13th December 2003.
 
-* [Vulcan Architecture](https://www.ibphoenix.com/resources/documents/attic/doc_116) 30th Apr 2004 Vulcan Development page.
+* [Vulcan Architecture](https://web.archive.org/web/20221005031906/http://www.ibphoenix.com/resources/documents/attic/doc_116) (archived) 30th Apr 2004 Vulcan Development page.
 
-* [OSRI Architecture](https://www.ibphoenix.com/resources/documents/design/doc_33) The Philosophy, The Model, The API, Layering and Implementation Rules.
+* [OSRI Architecture](https://web.archive.org/web/20231119063720/https://www.ibphoenix.com/resources/documents/design/doc_33) (archived) The Philosophy, The Model, The API, Layering and Implementation Rules.
 
-* [DDL execution architecture in Firebird](http://asfernandes.blogspot.ro/2009/08/ddl-execution-architecture-in-firebird_4841.html) - Why we need to move on (in Firebird 3)
+* [DDL execution architecture in Firebird](https://asfernandes.blogspot.com/2009/08/ddl-execution-architecture-in-firebird_4841.html) - Why we need to move on (in Firebird 3)
 
-* [Understanding Firebird optimizer](http://www.slideshare.net/ibsurgeon/undestandung-firebird-optimizer-by-dmitry-yemanov-in-english), by Dmitry Yemanov
+* [Understanding Firebird optimizer](https://www.slideshare.net/ibsurgeon/undestandung-firebird-optimizer-by-dmitry-yemanov-in-english), by Dmitry Yemanov
 
-* [How Firebird transactions work](http://www.slideshare.net/ibsurgeon/3-how-transactionswork), by Alexey Kovyazin
+* [How Firebird transactions work](https://www.slideshare.net/ibsurgeon/3-how-transactionswork), by Alexey Kovyazin
 
 * [Firebird transaction Simulator](http://www.felix-colibri.com/papers/db/firebird_transaction_simulator/firebird_transaction_simulator.html), by Felix J. Colibri 
 
