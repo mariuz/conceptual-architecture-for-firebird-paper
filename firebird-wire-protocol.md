@@ -1,0 +1,259 @@
+# The Firebird 6 Wire Protocol and SRP Authentication
+
+This companion to [Conceptual Architecture for Firebird](README.md) documents the **REMOTE** subsystem from the outside: the bytes that travel between a client and a Firebird 6 server. It complements the architectural view (Figure 1's remote-connection system, and Figure 6's provider split) with the concrete packet exchange, then goes deep on **SRP** — the Secure Remote Password authentication Firebird has used since version 3 — including exactly where Firebird's implementation diverges from the SRP papers and RFCs, and what its `Srp256` variant improves.
+
+Every protocol fact here is drawn from the Firebird source vendored in this repository at [`extern/firebird`](extern/firebird) (chiefly [`src/remote/protocol.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/protocol.h) and [`src/auth/SecureRemotePassword/`](https://github.com/FirebirdSQL/firebird/tree/master/src/auth/SecureRemotePassword)), and every code sample in [`samples/`](samples/) was run against a live Firebird 6.0 server.
+
+**Table of Contents**
+
+* [Where this fits in the architecture](#where-this-fits-in-the-architecture)
+* [Packet model: opcodes and XDR](#packet-model-opcodes-and-xdr)
+* [Protocol versions](#protocol-versions)
+* [The connection lifecycle](#the-connection-lifecycle)
+* [SRP authentication in depth](#srp-authentication-in-depth)
+* [How Firebird's SRP differs from the papers](#how-firebirds-srp-differs-from-the-papers)
+* [What Srp256 improves](#what-srp256-improves)
+* [Wire encryption: from the session key to the cipher](#wire-encryption-from-the-session-key-to-the-cipher)
+* [Worked examples](#worked-examples)
+* [Client implementations (Node.js / TypeScript and others)](#client-implementations-nodejs--typescript-and-others)
+* [Further research: papers, RFCs and videos](#further-research-papers-rfcs-and-videos)
+
+## Where this fits in the architecture
+
+In the paper's terms, everything below happens inside the **remote connection system (REMOTE)** and, on the server, up to the point where the **Y-valve** hands the attach call to the **Engine** provider. The client library (`fbclient`) contains the client half; a Firebird server process (or, for embedded, nothing at all — the Engine provider is loaded in-process and no wire protocol is used) contains the server half. The protocol is deliberately defined in terms of self-contained *blocks* rather than a stream of messages, "to separate the protocol from the transport layer" (comment in `protocol.h`), which is why the same opcodes run unchanged over TCP/IP, over the Windows-only XNET shared-memory transport, and over the WireCrypt-encrypted channel.
+
+## Packet model: opcodes and XDR
+
+A packet begins with a 4-byte **operation code** and is followed by operation-specific fields encoded in **XDR** (RFC 4506): 32-bit integers in big-endian, and variable-length "opaque" data as a 4-byte length, the bytes, then zero-padding up to a 4-byte boundary. `samples/nodejs/srp-handshake.js` implements exactly this encoding in its `Writer`/`Reader` classes.
+
+The opcodes are the `enum` `P_OP` in [`protocol.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/protocol.h). The commented-out ranges (5, 7–8, 10–18, 45–47) are a fossil record of the architecture's history: the old page-server and lock-manager-over-the-wire operations that Vulcan and later the unified-server work removed. The opcodes still in use for a normal session are a small subset:
+
+| Opcode | # | Meaning |
+|---|---|---|
+| `op_connect` | 1 | Client's opening packet: protocol versions offered + first auth data |
+| `op_accept` | 3 | Server selects a protocol (pre-auth-plugin servers) |
+| `op_reject` | 4 | No protocol/plugin in common |
+| `op_response` | 9 | Generic response: object handle + status vector |
+| `op_attach` / `op_create` | 19 / 20 | Attach to / create a database |
+| `op_detach` / `op_drop_database` | 21 / 81 | Close / delete a database |
+| `op_transaction` … `op_commit` … `op_rollback` | 29, 30, 31 | Transaction control |
+| `op_allocate_statement` … `op_prepare_statement` … `op_execute` … `op_fetch` … `op_free_statement` | 62, 68, 63, 65, 67 | The DSQL statement lifecycle |
+| `op_cont_auth` | 92 | Continue a multi-step authentication (SRP phase 2+) |
+| `op_crypt` / `op_crypt_key_callback` | 96 / 97 | Start wire encryption / key callback for db encryption |
+| `op_cond_accept` | 98 | Accept protocol **and** ask the client to continue auth before attach |
+| `op_accept_data` | 94 | Accept protocol and return some auth data |
+| `op_batch_create` … `op_batch_exec` … `op_batch_sync` | 99–111 | Batch API (protocol 17+) |
+| `op_fetch_scroll` | 112 | Scrollable cursor fetch (protocol 18+) |
+| `op_inline_blob` | 114 | Inline small blobs with the result row (protocol 19+) |
+
+## Protocol versions
+
+Since protocol 11, Firebird sets the high bit (`FB_PROTOCOL_FLAG = 0x8000`) in the version number to distinguish itself from the last Borland InterBase protocol. An `op_connect` packet offers a *list* of `(version, architecture, min-type, max-type, weight)` tuples; the server picks the highest it also supports and returns it. Because servers ignore versions they do not recognize, a client can safely offer the whole list — as `samples/nodejs/srp-handshake.js` does, offering 13 through 20.
+
+The versions and the feature each one added (from the comments in `protocol.h`):
+
+| Version | On the wire | Added |
+|---|---|---|
+| 10 | `10` | Warnings; no status-code encoding |
+| 11 | `0x800B` | Separation from InterBase; user-auth operations (`op_authenticate_user`, `op_trusted_auth`) |
+| 12 | `0x800C` | Asynchronous `op_cancel` |
+| 13 | `0x800D` | **Authentication plugins** (`op_cont_auth`) and packed, null-aware SQL messages — the basis of SRP; **Firebird 3** |
+| 14 | `0x800E` | Fix to the database crypt-key callback |
+| 15 | `0x800F` | Crypt-key callback at connect phase |
+| 16 | `0x8010` | Statement timeouts; **Firebird 4** |
+| 17 | `0x8011` | `op_batch_*`, `op_info_batch` |
+| 18 | `0x8012` | `op_fetch_scroll` (scrollable cursors over the wire); **Firebird 5** |
+| 19 | `0x8013` | `op_inline_blob` |
+| 20 | `0x8014` | Flags passed to `IStatement::prepare`; **Firebird 6** (verified: our FB6 server negotiates 20) |
+
+The `architecture` field is almost always `arch_generic` (1); the historical per-CPU architecture negotiation for XDR shortcuts is effectively unused. The `min-type`/`max-type` fields negotiate the *packet type* (`ptype_batch_send`, `ptype_lazy_send`, …), and the high bit of the max-type carries the optional zlib **wire-compression** flag (`pflag_compress`), documented in [`doc/README.wire.compression.html`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.wire.compression.html).
+
+## The connection lifecycle
+
+A modern (protocol 13+) authenticated, encrypted session looks like this. Authentication runs in **cleartext** — that is the entire point of SRP, and is safe because an eavesdropper learns nothing usable — and wire encryption begins only afterwards, keyed by the secret the two sides just derived.
+
+```mermaid
+sequenceDiagram
+    participant C as Client (fbclient / node-firebird)
+    participant S as Server (Y-valve → Srp plugin → Engine)
+
+    Note over C,S: 1. Negotiation + first auth step (one packet)
+    C->>S: op_connect [proto 13..20; CNCT_login, CNCT_plugin_list=Srp256,Srp; CNCT_specific_data = A]
+    alt no protocol/plugin in common
+        S-->>C: op_reject
+    else
+        S-->>C: op_cond_accept [chosen proto; plugin=Srp256; salt + B]
+    end
+
+    Note over C,S: 2. Client proves knowledge of the password
+    C->>S: op_cont_auth [proof M]
+    S-->>C: op_response [OK]  (or an auth error in the status vector)
+
+    Note over C,S: 3. Turn on wire encryption (keyed by session key K)
+    C->>S: op_crypt [plugin=Arc4/ChaCha; key="Symmetric"]  (last cleartext packet)
+    S-->>C: op_response [OK]  (already encrypted)
+
+    Note over C,S: 4. Now attach — no password in the DPB
+    C->>S: op_attach [db path; DPB: user name, charset, ...]
+    S-->>C: op_response [attachment handle]
+
+    Note over C,S: 5. Statements: allocate → prepare → execute → fetch → free
+    C->>S: op_detach
+    S-->>C: op_response
+```
+
+The `op_connect` packet carries a **user identification block**: a sequence of tag/length/value triples (`CNCT_login`, `CNCT_plugin_name`, `CNCT_plugin_list`, `CNCT_specific_data`, `CNCT_client_crypt`, …) defined near the bottom of `protocol.h`. `CNCT_specific_data` is chunked into ≤254-byte pieces each prefixed with a sequence byte, because the client's SRP public key is 1024 bits of hex text. `CNCT_client_crypt` announces the client's wire-encryption stance (`DISABLED`/`ENABLED`/`REQUIRED`); a server whose `WireCrypt = Enabled` (the default) rejects a `DISABLED` client with `isc_wirecrypt_incompatible` — a real error the samples had to account for.
+
+`op_cond_accept` (opcode 98) is the key Firebird-3-era addition: it lets the server accept the protocol **and** demand that authentication complete *before* the `op_attach`, folding what used to be separate steps into the handshake.
+
+## SRP authentication in depth
+
+SRP is an **augmented password-authenticated key exchange (PAKE)**: the client proves it knows the password and both sides derive a shared session key, without the password (or anything from which it can be recovered offline by a passive eavesdropper) ever crossing the wire, and without the server storing the password itself. Firebird implements **SRP-6a** (Tom Wu; see [RFC 2945](https://www.rfc-editor.org/rfc/rfc2945) and, for the TLS parameter groups, [RFC 5054](https://www.rfc-editor.org/rfc/rfc5054)).
+
+**Setup (at user creation).** The `Srp` user manager picks a random 32-byte **salt** `s` and stores, in the security database, the salt and a **verifier**
+
+```
+x = SHA1(s | SHA1(USERNAME ':' password))
+v = g^x mod N
+```
+
+It never stores the password. `N` is a fixed 1024-bit safe prime and `g = 2` (both hard-coded in [`srp.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/auth/SecureRemotePassword/srp.cpp); this is Tom Wu's original demonstration group, not one of the RFC 5054 appendix groups). Note the username is folded into `x`, so renaming a user invalidates the verifier — matching RFC 2945.
+
+**The exchange** (numbered as in the "Order of battle" comment in [`srp.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/auth/SecureRemotePassword/srp.h)):
+
+1. Client picks a random private `a` and sends `A = g^a mod N` (in `op_connect`).
+2. Server looks up `s` and `v`, picks a random private `b`, and sends `s` and `B = (k·v + g^b) mod N`, where `k = SHA1(N | PAD(g))` (in `op_cond_accept`).
+3. Both compute the scramble `u = SHA1(A | B)` and the shared secret:
+   * client: `S = (B − k·g^x) ^ (a + u·x) mod N`
+   * server: `S = (A · v^u) ^ b mod N`
+   These are algebraically equal. The **session key** is `K = SHA1(S)`.
+4. Client sends the **proof** `M = H(H(N) ⊕ H(g), H(USERNAME), s, A, B, K)` (in `op_cont_auth`); the server recomputes it and compares. `H` is SHA-256 for `Srp256`, SHA-1 for legacy `Srp`.
+
+The payoff is visible in the sample output: the password is never transmitted, and `K` — derived independently on both sides — becomes the wire-encryption key without itself ever being sent.
+
+## How Firebird's SRP differs from the papers
+
+Reading [`srp.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/auth/SecureRemotePassword/srp.cpp) against RFC 2945/5054 turns up several deviations. They are self-consistent (client and server agree, so authentication works), but they matter to anyone writing an independent client — the pure-JS `node-firebird` driver carries code comments about bugs caused by exactly these points, reproduced in [`samples/nodejs/srp-handshake.js`](samples/nodejs/srp-handshake.js):
+
+1. **`u` (and `S`) hash the *minimal* magnitude bytes, not the padded form.** RFC 5054 specifies `u = SHA1(PAD(A) | PAD(B))` with both operands zero-padded to `|N|` = 128 bytes. Firebird's `computeScramble()` calls `processStrippedInt`, which hashes the big-integer's minimal big-endian encoding and *strips* a leading zero byte. An independent client that pads here (or that carries a spurious leading zero) computes a different `u` whenever `A` or `B` has a high zero byte — roughly a 1-in-256 chance per connection, i.e. sporadic, maddening auth failures. (Only `k = SHA1(N | PAD(g))` uses padding, and only for `g`.)
+
+2. **The session key `K` is a fixed-length digest that may start with `0x00`.** `K = SHA1(S)` is 20 raw bytes. Firebird hashes those 20 bytes directly into the proof (`digest.process(sessionKey)`) and uses them directly as the cipher key. A client that routes `K` through a big-integer type drops any leading zero byte (~1 connection in 256) and then both the proof and the derived cipher key diverge. The live run in [Worked examples](#worked-examples) actually produced a `K` beginning `00…`, exercising this path.
+
+3. **The proof's `n1` uses modular *exponentiation*, not XOR.** RFC 2945 defines the first proof term as `H(N) XOR H(g)`. Firebird's `clientProof()` computes `n1 = H(N)^H(g) mod N` with `BigInteger::modPow` — the `^` in the source comment `H(H(prime) ^ H(g), ...)` was read as "power", not "xor". Harmless once both ends agree, but it means Firebird's proof is not the RFC's proof.
+
+4. **The proof mixes hash functions.** In `Srp256`, the *outer* proof digest is SHA-256, but the *inner* hashes (`H(N)`, `H(g)`, `H(USERNAME)`) and the session key `K = SHA1(S)` remain **SHA-1** in every variant. Only the final proof digest changes with the plugin. This is the single most common mistake when adding `Srp256` support to a client that already spoke `Srp`.
+
+5. **Fixed 1024-bit group.** Firebird ships exactly one group. There is no group negotiation, so the strength of the discrete-log problem underpinning SRP is capped at 1024 bits regardless of which hash the proof uses.
+
+## What Srp256 improves
+
+Firebird 3.0.0 shipped SRP using SHA-1 throughout. A later security review (documented in-tree in [`doc/README.SecureRemotePassword.html`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.SecureRemotePassword.html)) concluded, following [NIST SP 800-131A Rev. 1](https://doi.org/10.6028/NIST.SP.800-131Ar1) §9, that the **client proof** is a form of "Digital Signature Generation" for which SHA-1 is disallowed. The response, shipped in **Firebird 3.0.4** and the default ever since, was **`Srp256`**: a separate plugin that computes the client proof with **SHA-256**. The plugin registrations in [`SrpClient.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/auth/SecureRemotePassword/client/SrpClient.cpp) actually cover `Srp`, `Srp224`, `Srp256`, `Srp384` and `Srp512`, the digest size being the only difference between them.
+
+What Srp256 concretely improves, and what it does **not**:
+
+- **Improves — proof integrity.** The proof is the value most like a signature over the exchange (`A`, `B`, salt, session key). Moving it to SHA-256 removes the SHA-1 collision/pre-image exposure that the review flagged as a path to recovering the shared session key — and hence the wire-encryption key — from a captured proof.
+- **Improves — compliance.** It brings the one disallowed use of SHA-1 into line with NIST guidance, without a database migration: the **verifier, salt and user manager are unchanged**, so the same security database serves `Srp` and `Srp256` clients. The digest is a property of the *authentication exchange*, not of stored data.
+- **Improves — defaults.** Since 3.0.4 the shipped config is `AuthServer = Srp256`, `AuthClient = Srp256, Srp, Legacy_Auth`, so new deployments get SHA-256 proofs automatically while remaining able to reach older servers.
+- **Does not change — the session key.** `K = SHA1(S)` is still SHA-1 in `Srp256`. The review judged the session-key derivation an acceptable continued use of SHA-1; only the proof moved. So "Srp256" is precisely "SRP with a SHA-256 *client proof*", not "SRP with SHA-256 everywhere".
+- **Does not change — the group.** Still 1024-bit `N`, `g = 2`. A stronger proof hash does not raise the discrete-log strength.
+- **A downgrade caveat.** The in-tree document explicitly warns against deploying `Srp` (SHA-1) and `Srp256` together where an attacker can interfere: because the plugin is negotiated in the cleartext `op_connect`, an active man-in-the-middle could strip `Srp256` from the offered list and force the weaker SHA-1 proof. The mitigation is to not offer legacy `Srp` at all when both ends support `Srp256`.
+
+## Wire encryption: from the session key to the cipher
+
+Once authenticated, the client sends `op_crypt` naming a wire-crypt plugin and the key type `"Symmetric"`; this is the last cleartext packet. The session key `K` produced by SRP is handed to the plugin (`ICryptKey::setSymmetric` in `SrpClient.cpp`) and becomes the symmetric cipher key. Two plugins ship (`src/plugins/crypt/`):
+
+- **Arc4** — RC4, with the 20-byte `K` used directly as the key. Each direction is an independent keystream. `samples/nodejs/srp-handshake.js` re-implements Firebird's `Cypher` (`src/plugins/crypt/arc4/Arc4.cpp`) in ~10 lines and completes an *encrypted* attach with it, proving the SRP session key really is the cipher key. (RC4 is disabled in modern OpenSSL, which is why the sample hand-rolls it rather than calling `node:crypto`.)
+- **ChaCha** / **ChaCha64** — a modern stream cipher that **stretches** `K` with SHA-256 before use (`src/plugins/crypt/chacha/ChaCha.cpp`). This is fbclient's preferred plugin, which is why the C++ sample negotiates `ChaCha64` while node-firebird, whose default order prefers RC4, negotiates `Arc4` — a visible difference between two clients talking to the same server.
+
+The security relationship is worth stating plainly: the strength of the *encrypted channel* rests on the secrecy of `K`, and `K` is derived from the SRP exchange. That is the whole reason the SHA-1-in-the-proof issue was treated as important — a break in the proof threatens `K`, and a break in `K` threatens every byte of the session.
+
+## Worked examples
+
+All four samples talk to the same server; the two Node samples live in [`samples/nodejs/`](samples/nodejs/), the two C++ samples in [`samples/`](samples/).
+
+### Node.js, high level — [`samples/nodejs/query.js`](samples/nodejs/query.js)
+
+Uses the pure-JavaScript [`node-firebird`](https://github.com/hgourvest/node-firebird) driver, which implements the wire protocol itself (no `fbclient`). Real output against Firebird 6:
+
+```text
+engine version : 6.0.0
+protocol       : TCPv4
+wire crypt     : Arc4
+authenticated  : SYSDBA
+employee 2: Robert Nelson
+employee 4: Bruce Young
+employee 5: Kim Lambert
+```
+
+### Node.js, from scratch — [`samples/nodejs/srp-handshake.js`](samples/nodejs/srp-handshake.js)
+
+No dependencies: `BigInt`, `node:crypto` and `net` only. It performs `op_connect` → `op_cond_accept` → `op_cont_auth` → `op_crypt` → `op_attach`, printing every SRP value. Real output (note `K` beginning `00`, the leading-zero edge case discussed above):
+
+```text
+server replied op 98 (op_cond_accept):
+  protocol version 20, architecture 1, packet type 3
+  plugin Srp256, authenticated=0
+[SRP] session key K=SHA1(S) = 00cada381d31e97c1d43f705dd196eab86cb9ea3 (SHA-1 even in Srp256!)
+[SRP] proof M (SHA-256)     = e8e0b25f8d949986f57ff6ff532220cf3fa8cdde53240d79450796906ffa9122
+
+authentication ACCEPTED — no password ever crossed the wire
+wire encryption ON (Arc4 keyed by K) — the session key doubles as the cipher key
+attached to 'employee' over the encrypted channel, attachment handle 0
+detached. bye
+```
+
+This is the most direct way to *see* the protocol: it negotiates protocol 20 with a Firebird 6 server, authenticates with `Srp256`, and turns on `Arc4` encryption keyed by the derived session key.
+
+### C++, high level — [`samples/protocol_client.cpp`](samples/protocol_client.cpp)
+
+The OO-API counterpart to `query.js`: `fbclient` does the handshake, the sample reports what was negotiated. Note the different wire-crypt plugin:
+
+```text
+attached to inet://localhost/employee
+engine version : 6.0.0
+protocol       : TCPv4
+wire crypt     : ChaCha64
+authenticated  : SYSDBA
+detached. bye
+```
+
+### C++, full round-trip — [`samples/client_test.cpp`](samples/client_test.cpp)
+
+The original sample from the main paper: create/attach, DDL, insert, cursor fetch through the OO API. See [`samples/README.md`](samples/README.md) for build and run instructions for all four.
+
+## Client implementations (Node.js / TypeScript and others)
+
+Two fundamentally different approaches appear among Firebird clients, and the Node ecosystem happens to contain one of each:
+
+- **Re-implement the wire protocol** in the host language (no `fbclient` dependency). Portable and dependency-free, at the cost of tracking protocol changes by hand.
+  - [`node-firebird`](https://github.com/hgourvest/node-firebird) ([npm](https://www.npmjs.com/package/node-firebird)) — pure JavaScript; the driver used by `query.js`. Its `lib/wire/` directory is a readable, complete implementation of everything in this document, and its `lib/srp.js` carries instructive comments about the SRP deviations above.
+- **Wrap `fbclient`** through a native binding. Inherits protocol support, encryption and plugins automatically; requires the client library to be installed.
+  - [`node-firebird-driver-native`](https://www.npmjs.com/package/node-firebird-driver-native) + [`node-firebird-driver`](https://www.npmjs.com/package/node-firebird-driver) — **TypeScript**, in the [`asfernandes/node-firebird-drivers`](https://github.com/asfernandes/node-firebird-drivers) monorepo, maintained by a Firebird core developer; a thin, typed layer over the OO API used here in C++.
+
+Other languages, for reference:
+
+- [Jaybird](https://github.com/FirebirdSQL/jaybird) — the Firebird JDBC driver (Java); another from-scratch wire-protocol implementation, with extensive protocol notes in its source.
+- [`firebird-driver`](https://pypi.org/project/firebird-driver/) ([`FirebirdSQL/python3-driver`](https://github.com/FirebirdSQL/python3-driver)) — the official Python driver, a `ctypes` wrapper over `fbclient`.
+
+## Further research: papers, RFCs and videos
+
+**SRP and the cryptography**
+
+- Thomas Wu, "[The Secure Remote Password Protocol](http://srp.stanford.edu/ndss.html)", Proceedings of the 1998 Internet Society Network and Distributed System Security Symposium (NDSS '98) — the original SRP paper; see also the [SRP project page](http://srp.stanford.edu/).
+- [RFC 2945 — The SRP Authentication and Key Exchange System](https://www.rfc-editor.org/rfc/rfc2945) — SRP-3, the definition Firebird's proof structure follows (with the deviations noted above).
+- [RFC 5054 — Using SRP for TLS Authentication](https://www.rfc-editor.org/rfc/rfc5054) — SRP-6a and the standard parameter groups; the source of the `PAD()` rules Firebird does *not* use for `u`.
+- [Secure Remote Password protocol](https://en.wikipedia.org/wiki/Secure_Remote_Password_protocol) (Wikipedia) — a concise SRP-6a summary with the same variable names used here.
+- [NIST SP 800-131A Rev. 1](https://doi.org/10.6028/NIST.SP.800-131Ar1) — the transition guidance on SHA-1 that motivated `Srp256`.
+
+**Firebird protocol and authentication sources**
+
+- [`doc/README.SecureRemotePassword.html`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.SecureRemotePassword.html) — Firebird's own rationale for the SHA-256 client proof; the primary source for [What Srp256 improves](#what-srp256-improves).
+- [`src/remote/protocol.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/protocol.h) — the authoritative opcode and protocol-version list.
+- [`src/auth/SecureRemotePassword/srp.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/auth/SecureRemotePassword/srp.cpp) and [`srp.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/auth/SecureRemotePassword/srp.h) — the SRP math and the "order of battle" comment.
+- [`src/plugins/crypt/`](https://github.com/FirebirdSQL/firebird/tree/master/src/plugins/crypt) — the `Arc4` and `ChaCha` wire-crypt plugins.
+- [`doc/README.wire.compression.html`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.wire.compression.html) — the optional zlib compression negotiated in `op_connect`.
+
+**Videos**
+
+- Dmitry Yemanov, "[Firebird on the road from v4 to v5](https://www.youtube.com/watch?v=4NDGpwCTlEs)" (Firebird Conference 2019) — features that added protocol operations (batch API, scrollable cursors), by the lead developer.
+- The database-internals talks collected in the [companion architecture comparison](architecture-comparison.md#videos-and-courses) give the wider context for where authentication and the client/server split sit in a DBMS.

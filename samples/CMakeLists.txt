@@ -22,3 +22,9 @@ endif()
 add_executable(client_test client_test.cpp)
 target_include_directories(client_test PRIVATE "${FIREBIRD_INCLUDE_DIR}")
 target_link_libraries(client_test PRIVATE "${FBCLIENT_LIBRARY}")
+
+# Networked OO-API client used by the wire-protocol write-up; the C++
+# counterpart to nodejs/query.js (see ../firebird-wire-protocol.md).
+add_executable(protocol_client protocol_client.cpp)
+target_include_directories(protocol_client PRIVATE "${FIREBIRD_INCLUDE_DIR}")
+target_link_libraries(protocol_client PRIVATE "${FBCLIENT_LIBRARY}")

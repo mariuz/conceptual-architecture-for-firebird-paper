@@ -1,0 +1,15 @@
+{
+  "name": "firebird-paper-nodejs-samples",
+  "version": "1.0.0",
+  "description": "Firebird 6 wire-protocol samples: high-level driver and a from-scratch SRP/Arc4 handshake",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "query": "node query.js",
+    "handshake": "node srp-handshake.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "node-firebird": "^2.11.0"
+  }
+}
