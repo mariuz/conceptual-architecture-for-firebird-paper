@@ -1,0 +1,191 @@
+# Embedded Architecture: Firebird vs SQLite
+
+Both Firebird and SQLite can run *embedded* — linked into an application as a library, with the database living in an ordinary file and no separate server process to administer. This makes them natural competitors for the same niche: desktop and mobile apps, edge devices, application file formats, test fixtures, and any deployment where "install and run a database server" is unwelcome. But underneath the shared "just a library and a file" surface, the two are architecturally opposite in the decision that matters most — **what happens when more than one thing writes to the database at once**.
+
+This document compares the two embedded architectures with diagrams, focusing on that decision and everything that follows from it. It is a companion to the [main paper](README.md), the broader four-engine [architecture comparison](architecture-comparison.md) (which covers PostgreSQL and MySQL as well), and the [wire-protocol document](firebird-wire-protocol.md) (which covers Firebird's *networked* mode). The Firebird embedded facts here are grounded in the vendored source and its [`doc/README.user.embedded`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.user.embedded) and [`doc/README.providers.html`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.providers.html); the SQLite facts in its [architecture](https://sqlite.org/arch.html) and [file-locking](https://sqlite.org/lockingv3.html) documents. The runnable C++ example [`samples/client_test.cpp`](samples/client_test.cpp) *is* a Firebird embedded program: it creates and queries a local `.fdb` file with no server running.
+
+**Table of Contents**
+
+* [The shared surface](#the-shared-surface)
+* [SQLite: a library around a file](#sqlite-a-library-around-a-file)
+* [Firebird embedded: a full engine in your process](#firebird-embedded-a-full-engine-in-your-process)
+* [The decisive difference: concurrency](#the-decisive-difference-concurrency)
+* [The Firebird continuum: embedded and server are the same engine](#the-firebird-continuum-embedded-and-server-are-the-same-engine)
+* [Side-by-side comparison](#side-by-side-comparison)
+* [Choosing between them](#choosing-between-them)
+* [Further research](#further-research)
+
+## The shared surface
+
+Before the differences, the genuine common ground — this is why they are compared at all:
+
+- **No server process to run.** The database engine executes inside the application's own process; there is nothing to start, stop, or supervise.
+- **The database is a file.** A single file (plus small, transient side files) is the whole database; copying it copies the database.
+- **Zero-to-minimal administration.** No accounts to provision, no network to secure, no configuration required to get going.
+- **ACID transactions.** Both are fully transactional with durable commit and crash recovery — neither is a "toy" store.
+- **Embeddable across platforms.** Both run on the major desktop and mobile operating systems and expose a C API other languages bind to.
+
+Everything below is where they diverge.
+
+## SQLite: a library around a file
+
+SQLite ([sqlite.org](https://sqlite.org/), [architecture](https://sqlite.org/arch.html)) is *serverless by design* ([its own term](https://sqlite.org/serverless.html)): the library is the entire database system. There is no engine process even conceptually — the code that parses SQL, walks B-trees and reads pages all runs on the application's call stack, and the only thing outside the process is the file (and, in WAL mode, a shared-memory index and a write-ahead log file beside it).
+
+```mermaid
+flowchart TB
+    subgraph P1[Application process A]
+        A1[Application code]
+        subgraph L1[libsqlite3 - in process]
+            F1[SQL compiler → VDBE bytecode]
+            B1[B-tree]
+            PG1[Pager: transactions + page cache]
+            V1[VFS: OS file abstraction]
+        end
+        A1 --> F1 --> B1 --> PG1 --> V1
+    end
+    subgraph P2[Application process B]
+        V2[libsqlite3 / VFS]
+    end
+
+    V1 -->|OS file locks| DB[(database file)]
+    V2 -->|OS file locks| DB
+    PG1 -.rollback journal / WAL.-> J[(journal / -wal + -shm)]
+
+    classDef store fill:#eef,stroke:#557;
+    class DB,J store;
+```
+
+_Figure 1: SQLite — the library is the whole engine; cross-process coordination is by OS file locks_
+
+- **Linkage.** One small library (~150 K lines, one `sqlite3.c` amalgamation) with no dependencies; often statically linked. There is no separate "embedded build" because there is no other build.
+- **Query pipeline.** Tokenizer → parser → code generator producing **VDBE** bytecode, executed by a register virtual machine. (Detailed in the [architecture comparison](architecture-comparison.md#sqlite).)
+- **Storage.** Tables and indexes are B-trees in one file; the **pager** provides atomic commit and recovery via a rollback journal (undo) or [WAL](https://sqlite.org/wal.html) (redo).
+- **Cross-process coordination.** SQLite has no shared engine to mediate access, so when two *processes* open the same file they coordinate purely through **OS advisory file locks** ([locking protocol](https://sqlite.org/lockingv3.html)): a reader takes a SHARED lock, a writer escalates through RESERVED and PENDING to EXCLUSIVE. WAL mode adds a small `-shm` shared-memory file so multiple readers can run concurrently with one writer, but the ceiling is unchanged: **one writer at a time for the whole database.**
+- **Security.** None built in — no users, no passwords, no privileges. Access control is the file system's job. (Encryption is available via commercial/third-party VFS extensions.)
+- **Extensibility.** Application-defined functions and collations, **virtual tables** (FTS5 full-text search, R-tree, JSON are virtual tables), and custom **VFS** implementations (the hook for encryption and for the in-browser WASM build).
+
+## Firebird embedded: a full engine in your process
+
+Firebird embedded is a fundamentally different thing wearing the same clothes: it is the **complete Firebird server engine**, loaded into the application's address space as a library rather than reached over a socket. Its own documentation is blunt about this — "The embedded server is a fully functional server linked as a dynamic library … It has exactly the same features as the usual server." Since Firebird 3 there is no separate embedded library at all: the ordinary client library (`fbclient`) contains the engine, and the **Y-valve** dispatcher chooses at attach time between the **Remote** provider (network) and the **Engine** provider (in-process, embedded) based on the connection string. A bare file path with no server name gets the Engine provider — and you have an embedded database.
+
+```mermaid
+flowchart TB
+    subgraph P1[Application process A]
+        A1[Application code]
+        subgraph FB1[fbclient - in process]
+            YV1[Y-valve dispatcher]
+            subgraph ENG1[Engine provider - the full server]
+                DSQL1[DSQL → BLR]
+                JRD1[JRD: compiler + executor + MVCC]
+                CACHE1[Page cache]
+            end
+        end
+        A1 --> YV1 --> ENG1
+    end
+    subgraph P2[Application process B]
+        ENG2[fbclient / Engine provider]
+    end
+
+    LOCK[["Shared lock table<br/>(cross-process shared memory)"]]
+    ENG1 <-->|lock requests| LOCK
+    ENG2 <-->|lock requests| LOCK
+    ENG1 --> DB[(database file .fdb)]
+    ENG2 --> DB
+
+    classDef store fill:#eef,stroke:#557;
+    class DB store;
+    classDef shm fill:#efe,stroke:#575;
+    class LOCK shm;
+```
+
+_Figure 2: Firebird embedded — the full engine runs in-process, but a shared lock table lets independent processes be concurrent writers to one file_
+
+- **Linkage.** Linking `fbclient` pulls in the entire engine plus its dependencies (ICU for collations, plugins for INTL and UDR). It is a much larger dependency than SQLite — because it is a whole database server, not a library around a file.
+- **Query pipeline and storage.** Identical to the server described in the paper: DSQL compiles SQL to **BLR**, the JRD engine executes it with full **multi-generational (MVCC)** concurrency, and durability comes from **careful write ordering — no WAL** (see the [main paper's JRD section](README.md#jrd) and the [architecture comparison](architecture-comparison.md#firebird-recap)).
+- **Cross-process coordination.** This is the crux. Firebird embedded still coordinates through the **shared lock table** — the same lock manager (`src/lock/`) the server uses, living in cross-process shared memory. Per `README.user.embedded`: "The database file can be accessed by multiple client programs. The database consistency in this case is guaranteed internally (by the shared lock table)." Multiple independent processes running embedded — and a running Firebird *server* at the same time — all attach to the same file and coordinate through that shared structure.
+- **Security.** In embedded mode there is **no authentication** — no security database is consulted and any user name is accepted, because client and engine share an address space and any barrier "can be easily compromised" anyway. But note the important subtlety: **SQL privileges are still checked.** GRANT/REVOKE, roles and view-level permissions all apply; what is skipped is only *proving who you are*, not *what that identity may do*.
+- **Extensibility.** The engine's full plugin surface: **UDR** external routines, INTL character-set/collation plugins, and (in server mode) auth/crypt/trace plugins. Stored procedures, triggers, and PSQL run inside the embedded engine exactly as on the server.
+
+## The decisive difference: concurrency
+
+Everything else is detail next to this: **how many writers can safely touch the database at once, from how many processes.**
+
+- **SQLite: one writer, enforced by file locks.** Because there is no shared engine, the only cross-process referee is the operating system's file-locking. A writer must obtain an EXCLUSIVE lock over the database, which by construction excludes all other writers (and, outside WAL mode, all readers) for the duration of the write transaction. This is not a tuning limitation; it is the architecture. For SQLite's target — one application that owns its file — it is exactly right, and the reward is an engine small and simple enough to be [tested to aviation-grade coverage](https://sqlite.org/testing.html). SQLite's own guidance is that it is built for this case and that genuinely concurrent write workloads from many clients are what a client-server database is for.
+- **Firebird embedded: many concurrent writers, mediated by MVCC and the shared lock table.** Because embedded is the full engine, it brings the full concurrency machinery with it. Multiple transactions — in the same process *or in different processes* — can write simultaneously; readers never block writers and writers never block readers, because each transaction sees its own consistent version of every row (the multi-generational architecture), and the shared lock table serializes only the genuine conflicts (two transactions updating the *same* row). The same `.fdb` can be under concurrent modification by several embedded applications and a network server at once.
+
+Put concisely: **SQLite makes concurrency the file system's problem and answers it with "one writer"; Firebird embedded makes concurrency the engine's problem and answers it with "MVCC, just like the server."** That single divergence explains the footprint difference (an MVCC engine plus a lock manager is simply more code than a pager plus file locks), the recovery difference (version housekeeping and careful writes versus a rollback journal), and the deployment difference below.
+
+## The Firebird continuum: embedded and server are the same engine
+
+A consequence of Figure 2 that has no SQLite equivalent: because embedded Firebird *is* the server, moving between embedded and client-server is a change of **connection string**, not of code, driver, or file format.
+
+```mermaid
+flowchart LR
+    subgraph App[One application, one API, one .fdb format]
+        direction TB
+        code["attachDatabase(connString)"]
+    end
+
+    code -->|"'/data/app.fdb'<br/>(no server name)"| EMB[Engine provider<br/>EMBEDDED, in-process]
+    code -->|"'inet://host/data/app.fdb'"| REM[Remote provider →<br/>network SERVER]
+
+    EMB --> F[(app.fdb)]
+    REM -->|wire protocol| SRV[Firebird server] --> F
+```
+
+_Figure 3: The same code, API and file switch between embedded and networked by connection string alone (the Y-valve routes the call)_
+
+The identical file can be opened embedded today and served over TCP tomorrow with no migration; a single application can even do both at once. SQLite deliberately does not offer this — reaching a SQLite file from another machine means adding an external layer (a network file system, or a separate server product built on SQLite), and there is no in-tree "switch to server mode." Firebird's [Y-valve provider architecture](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.providers.html) is precisely what makes the transition free, and it is the same mechanism documented in the [wire-protocol overview](firebird-wire-protocol.md#where-this-fits-in-the-architecture).
+
+## Side-by-side comparison
+
+| Aspect | **SQLite** | **Firebird embedded** |
+|---|---|---|
+| What the library contains | The whole engine (a library around a file) | The whole **server** engine, loaded in-process |
+| Footprint / dependencies | Tiny (~150 K LOC, single amalgamation, no deps) | Large (`fbclient` + ICU + plugins) |
+| Separate embedded build? | N/A — there is only one build | No — ordinary `fbclient`; Y-valve picks the Engine provider |
+| Query pipeline | Tokenizer → VDBE bytecode → VM | DSQL → BLR → JRD execution tree |
+| **Concurrent writers** | **One at a time** (whole-DB write lock) | **Many** (MVCC), across processes |
+| Reader/writer blocking | Readers block writers (rollback journal); WAL: 1 writer + N readers | Readers and writers never block each other (MVCC) |
+| Cross-process coordination | OS advisory **file locks** (+ `-shm` in WAL) | **Shared lock table** (lock manager in shared memory) |
+| Concurrency ceiling | By design: single-writer | Full server concurrency in-process |
+| Crash recovery | Rollback journal (undo) or WAL (redo) | Careful write ordering — **no WAL** |
+| Authentication | None (filesystem permissions) | None in embedded (any user accepted) |
+| SQL privileges (GRANT/roles) | Not applicable (no users) | **Enforced** even in embedded |
+| Data types / SQL surface | Dynamic typing; a focused SQL subset | Static typing; full procedural SQL (PSQL), stored procedures, triggers |
+| Extensibility | App functions, virtual tables, custom VFS | UDR routines, INTL plugins, PSQL |
+| Path to client-server | External layer required (no native server mode) | **Change the connection string** — same engine, file, API |
+| Ideal fit | One app owning its file; edge/mobile; app file format | Embedded app that may need multi-process or later networked access |
+| License | Public domain | IDPL / IPL (MPL-family) |
+
+## Choosing between them
+
+The comparison points to a clean decision rule rather than a winner:
+
+- **Choose SQLite** when a single application owns the database file, write concurrency is low or naturally serialized, and minimal footprint and zero operational surface are paramount — its canonical uses are application file formats, on-device storage for mobile and desktop apps, browser storage, caches, and test fixtures. If you will never need concurrent writers from multiple processes or a network server, SQLite's simplicity is a feature, not a compromise, and its testing pedigree is hard to match.
+- **Choose Firebird embedded** when you want the ergonomics of an embedded database *but* expect several processes to write the same file, need real server-grade concurrency (MVCC) on the desktop, rely on stored procedures/triggers/roles, or want the option to expose the same database over the network later without re-platforming. You pay for it in footprint and dependencies, because you are shipping a full database server inside your application.
+
+The deciding question is almost always the concurrency one: *will more than one process ever need to write this database at the same time, or might it need to become a networked service?* If yes, Firebird embedded's architecture is built for it; if no, SQLite's is built for staying out of your way.
+
+## Further research
+
+**SQLite**
+
+- [SQLite architecture](https://sqlite.org/arch.html), [How SQLite works](https://sqlite.org/howitworks.html) — the structure of Figure 1.
+- [File locking and concurrency](https://sqlite.org/lockingv3.html), [Write-Ahead Logging](https://sqlite.org/wal.html), [Atomic commit](https://sqlite.org/atomiccommit.html), [Isolation](https://sqlite.org/isolation.html) — the concurrency model in full detail.
+- [Appropriate uses for SQLite](https://sqlite.org/whentouse.html) and [Serverless](https://sqlite.org/serverless.html) — SQLite's own account of the single-writer, application-owned-file niche.
+- [How SQLite is tested](https://sqlite.org/testing.html) — the payoff of the small, simple architecture.
+- D. Richard Hipp, [SQLite (CMU Databaseology Lecture)](https://www.youtube.com/watch?v=gpxnbly9bz4) — the creator on the design choices; [CoRecursive podcast on SQLite](https://corecursive.com/066-sqlite-with-richard-hipp/).
+
+**Firebird embedded**
+
+- [`doc/README.user.embedded`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.user.embedded) — the primary source for embedded behaviour (shared lock table, no auth, SQL privileges still enforced).
+- [`doc/README.providers.html`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.providers.html) — how the Y-valve chooses Engine vs Remote vs Loopback; why no special embedded library is needed.
+- [`src/lock/`](https://github.com/FirebirdSQL/firebird/tree/master/src/lock) — the lock manager and shared lock table that make cross-process embedded concurrency work.
+- [`doc/Using_OO_API.md`](https://github.com/FirebirdSQL/firebird/blob/master/doc/Using_OO_API.md) — the OO API used by [`samples/client_test.cpp`](samples/client_test.cpp), a working embedded program.
+- The [main paper](README.md) for the engine internals, and the [architecture comparison](architecture-comparison.md) for Firebird beside PostgreSQL, MySQL and SQLite on storage and transactions.
+
+**Both, in context**
+
+- [Architecture of a Database System](https://dsf.berkeley.edu/papers/fntdb07-architecture.pdf) (Hellerstein, Stonebraker, Hamilton) — process models and concurrency control, the theory under this comparison.
+- [Database of Databases](https://dbdb.io/): [SQLite](https://dbdb.io/db/sqlite), [Firebird](https://dbdb.io/db/firebird) — structured fact sheets.

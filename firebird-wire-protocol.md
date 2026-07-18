@@ -14,6 +14,7 @@ Every protocol fact here is drawn from the Firebird source vendored in this repo
 * [How Firebird's SRP differs from the papers](#how-firebirds-srp-differs-from-the-papers)
 * [What Srp256 improves](#what-srp256-improves)
 * [Wire encryption: from the session key to the cipher](#wire-encryption-from-the-session-key-to-the-cipher)
+* [Protocol comparison: PostgreSQL and MySQL](#protocol-comparison-postgresql-and-mysql)
 * [Worked examples](#worked-examples)
 * [Client implementations (Node.js / TypeScript and others)](#client-implementations-nodejs--typescript-and-others)
 * [Further research: papers, RFCs and videos](#further-research-papers-rfcs-and-videos)
@@ -78,11 +79,11 @@ sequenceDiagram
     participant S as Server (Y-valve → Srp plugin → Engine)
 
     Note over C,S: 1. Negotiation + first auth step (one packet)
-    C->>S: op_connect [proto 13..20; CNCT_login, CNCT_plugin_list=Srp256,Srp; CNCT_specific_data = A]
+    C->>S: op_connect [proto 13..20 — CNCT_login, CNCT_plugin_list=Srp256,Srp, CNCT_specific_data = A]
     alt no protocol/plugin in common
         S-->>C: op_reject
     else
-        S-->>C: op_cond_accept [chosen proto; plugin=Srp256; salt + B]
+        S-->>C: op_cond_accept [chosen proto — plugin=Srp256 — salt + B]
     end
 
     Note over C,S: 2. Client proves knowledge of the password
@@ -90,11 +91,11 @@ sequenceDiagram
     S-->>C: op_response [OK]  (or an auth error in the status vector)
 
     Note over C,S: 3. Turn on wire encryption (keyed by session key K)
-    C->>S: op_crypt [plugin=Arc4/ChaCha; key="Symmetric"]  (last cleartext packet)
+    C->>S: op_crypt [plugin=Arc4/ChaCha — key="Symmetric"]  (last cleartext packet)
     S-->>C: op_response [OK]  (already encrypted)
 
     Note over C,S: 4. Now attach — no password in the DPB
-    C->>S: op_attach [db path; DPB: user name, charset, ...]
+    C->>S: op_attach [db path — DPB: user name, charset, ...]
     S-->>C: op_response [attachment handle]
 
     Note over C,S: 5. Statements: allocate → prepare → execute → fetch → free
@@ -166,6 +167,98 @@ Once authenticated, the client sends `op_crypt` naming a wire-crypt plugin and t
 - **ChaCha** / **ChaCha64** — a modern stream cipher that **stretches** `K` with SHA-256 before use (`src/plugins/crypt/chacha/ChaCha.cpp`). This is fbclient's preferred plugin, which is why the C++ sample negotiates `ChaCha64` while node-firebird, whose default order prefers RC4, negotiates `Arc4` — a visible difference between two clients talking to the same server.
 
 The security relationship is worth stating plainly: the strength of the *encrypted channel* rests on the secrecy of `K`, and `K` is derived from the SRP exchange. That is the whole reason the SHA-1-in-the-proof issue was treated as important — a break in the proof threatens `K`, and a break in `K` threatens every byte of the session.
+
+## Protocol comparison: PostgreSQL and MySQL
+
+Firebird, PostgreSQL and MySQL all put a binary request/response protocol over a raw TCP socket, but they made different decisions at every layer — framing, who speaks first, how authentication works, and (most tellingly) whether confidentiality is part of the database protocol or delegated to TLS underneath it. This section compares the three, so the Firebird handshake above has a frame of reference. It complements the storage-and-engine comparison in [architecture-comparison.md](architecture-comparison.md); here the subject is strictly *the bytes on the wire*.
+
+### PostgreSQL: the frontend/backend protocol (v3.0)
+
+PostgreSQL's [frontend/backend protocol](https://www.postgresql.org/docs/current/protocol.html) frames every message as a **1-byte type code** + **Int32 length** (big-endian, counting itself) + payload — with one exception: the opening **StartupMessage** has no type byte, because at that point the server does not yet know the protocol version. The client speaks first.
+
+```mermaid
+sequenceDiagram
+    participant C as Client (libpq)
+    participant S as Backend process
+
+    opt TLS
+        C->>S: SSLRequest
+        S-->>C: 'S' (willing) / 'N'
+        Note over C,S: TLS handshake, then everything below is inside TLS
+    end
+    C->>S: StartupMessage [proto 3.0 — user, database, params]  (no type byte)
+    S-->>C: AuthenticationSASL [SCRAM-SHA-256]
+    C->>S: SASLInitialResponse [client-first: nonce]
+    S-->>C: AuthenticationSASLContinue [server nonce, salt, iterations]
+    C->>S: SASLResponse [client proof]
+    S-->>C: AuthenticationSASLFinal [server signature] + AuthenticationOk
+    S-->>C: BackendKeyData + ParameterStatus* + ReadyForQuery
+    Note over C,S: Simple query
+    C->>S: Query 'Q' ["SELECT ..."]
+    S-->>C: RowDescription + DataRow* + CommandComplete + ReadyForQuery
+    Note over C,S: Extended query (prepared)
+    C->>S: Parse + Bind + Describe + Execute + Sync
+    S-->>C: ParseComplete + BindComplete + RowDescription + DataRow* + CommandComplete + ReadyForQuery
+```
+
+Two points bear on the Firebird comparison. First, **authentication is SASL [SCRAM-SHA-256](https://www.postgresql.org/docs/current/sasl-authentication.html)** ([RFC 5802](https://www.rfc-editor.org/rfc/rfc5802)/[RFC 7677](https://www.rfc-editor.org/rfc/rfc7677)) since PostgreSQL 10. Like Firebird's SRP, SCRAM is a challenge-response scheme in which the cleartext password never crosses the wire and the server stores only a salted derivation — but unlike SRP it is *not* a full PAKE: SCRAM does not by itself establish a shared secret usable to encrypt the channel, and it relies on channel binding to TLS to resist man-in-the-middle attacks. Second, and consequently, **PostgreSQL has no wire-encryption of its own**: confidentiality is TLS, negotiated *before* the StartupMessage via the typeless SSLRequest probe. Where Firebird's `op_crypt` turns the SRP session key into an Arc4/ChaCha key inside the protocol, PostgreSQL layers the entire protocol inside TLS and keeps encryption out of the message grammar.
+
+The **extended query protocol** (Parse/Bind/Describe/Execute/Sync) is the direct analogue of Firebird's `op_prepare_statement` → `op_execute` → `op_fetch` DSQL sequence, and it enables the same things: server-side prepared statements, binary parameter binding, and — via omitting `Sync` between steps — pipelining.
+
+### MySQL: the client/server protocol
+
+MySQL frames every packet as a **3-byte little-endian payload length** + **1-byte sequence number** + payload ([MariaDB KB, "0 - Packet"](https://mariadb.com/kb/en/0-packet/)). The 3-byte length caps a single packet at 16 MiB − 1; larger payloads are split across consecutive packets and reassembled, and the sequence number (reset to 0 at the start of each command) lets both sides detect a lost or out-of-order packet. It is the only one of the three protocols that is **little-endian** and the only one where the **server speaks first**.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as mysqld (thread per connection)
+
+    S-->>C: Initial Handshake (HandshakeV10) [server version, capabilities, auth-plugin name + nonce]
+    C->>S: HandshakeResponse [username, auth response, capability flags, (optional TLS switch)]
+    opt caching_sha2_password fast path fails
+        S-->>C: AuthMoreData [request full auth]
+        C->>S: password over TLS or via RSA-encrypted exchange
+    end
+    S-->>C: OK packet
+    Note over C,S: Text command
+    C->>S: COM_QUERY (0x03) ["SELECT ..."]
+    S-->>C: column count + column defs + EOF + row packets + OK/EOF
+    Note over C,S: Prepared statement
+    C->>S: COM_STMT_PREPARE (0x16) ["SELECT ... ?"]
+    S-->>C: STMT_PREPARE_OK [statement id, param/column metadata]
+    C->>S: COM_STMT_EXECUTE (0x17) [statement id, bound params]
+    S-->>C: binary result set
+```
+
+The MySQL handshake inverts Firebird's opening move: the server immediately sends a greeting (`HandshakeV10`) carrying its capabilities and the authentication plugin it wants to use, and the client answers. The default plugin since MySQL 8.0 is **`caching_sha2_password`**, a SHA-256 challenge-response with a server-side cache of verified credentials for a fast path; its slow path (cache miss) transmits the password and therefore *requires* either TLS or an RSA-encrypted exchange — again, confidentiality is delegated to TLS, which MySQL negotiates by the client setting a capability flag in its handshake response and switching to TLS mid-handshake. As in PostgreSQL, there is no protocol-native symmetric cipher keyed by the auth exchange the way Firebird's `op_crypt` is.
+
+Command execution splits into a **text protocol** (`COM_QUERY`, immediate, results as text) and a **binary/prepared protocol** (`COM_STMT_PREPARE` → `COM_STMT_EXECUTE`, results in a binary row format) — the same immediate-vs-prepared split Firebird expresses with `op_exec_immediate` versus the allocate/prepare/execute opcodes.
+
+### Side by side
+
+| Dimension | **Firebird** | **PostgreSQL** | **MySQL** |
+|---|---|---|---|
+| Default port | 3050 | 5432 | 3306 |
+| Frame | 4-byte opcode + XDR fields | 1-byte type + Int32 length | 3-byte length + 1-byte sequence |
+| Byte order | Big-endian (XDR) | Big-endian | **Little-endian** |
+| Who speaks first | **Client** (`op_connect`) | Client (StartupMessage) | **Server** (HandshakeV10) |
+| Version negotiation | Client offers a *list* of protocol versions; server picks | Client states one version in StartupMessage | Capability bit-flags exchanged in handshake |
+| Default authentication | **SRP-6a** (`Srp256`, SHA-256 proof) — a PAKE | **SCRAM-SHA-256** (SASL) | **caching_sha2_password** (SHA-256 challenge/cache) |
+| Password on the wire | Never | Never | Never on fast path; on slow path only under TLS/RSA |
+| Auth yields a session key? | **Yes** — SRP `K` | No (SCRAM proof only) | No |
+| Confidentiality | **Protocol-native**: `op_crypt` Arc4/ChaCha keyed by `K` | **TLS** (SSLRequest before startup) | **TLS** (capability flag mid-handshake) |
+| Immediate query | `op_exec_immediate` | Query `'Q'` (simple) | `COM_QUERY` (0x03) |
+| Prepared query | `op_allocate_statement`/`op_prepare_statement`/`op_execute`/`op_fetch` | Parse/Bind/Describe/Execute/Sync | `COM_STMT_PREPARE`/`COM_STMT_EXECUTE` |
+| Pipelining | Deferred (lazy-send) packets | Yes (omit `Sync`) | Limited (pipelining via multi-statements/scripts) |
+| Query cancellation | `op_cancel` (async, same connection) | CancelRequest on a **new** connection (BackendKeyData) | `COM_PROCESS_KILL` / KILL on another connection |
+| Reference | [`src/remote/protocol.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/protocol.h) | [protocol docs](https://www.postgresql.org/docs/current/protocol.html) | [MariaDB KB](https://mariadb.com/kb/en/clientserver-protocol/) / [MySQL internals](https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html) |
+
+### What the contrasts reveal
+
+The single most distinctive Firebird decision is that **encryption is part of the database protocol, keyed by authentication**, whereas PostgreSQL and MySQL treat the wire as a dumb pipe and wrap it in TLS. This is a direct consequence of lineage: SRP is a *password-authenticated key exchange*, so Firebird got a shared secret "for free" from logging in and built its cipher on top of it — no certificate authority, no TLS stack, encryption available the instant authentication succeeds. The cost is that the cipher's strength is bounded by the SRP exchange (the fixed 1024-bit group and, historically, the SHA-1 proof — exactly the concern that produced `Srp256`), and that Firebird maintains its own crypto plugins rather than inheriting a hardened TLS library's. PostgreSQL and MySQL pay the operational cost of TLS (certificates, configuration) but inherit its maturity and its independence from the authentication method.
+
+The other decisions are more matters of style than substance: big- versus little-endian, client-first versus server-first, a version *list* versus a single version or capability flags. All three converged on the same two-tier query model — an immediate text path and a prepared binary path — because both are genuinely useful, and all three now offer some form of pipelining to hide round-trip latency. The authentication schemes have also converged in spirit: Firebird SRP (2011), PostgreSQL SCRAM (2017) and MySQL `caching_sha2_password` (2018) are all salted, challenge-response, password-never-on-the-wire designs that replaced older hashed-password or cleartext mechanisms — arriving at similar security goals by different cryptographic routes.
 
 ## Worked examples
 
