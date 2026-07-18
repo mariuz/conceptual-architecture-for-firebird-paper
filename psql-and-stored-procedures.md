@@ -1,0 +1,289 @@
+# PSQL, Stored Procedures and Triggers
+
+A database's **procedural language** decides how much application logic can live inside the engine — stored procedures, functions, triggers, exception handling, cursors. Firebird's is called **PSQL** (Procedural SQL). This document describes PSQL and its module types, grounded in the vendored `doc/sql.extensions/` reference set and demonstrated with working code on a live Firebird 6 server, then compares it — with side-by-side examples for the same tasks — against PostgreSQL's PL/pgSQL, MySQL's stored routines, and SQLite (which has no stored-procedure language at all).
+
+It is a companion to the [main paper](README.md) and pairs with the [SQL dialect and data types document](sql-dialect-and-types.md) (the types PSQL variables use) and the [grammar document](grammar-and-parser.md) (PSQL is part of the same grammar). External (non-PSQL) routines — UDR and plugins — are a distinct topic touched on only briefly here.
+
+**Table of Contents**
+
+* [What PSQL is](#what-psql-is)
+* [The PSQL module types](#the-psql-module-types)
+* [Selectable procedures: SUSPEND](#selectable-procedures-suspend)
+* [Triggers: DML, DDL and database](#triggers-dml-ddl-and-database)
+* [Exception handling and other features](#exception-handling-and-other-features)
+* [Worked examples (validated on Firebird 6)](#worked-examples-validated-on-firebird-6)
+* [Side-by-side: the same procedure in four systems](#side-by-side-the-same-procedure-in-four-systems)
+* [Side-by-side: the same trigger](#side-by-side-the-same-trigger)
+* [Comparison table](#comparison-table)
+* [Discussion](#discussion)
+* [Further research](#further-research)
+
+## What PSQL is
+
+PSQL is Firebird's built-in procedural extension to SQL: a block-structured language with variables, control flow (`IF`, `WHILE`, `FOR`), cursors, exception handling and transaction-aware statements, compiled — like every request — to **BLR** and executed by the engine (see the [architecture comparison](architecture-comparison.md#firebird-recap) and [grammar document](grammar-and-parser.md)). It is a *single, dedicated* in-engine language: unlike PostgreSQL, Firebird does not host multiple procedural languages in the server; logic that PSQL cannot express is written as an external **UDR** routine instead.
+
+Every PSQL body shares the same shape: an optional variable-declaration section, then a `BEGIN ... END` block, with `:variable` referencing PSQL variables inside SQL statements.
+
+## The PSQL module types
+
+```mermaid
+flowchart TB
+    PSQL["PSQL — compiled to BLR, run in-engine"]
+    PSQL --> EP["executable procedure<br/>EXECUTE PROCEDURE"]
+    PSQL --> SP["selectable procedure<br/>SELECT ... FROM proc (SUSPEND)"]
+    PSQL --> FN["stored function<br/>(scalar, FB3+)"]
+    PSQL --> TR["triggers<br/>DML · DDL · database-event"]
+    PSQL --> PK["packages<br/>header + body (FB3+)"]
+    PSQL --> EB["EXECUTE BLOCK<br/>anonymous inline PSQL"]
+    PSQL --> SR["sub-procedures / sub-functions<br/>(local to a module)"]
+```
+
+_Figure 1: PSQL module types — procedures (executable and selectable), functions, triggers, packages, anonymous blocks and local subroutines_
+
+- **Executable procedure** — called with `EXECUTE PROCEDURE`; may take inputs and return a single set of output parameters.
+- **Selectable procedure** — queried with `SELECT ... FROM proc(args)`; streams a result set via `SUSPEND` (see below).
+- **Stored function** (FB3+) — returns a scalar with `RETURN`; usable in expressions.
+- **Triggers** — fire on DML, DDL or database events.
+- **Packages** (FB3+) — a header declaring procedures/functions and a body implementing them, grouping related routines with a public/private boundary (an Oracle-style feature).
+- **`EXECUTE BLOCK`** — an anonymous PSQL block run ad hoc, as if it were a procedure body inline in a query.
+- **Sub-procedures / sub-functions** — routines declared locally inside another PSQL module.
+
+## Selectable procedures: SUSPEND
+
+Firebird's most distinctive PSQL feature is the **selectable procedure**: a procedure that produces a *result set* you `SELECT` from, one row at a time, using `SUSPEND` to yield each row. The engine drives it like a table:
+
+```sql
+CREATE PROCEDURE raises (pct NUMERIC(5,2))
+RETURNS (id INTEGER, name VARCHAR(30), new_salary NUMERIC(10,2))
+AS
+BEGIN
+  FOR SELECT id, name, salary FROM emp INTO :id, :name, :new_salary DO
+  BEGIN
+    new_salary = new_salary * (1 + pct/100);
+    SUSPEND;              -- emit this row to the caller
+  END
+END
+```
+
+`SELECT * FROM raises(10)` then returns a computed row per employee. This turns a procedure into a parameterized, composable view — you can join it, filter it, order it. PostgreSQL expresses the same idea with set-returning functions (`RETURNS SETOF ... RETURN NEXT/RETURN QUERY`); MySQL cannot (a MySQL procedure emits a result set only as a side effect of a bare `SELECT`, not composably); SQLite has no equivalent.
+
+## Triggers: DML, DDL and database
+
+Firebird triggers are unusually broad. Beyond ordinary row triggers, it fires on schema changes and on connection/transaction lifecycle events:
+
+```mermaid
+flowchart TB
+    subgraph DML["DML triggers (per row)"]
+        D1["BEFORE / AFTER"]
+        D2["INSERT / UPDATE / DELETE"]
+        D3["universal: INSERT OR UPDATE OR DELETE<br/>with INSERTING/UPDATING/DELETING"]
+        D4["POSITION n (fire order)"]
+    end
+    subgraph DDL["DDL triggers"]
+        E1["BEFORE/AFTER CREATE/ALTER/DROP <object>"]
+    end
+    subgraph DBT["Database (event) triggers"]
+        F1["ON CONNECT / DISCONNECT"]
+        F2["ON TRANSACTION START / COMMIT / ROLLBACK"]
+    end
+```
+
+_Figure 2: Firebird trigger kinds — row-level DML (with universal multi-action and POSITION), DDL triggers, and database-event triggers_
+
+- **DML triggers** — `BEFORE`/`AFTER` `INSERT`/`UPDATE`/`DELETE`, with the `NEW.` and `OLD.` context records. **Universal triggers** (`INSERT OR UPDATE OR DELETE`) handle several actions in one body using the `INSERTING`/`UPDATING`/`DELETING` booleans, and **`POSITION n`** orders multiple triggers on the same event.
+- **DDL triggers** ([`README.ddl_triggers.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.ddl_triggers.txt)) — fire on `CREATE`/`ALTER`/`DROP` of objects, for schema-change auditing or policy enforcement.
+- **Database triggers** ([`README.db_triggers.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.db_triggers.txt)) — fire `ON CONNECT`, `ON DISCONNECT`, and on transaction `START`/`COMMIT`/`ROLLBACK` — e.g. to set up session context or log connections. PostgreSQL has DDL/event triggers but not connection triggers in core; MySQL and SQLite have neither.
+
+## Exception handling and other features
+
+- **Custom exceptions** — `CREATE EXCEPTION name 'message'`, raised with `EXCEPTION name` (optionally with a runtime message), and caught with `WHEN <condition> DO` blocks that can match a named exception, a SQLCODE/GDSCODE/SQLSTATE, or `ANY`. `WHEN ... DO` can retry, log, or re-raise.
+- **Cursors** — explicit `DECLARE ... CURSOR`, `FOR SELECT` loops, scrollable cursors, and cursor variables.
+- **Autonomous transactions** — `IN AUTONOMOUS TRANSACTION DO ...` runs a nested unit that commits independently (audit rows that survive an outer rollback) — see the [transactions document](transactions-and-concurrency.md#savepoints-explicit-locks-and-autonomous-transactions).
+- **`RETURNING`** — DML inside PSQL (and at the SQL level) can return generated values (`INSERT ... RETURNING id INTO :var`).
+- **Stack traces** — uncaught exceptions carry a PSQL stack trace (`At procedure "…" line: N, col: M`), shown in the exception demo below.
+
+## Worked examples (validated on Firebird 6)
+
+The following were created and run on a live server. An **executable procedure** with a custom exception and `RETURNING`:
+
+```sql
+CREATE EXCEPTION low_salary 'salary below minimum';
+
+CREATE PROCEDURE hire (p_name VARCHAR(30), p_salary NUMERIC(10,2))
+RETURNS (new_id INTEGER)
+AS
+BEGIN
+  IF (p_salary < 1000) THEN EXCEPTION low_salary;
+  INSERT INTO emp (name, salary) VALUES (:p_name, :p_salary) RETURNING id INTO :new_id;
+END
+```
+
+A **BEFORE INSERT trigger** for audit, and a **package** with a function:
+
+```sql
+CREATE TRIGGER emp_bi BEFORE INSERT ON emp AS
+BEGIN
+  INSERT INTO audit_log VALUES (CURRENT_TIMESTAMP, 'insert emp ' || COALESCE(NEW.name,'?'));
+END;
+
+CREATE PACKAGE hr AS BEGIN
+  FUNCTION fulltime_bonus(sal NUMERIC(10,2)) RETURNS NUMERIC(10,2);
+END;
+CREATE PACKAGE BODY hr AS BEGIN
+  FUNCTION fulltime_bonus(sal NUMERIC(10,2)) RETURNS NUMERIC(10,2) AS
+  BEGIN
+    RETURN sal * 0.10;
+  END
+END;
+```
+
+Exercising them produced (real output):
+
+```text
+EXECUTE PROCEDURE hire('Ada', 5000);      -- NEW_ID = 1
+EXECUTE PROCEDURE hire('Grace', 6000);    -- NEW_ID = 2
+
+SELECT * FROM raises(10);                  -- Ada 5500.00 / Grace 6600.00  (selectable proc)
+SELECT name, hr.fulltime_bonus(salary) FROM emp;  -- Ada 500.00 / Grace 600.00  (package fn)
+SELECT count(*) FROM audit_log;           -- 2   (trigger fired twice)
+
+EXECUTE PROCEDURE hire('Poorpay', 500);   -- raises the exception:
+--   SQLSTATE = HY000, exception 1, "PUBLIC"."LOW_SALARY", salary below minimum
+--   At procedure "PUBLIC"."HIRE" line: 6, col: 29
+```
+
+Every feature worked as written: the selectable procedure streamed computed rows, the trigger audited each insert, the package function evaluated in a `SELECT`, and the exception propagated with a schema-qualified (FB6 `PUBLIC`) stack trace.
+
+## Side-by-side: the same procedure in four systems
+
+The `hire` procedure — insert an employee, reject a too-low salary, return the new id — in each system's language:
+
+**Firebird (PSQL):**
+
+```sql
+CREATE PROCEDURE hire (p_name VARCHAR(30), p_salary NUMERIC(10,2))
+RETURNS (new_id INTEGER) AS
+BEGIN
+  IF (p_salary < 1000) THEN EXCEPTION low_salary;
+  INSERT INTO emp (name, salary) VALUES (:p_name, :p_salary) RETURNING id INTO :new_id;
+END
+```
+
+**PostgreSQL (PL/pgSQL):**
+
+```sql
+CREATE FUNCTION hire(p_name text, p_salary numeric) RETURNS integer AS $$
+DECLARE new_id integer;
+BEGIN
+  IF p_salary < 1000 THEN RAISE EXCEPTION 'salary below minimum'; END IF;
+  INSERT INTO emp (name, salary) VALUES (p_name, p_salary) RETURNING id INTO new_id;
+  RETURN new_id;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+**MySQL (SQL/PSM):**
+
+```sql
+DELIMITER //
+CREATE PROCEDURE hire(IN p_name VARCHAR(30), IN p_salary DECIMAL(10,2), OUT new_id INT)
+BEGIN
+  IF p_salary < 1000 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'salary below minimum';
+  END IF;
+  INSERT INTO emp (name, salary) VALUES (p_name, p_salary);
+  SET new_id = LAST_INSERT_ID();
+END //
+DELIMITER ;
+```
+
+**SQLite:** *not possible* — SQLite has no stored-procedure language. The logic must live in the application, or be approximated with a `BEFORE INSERT` trigger that `RAISE(ABORT, ...)`s on a low salary (validation only, no return value).
+
+The shapes rhyme (declare, guard-with-exception, insert-returning) but differ in detail: Firebird returns via `RETURNS (...)` output parameters, PL/pgSQL via a function `RETURN`, MySQL via an `OUT` parameter + `LAST_INSERT_ID()`. Firebird and PL/pgSQL both have `INSERT ... RETURNING`; MySQL does not and uses `LAST_INSERT_ID()`.
+
+## Side-by-side: the same trigger
+
+An audit trigger that logs each insert:
+
+**Firebird:**
+
+```sql
+CREATE TRIGGER emp_bi BEFORE INSERT ON emp AS
+BEGIN
+  INSERT INTO audit_log VALUES (CURRENT_TIMESTAMP, 'insert ' || NEW.name);
+END;
+```
+
+**PostgreSQL** (a trigger *function* plus a `CREATE TRIGGER` binding — PostgreSQL's two-step model):
+
+```sql
+CREATE FUNCTION emp_audit() RETURNS trigger AS $$
+BEGIN
+  INSERT INTO audit_log VALUES (now(), 'insert ' || NEW.name);
+  RETURN NEW;
+END; $$ LANGUAGE plpgsql;
+CREATE TRIGGER emp_bi BEFORE INSERT ON emp FOR EACH ROW EXECUTE FUNCTION emp_audit();
+```
+
+**MySQL:**
+
+```sql
+CREATE TRIGGER emp_bi BEFORE INSERT ON emp FOR EACH ROW
+  INSERT INTO audit_log VALUES (NOW(), CONCAT('insert ', NEW.name));
+```
+
+**SQLite:**
+
+```sql
+CREATE TRIGGER emp_bi AFTER INSERT ON emp
+BEGIN
+  INSERT INTO audit_log VALUES (datetime('now'), 'insert ' || NEW.name);
+END;
+```
+
+All four support row triggers with `NEW`/`OLD`, but note PostgreSQL's distinctive **two-object model** (a reusable trigger *function* bound by `CREATE TRIGGER`), where Firebird, MySQL and SQLite put the body directly in the trigger. SQLite's trigger body is limited to SQL statements (no variables or control flow); Firebird's and PostgreSQL's are full procedural bodies.
+
+## Comparison table
+
+| Feature | **Firebird (PSQL)** | **PostgreSQL** | **MySQL** | **SQLite** |
+|---|---|---|---|---|
+| Procedural language | PSQL (built-in) | PL/pgSQL (+ PL/Python, PL/Perl, …) | SQL/PSM | **None** |
+| Stored procedures | Yes (executable) | Yes ([`CREATE PROCEDURE`](https://www.postgresql.org/docs/current/sql-createprocedure.html), v11+) | Yes | No |
+| Stored functions | Yes (FB3+) | Yes (rich) | Yes | App-defined C functions only |
+| Result-set procedure | **Selectable proc (`SUSPEND`)** | SETOF functions / `RETURN QUERY` | Result set via bare `SELECT` | No |
+| Packages | **Yes** (header + body) | No (schemas/extensions instead) | No | No |
+| Anonymous block | `EXECUTE BLOCK` | `DO` | No | No |
+| DML triggers | BEFORE/AFTER, universal, POSITION | BEFORE/AFTER/INSTEAD OF, row/statement | BEFORE/AFTER row | BEFORE/AFTER/INSTEAD OF row |
+| DDL triggers | **Yes** | Event triggers | No | No |
+| Connection/tx triggers | **Yes** (database triggers) | No (core) | No | No |
+| Trigger model | Body in trigger | **Function + binding** | Body in trigger | Body (SQL only) in trigger |
+| Exception handling | `EXCEPTION` + `WHEN...DO` | `RAISE` + `EXCEPTION` block | `SIGNAL` + `DECLARE HANDLER` | `RAISE()` in triggers only |
+| Autonomous tx | Yes | Via extension/dblink | No | No |
+| Multiple languages | No (UDR for external) | **Yes** (pluggable PLs) | No | No (C extensions) |
+
+## Discussion
+
+**Firebird is one of the most capable in-engine procedural platforms — with two standout features.** Its **selectable procedures** turn a procedure into a composable, parameterized result set (join it, filter it) in a way only PostgreSQL's set-returning functions match and MySQL and SQLite cannot; and its **packages** bring Oracle-style grouping with a public/private boundary that neither PostgreSQL nor MySQL offers natively. Add DDL and database (connection/transaction) triggers, and Firebird lets you push more kinds of logic into the engine than any of the three comparators except in PostgreSQL's one dimension below.
+
+**PostgreSQL's differentiator is pluralism, not any single feature.** It hosts *many* procedural languages (PL/pgSQL, PL/Python, PL/Perl, PL/v8, …) and uses a two-object trigger model (reusable trigger functions), which is more flexible for sharing logic across triggers. Where Firebird gives you one deep built-in language plus external UDR, PostgreSQL gives you a marketplace of in-engine languages. Both are valid answers to "how much logic belongs in the database" — Firebird bets on a single strong language, PostgreSQL on extensibility (a theme running through the whole [architecture comparison](architecture-comparison.md#discussion-what-the-contrasts-illuminate)).
+
+**MySQL is competent but conservative, and SQLite opts out entirely.** MySQL's SQL/PSM routines cover the basics (procedures, functions, `SIGNAL`/`HANDLER` error handling, row triggers) but lack packages, selectable procedures, `RETURNING`, and DDL/connection triggers, and historically restricted triggers more than the others. SQLite has *no* procedural language at all — only SQL-only triggers — which is entirely consistent with its embedded, application-owns-the-logic design (see the [embedded comparison](embedded-architecture-comparison.md)): the application *is* the procedural layer. The split is the recurring one — server databases invest in in-engine logic; the embedded library deliberately does not.
+
+## Further research
+
+**Firebird**
+
+- [`doc/sql.extensions/`](https://github.com/FirebirdSQL/firebird/tree/master/doc/sql.extensions) — the PSQL feature set, including [`README.packages.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.packages.txt), [`README.execute_block`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.execute_block), [`README.exception_handling`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.exception_handling), [`README.universal_triggers`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.universal_triggers), [`README.ddl_triggers.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.ddl_triggers.txt), [`README.db_triggers.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.db_triggers.txt), [`README.subroutines.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.subroutines.txt), [`README.autonomous_transactions.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.autonomous_transactions.txt).
+- The [SQL dialect and data types document](sql-dialect-and-types.md) and the [transactions document](transactions-and-concurrency.md) for the types and transaction semantics PSQL uses.
+
+**PostgreSQL**
+
+- [PL/pgSQL](https://www.postgresql.org/docs/current/plpgsql.html), [Control structures](https://www.postgresql.org/docs/current/plpgsql-control-structures.html), [`CREATE PROCEDURE`](https://www.postgresql.org/docs/current/sql-createprocedure.html), [Triggers](https://www.postgresql.org/docs/current/triggers.html), [Event triggers](https://www.postgresql.org/docs/current/event-triggers.html), [Server programming](https://www.postgresql.org/docs/current/xproc.html).
+
+**MySQL**
+
+- [Stored routines](https://dev.mysql.com/doc/refman/8.4/en/stored-routines.html), [`CREATE PROCEDURE`](https://dev.mysql.com/doc/refman/8.4/en/create-procedure.html), [Triggers](https://dev.mysql.com/doc/refman/8.4/en/triggers.html), [`DECLARE ... HANDLER`](https://dev.mysql.com/doc/refman/8.4/en/declare-handler.html); MariaDB's [stored procedures](https://mariadb.com/kb/en/stored-procedures/).
+
+**SQLite**
+
+- [`CREATE TRIGGER`](https://sqlite.org/lang_createtrigger.html), [Application-defined functions](https://sqlite.org/appfunc.html), [Core functions](https://sqlite.org/lang_corefunc.html) — the extent of SQLite's in-database logic.
