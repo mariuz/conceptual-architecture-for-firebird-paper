@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-seven companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-eight companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -43,6 +43,7 @@ flowchart TB
         F1["firebird-wire-protocol"]
         F2["client-apis-and-drivers"]
         F3["connection-pooling"]
+        F4["firebird-events"]
     end
     subgraph T7["⑦ Operations"]
         G1["deployment-and-operations"]
@@ -95,6 +96,7 @@ Getting from an application to the engine.
 - **[The Firebird 6 Wire Protocol and SRP Authentication](firebird-wire-protocol.md)** — the on-the-wire protocol byte-by-byte, the SRP handshake and its deviations from the RFCs, wire encryption, and a protocol comparison. Includes runnable Node.js and C++ [`samples/`](samples/).
 - **[Client APIs and Drivers Across Languages](client-apis-and-drivers.md)** — the OO and ISC C APIs, and the native-binding vs pure-protocol driver split.
 - **[Connection Pooling and External Connections](connection-pooling.md)** — inbound vs outbound pooling, the built-in EDS pool, and the PgBouncer/ProxySQL contrast.
+- **[The Event Subsystem](firebird-events.md)** — `POST_EVENT` as commit-time deferred work, the shared-memory event manager, one-shot interests and count deltas, the auxiliary wire connection (`RemoteAuxPort`), a live C++ demo ([`samples/events_demo.cpp`](samples/events_demo.cpp)), and the `LISTEN/NOTIFY` comparison. The one channel where the server calls the client.
 
 ### ⑦ Operations
 Running Firebird in production.

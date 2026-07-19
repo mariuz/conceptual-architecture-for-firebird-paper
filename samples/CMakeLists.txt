@@ -28,3 +28,11 @@ target_link_libraries(client_test PRIVATE "${FBCLIENT_LIBRARY}")
 add_executable(protocol_client protocol_client.cpp)
 target_include_directories(protocol_client PRIVATE "${FIREBIRD_INCLUDE_DIR}")
 target_link_libraries(protocol_client PRIVATE "${FBCLIENT_LIBRARY}")
+
+# Event-notification demo (queEvents/POST_EVENT, commit-time delivery);
+# accompanies ../firebird-events.md.
+add_executable(events_demo events_demo.cpp)
+target_include_directories(events_demo PRIVATE "${FIREBIRD_INCLUDE_DIR}")
+target_link_libraries(events_demo PRIVATE "${FBCLIENT_LIBRARY}")
+find_package(Threads REQUIRED)
+target_link_libraries(events_demo PRIVATE Threads::Threads)

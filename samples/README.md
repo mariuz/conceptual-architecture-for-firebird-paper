@@ -21,6 +21,15 @@ and later, including the Firebird 6 development branch.
   `nodejs/query.js` and is discussed in
   [../firebird-wire-protocol.md](../firebird-wire-protocol.md).
 
+- **`events_demo.cpp`** — the event-notification round trip: a listener
+  attachment registers `'demo_event'` with `IAttachment::queEvents()`
+  (opening the auxiliary connection) while a poster attachment runs
+  `POST_EVENT` blocks, proving the three defining semantics — rollback
+  swallows posts, delivery happens at commit, and same-name posts in one
+  transaction coalesce into a count. Set `EVENTS_DEMO_PAUSE_MS` to hold
+  the listener open and observe the extra TCP connection. Discussed in
+  [../firebird-events.md](../firebird-events.md).
+
 - **`nodejs/`** — the same connection from Node.js, two ways:
   `query.js` uses the pure-JavaScript **node-firebird** driver, and
   `srp-handshake.js` re-implements the wire protocol and the Srp256/Arc4
