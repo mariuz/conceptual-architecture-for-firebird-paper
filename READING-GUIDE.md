@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-eight companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-nine companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -24,6 +24,7 @@ flowchart TB
         B5["blob-handling"]
         B6["temporal-and-time-zones"]
         B7["numeric-and-precision-arithmetic"]
+        B8["catalog-bootstrap"]
     end
     subgraph T3["③ Query processing"]
         C1["grammar-and-parser"]
@@ -74,6 +75,7 @@ How bytes and types are laid out on disk.
 - **[BLOB and Large-Object Handling](blob-handling.md)** — the separate-storage model (record holds only a blob id), multi-level page addressing, subtypes and text charsets, segmented/stream access, and `BLOB_APPEND`/`RDB$BLOB_UTIL`.
 - **[Temporal Features and Time-Zone Handling](temporal-and-time-zones.md)** — the FB4 `WITH TIME ZONE` types (stored as UTC + a zone id that *preserves the named zone*), the session time zone, `AT TIME ZONE`, DST rules, and `DATEADD`/`DATEDIFF`.
 - **[Numeric and Exact-Precision Arithmetic](numeric-and-precision-arithmetic.md)** — exact integers (`INT128`), scaled-integer `NUMERIC`, binary vs decimal floating point, and `DECFLOAT` (IEEE decimal64/128) with `SET DECFLOAT ROUND`/`TRAPS`.
+- **[How the Engine Bootstraps Its Own Catalog](catalog-bootstrap.md)** — the chicken-and-egg of reading `RDB$RELATIONS` before knowing its format, cut by two fixed points: system-table formats compiled into the binary (`ini.epp`, `relations.h`) and one header word (`hdr_PAGES`) anchoring the self-describing `RDB$PAGES`. With a hex-level walk of a fresh database and the `initdb`/BKI and SQLite-page-1 comparison. The prequel to the [request trace](request-lifecycle-code-trace.md).
 
 ### ③ Query processing
 Text to results — the query lifecycle.
