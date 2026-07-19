@@ -18,6 +18,7 @@ It builds on the [grammar and parser document](grammar-and-parser.md) (what happ
 * [Stage 9: commit — deferred work and the write to disk](#stage-9-commit--deferred-work-and-the-write-to-disk)
 * [Stage 10: unlocking and the response path](#stage-10-unlocking-and-the-response-path)
 * [The full round trip as a sequence](#the-full-round-trip-as-a-sequence)
+* [The DML counterpart: a simple SELECT and a join](#the-dml-counterpart-a-simple-select-and-a-join)
 * [Structure atlas](#structure-atlas)
 * [What changed since the paper](#what-changed-since-the-paper)
 * [Further research](#further-research)
@@ -260,6 +261,78 @@ sequenceDiagram
 ```
 
 _Figure 3: The complete metadata-update round trip — the paper's thirteen steps with today's function names_
+
+## The DML counterpart: a simple SELECT and a join
+
+Everything up to Stage 5 and after Stage 10 is identical for a query: the same Y-valve dispatch, the same `op_execute` packet, the same `process_packet` switch. A SELECT diverges in the middle — `prepareStatement` builds a `DsqlDmlStatement`, so `GEN_statement` **does** emit BLR, CMP compiles and optimizes it, and instead of one `executeDdl` call the server runs a **pull loop**: the client sends `op_fetch` (opcode 65), the server answers with batches of `op_fetch_response` rows. Two live examples against the `employee` database make the executor concrete.
+
+**A full table scan.** `SELECT * FROM employee` optimizes to the simplest possible record-source tree — one node:
+
+```
+PLAN ("PUBLIC"."EMPLOYEE" NATURAL)
+```
+
+`DsqlDmlRequest::openCursor` starts the request (`EXE_start`) and wraps the plan in a `Cursor`. Every row the client asks for now travels down and back up this chain:
+
+```mermaid
+sequenceDiagram
+    participant APP as application
+    participant RC as Remote client
+    participant RS as Remote server
+    participant CUR as Cursor (recsrc)
+    participant FTS as FullTableScan
+    participant VIO as VIO (MVCC)
+    participant CCH as page cache
+    participant PIO as PIO
+
+    APP->>RC: IResultSet::fetch()
+    Note over RC: rows already buffered? — return one locally
+    RC->>RS: op_fetch (asks for a batch)
+    loop one batch of rows
+        RS->>CUR: Cursor::fetchNext
+        CUR->>FTS: internalGetRecord
+        FTS->>VIO: VIO_next_record (DPM_next_all)
+        VIO->>CCH: CCH_fetch data page
+        alt page not in cache
+            CCH->>PIO: PIO_read → pread
+            PIO-->>CCH: page bytes
+        end
+        CCH-->>VIO: pag_data page
+        Note over VIO: walk record versions —<br/>return the one visible<br/>to this transaction
+        VIO-->>CUR: record into req_rpb
+        RS-->>RC: op_fetch_response (row)
+    end
+    RC-->>APP: decoded row buffer
+```
+
+_Figure 4: The fetch loop for `SELECT * FROM employee` — PLAN NATURAL means `FullTableScan` pulling pages through the cache, with the Remote layers batching rows so most fetches never touch the wire_
+
+Three details worth noticing. First, batching: the server pipelines many rows per `op_fetch` round trip (the client's `Rsr` tracks them in `rsr_rows_pending`/`rsr_msgs_waiting`), so the sequence's inner loop usually runs entirely server-side. Second, `FullTableScan::internalGetRecord` ([`recsrc/FullTableScan.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/recsrc/FullTableScan.cpp)) delegates visibility to `VIO_next_record` — the [MVCC version walk](transactions-and-concurrency.md) happens per record, on read, with no shared lock taken on the table's rows. Third, the read path is the exact mirror of Stage 9's write path: `CCH_fetch` → (miss) → `CCH_fetch_page` → `PIO_read` → `os_utils::pread`, same `BufferDesc`, same per-OS file.
+
+**A simple join.** `SELECT e.last_name, d.department FROM employee e JOIN department d ON e.dept_no = d.dept_no` gets a two-node plan:
+
+```
+PLAN JOIN ("D" NATURAL, "E" INDEX ("PUBLIC"."RDB$FOREIGN8"))
+```
+
+The [optimizer](query-optimizer-and-execution.md) chose a **nested-loop join**: scan `DEPARTMENT` naturally (it's tiny), and for each department probe `EMPLOYEE` through `RDB$FOREIGN8` — the index that enforces the foreign key. The record-source tree and the per-row mechanics:
+
+```mermaid
+flowchart TD
+    CUR["Cursor::fetchNext"] --> NLJ["NestedLoopJoin<br/>internalGetRecord"]
+    NLJ -->|"outer — advance<br/>one row at a time"| FTS["FullTableScan on DEPARTMENT<br/>(PLAN — D NATURAL)"]
+    NLJ -->|"inner — re-opened for<br/>every outer row"| BTS["BitmapTableScan on EMPLOYEE<br/>(PLAN — E INDEX RDB$FOREIGN8)"]
+    FTS --> VIO1["VIO_next_record → DPM_next<br/>next visible DEPARTMENT record"]
+    BTS -->|"at open"| EVL["EVL_bitmap → BTR_evaluate<br/>descend FK index B-tree with<br/>key = current dept_no,<br/>set matching record numbers<br/>in a RecordBitmap"]
+    BTS -->|"per row"| GET["bitmap->getNext →<br/>VIO_get by record number<br/>(MVCC visibility check)"]
+    VIO1 --> CCH["CCH_fetch / PIO_read<br/>(pointer, data, index pages<br/>through the same cache)"]
+    EVL --> CCH
+    GET --> CCH
+```
+
+_Figure 5: The nested-loop join as a record-source tree — the outer `FullTableScan` drives the loop, and each outer row re-opens the inner `BitmapTableScan`, whose open builds a fresh bitmap from the B-tree before records are fetched by number_
+
+The division of labor in the inner branch is the signature of Firebird's [index architecture](indexing-and-full-text-search.md): the B-tree walk (`BTR_evaluate` in [`btr.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/btr.cpp)) produces only a **bitmap of record numbers**, and `BitmapTableScan::internalGetRecord` then fetches each candidate with `VIO_get` — index pages say *where records might be*, but visibility is always decided on the record itself. This split is also what lets the optimizer AND/OR multiple indexes into one bitmap before touching any data page. Had the tables been large and unindexed, the same tree shape would appear with a `HashJoin` node instead (FB5+); `EXE_looper`, `Cursor`, and the whole fetch loop above are indifferent to which operators fill the tree.
 
 ## Structure atlas
 
