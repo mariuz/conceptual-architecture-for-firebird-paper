@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-six companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of twenty-seven companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -33,6 +33,7 @@ flowchart TB
     end
     subgraph T4["④ Transactions"]
         D1["transactions-and-concurrency"]
+        D2["garbage-collection-and-sweep"]
     end
     subgraph T5["⑤ Programmability"]
         E1["psql-and-stored-procedures"]
@@ -82,6 +83,7 @@ Text to results — the query lifecycle.
 
 ### ④ Transactions and concurrency
 - **[Transactions, Concurrency and Isolation Levels](transactions-and-concurrency.md)** — the multi-generational (no-undo MVCC) model, the three isolation levels, commit-order snapshots, and conflict handling, with live concurrent-transaction demos.
+- **[Garbage Collection, Sweep and the Record-Version Lifecycle](garbage-collection-and-sweep.md)** — how versions *die*: the oldest-snapshot barrier, cooperative/background/intermediate GC, sweep and OIT advancement, the four header counters — with live demos (a pinned snapshot, a rolled-back stump, `gfix -sweep`) and the VACUUM/InnoDB-purge comparison. Completes the MGA arc.
 
 ### ⑤ Programmability
 Extending the engine, in-language and in native code.
