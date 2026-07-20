@@ -141,7 +141,7 @@ The header's version block is the most eloquent thing in the file:
 //#define blr_version6		(unsigned char)6
 ```
 
-Version 6 is written down and commented out. In the span covered by this collection — Firebird 3 through 6 — the language gained `BOOLEAN`, `INT128`, `DECFLOAT`, `TIME`/`TIMESTAMP WITH TIME ZONE`, window frames, `WITHIN GROUP` ordered-set aggregates, packages, and in FB6 [schemas](sql-dialect-and-types.md). None of it required a new BLR version.
+Version 6 is written down and commented out. In the span covered by this collection — Firebird 3 through 6 — the language gained `BOOLEAN`, `INT128`, `DECFLOAT`, `TIME`/`TIMESTAMP WITH TIME ZONE`, window frames, `WITHIN GROUP` ordered-set aggregates, packages, and in FB6 [schemas](schemas-and-name-resolution.md). None of it required a new BLR version — in the schema case because stored BLR [carries no schema at all](schemas-and-name-resolution.md#why-blr-did-not-need-a-new-version), resolving unqualified names against the owning object's schema at parse time.
 
 The mechanism is **append-only opcode allocation**. New capabilities become new opcodes at the high end of the number space, and existing opcodes never change meaning or operand layout. The evidence is visible just by sorting the header numerically: the highest allocations are `blr_gen_id3` (231), `blr_default2` (232), `blr_current_schema` (233), `blr_flags` (234), `blr_within_group_order` (235), `blr_package_reference` (236), `blr_invoke_agg_function` (237). `blr_current_schema` is a Firebird **6** feature sitting quietly at opcode 233 in a version-5 stream.
 
