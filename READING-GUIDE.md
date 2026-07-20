@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of thirty-six companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of thirty-seven companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -61,6 +61,7 @@ flowchart TB
         G6["security-architecture"]
         G7["migration-and-interoperability"]
         G8["services-api"]
+        G9["trace-and-audit"]
     end
 ```
 
@@ -123,12 +124,13 @@ Running Firebird in production.
 - **[Security Architecture](security-architecture.md)** — authentication, wire and at-rest encryption, and authorization.
 - **[Migration and Interoperability](migration-and-interoperability.md)** — version upgrades, engine-to-engine migration with type mapping, and runtime interoperability.
 - **[The Services API](services-api.md)** — the channel every other operations document quietly uses: `service_mgr`, the `services[]` dispatch table whose entry points *are* `BURP_main`/`ALICE_main`/`GSEC_main`/`main_gstat`, the `UtilSvc` seam that lets one function serve both the command line and the network, SPB→argv conversion, the 1 KB output ring buffer that blocks the worker when undrained, and the two-layer authorization model — with the operational headline proven live: a service backup writes **on the server, as the server's user**, byte-identical to the CLI's output.
+- **[Trace and Audit](trace-and-audit.md)** — the event *stream* that complements the `MON$` *snapshot*, and a case study in observing without interfering: the three-step `needs()` gate that makes a traceable site cost one branch when nobody is listening, the 23-event mask whose out-of-order tail is append-only ABI discipline, the shared-memory session registry that exists because `Classic` puts attachments in different processes, per-attachment authorization enforced by *not creating the plugin* (`TRACE_ANY_ATTACHMENT`), and — the headline — a log that never blocks the engine but **suspends its own session** when the consumer falls behind, measured live: a suspended session costs 2.555 s against a 2.611 s untraced baseline.
 
 ## Reading paths by goal
 
 - **New to Firebird's architecture** → [main paper](README.md) → [Architecture Comparison](architecture-comparison.md) → [On-Disk Structure](on-disk-structure.md) → [Transactions](transactions-and-concurrency.md) → [Query Optimizer](query-optimizer-and-execution.md).
 - **Application developer** → [SQL Dialect and Types](sql-dialect-and-types.md) → [PSQL](psql-and-stored-procedures.md) → [Client APIs](client-apis-and-drivers.md) → [Wire Protocol](firebird-wire-protocol.md) → [Internationalization](internationalization.md).
-- **DBA / operations** → [Deployment](deployment-and-operations.md) → [Monitoring & Tuning](monitoring-and-tuning.md) → [Backup & Recovery](backup-and-recovery.md) → [High Availability](high-availability.md) → [Replication](replication-architecture.md) → [Security](security-architecture.md) → [Connection Pooling](connection-pooling.md).
+- **DBA / operations** → [Deployment](deployment-and-operations.md) → [Monitoring & Tuning](monitoring-and-tuning.md) → [Backup & Recovery](backup-and-recovery.md) → [High Availability](high-availability.md) → [Replication](replication-architecture.md) → [Security](security-architecture.md) → [Connection Pooling](connection-pooling.md) → [Trace and Audit](trace-and-audit.md).
 - **Evaluating Firebird vs PostgreSQL / MySQL / SQLite** → [Architecture Comparison](architecture-comparison.md) → [Embedded Comparison](embedded-architecture-comparison.md) → [On-Disk Structure](on-disk-structure.md) → [Transactions](transactions-and-concurrency.md) → [Replication](replication-architecture.md) → [Security](security-architecture.md) (every document ends with a four-way comparison).
 - **Building a driver or protocol tool** → [Wire Protocol](firebird-wire-protocol.md) → [Client APIs](client-apis-and-drivers.md) → [Grammar and Parser](grammar-and-parser.md), with the [`samples/`](samples/).
 - **Migrating in or out** → [Migration & Interoperability](migration-and-interoperability.md) → [SQL Dialect and Types](sql-dialect-and-types.md) → [Backup & Recovery](backup-and-recovery.md).
