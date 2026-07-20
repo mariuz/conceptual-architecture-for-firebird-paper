@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of thirty-five companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of thirty-six companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -28,6 +28,7 @@ flowchart TB
         B9["page-cache-coherency"]
         B10["careful-writes-and-crash-safety"]
         B11["lock-manager"]
+        B12["threading-and-synchronization"]
     end
     subgraph T3["③ Query processing"]
         C1["grammar-and-parser"]
@@ -85,6 +86,7 @@ How bytes and types are laid out on disk.
 - **[The Page Cache and Cross-Process Coherency](page-cache-coherency.md)** — how Classic processes and embedded attachments keep private page caches coherent: the three arbitration layers (OS file lock, `LCK_database` probe, per-buffer `LCK_bdb` locks), the blocking-AST flush-and-downgrade protocol, and data traveling cache-to-cache *through the disk* — live-proven with `fb_lock_print` showing two processes sharing 106 page locks. The load-bearing use of the lock manager.
 - **[Careful Writes and Crash Safety](careful-writes-and-crash-safety.md)** — the precedence graph (`cch.cpp`'s `Precedence` blocks, `check_precedence`/`related`/`write_buffer` recursion) that lets Firebird guarantee crash-consistent files with no write-ahead log, the concrete page-ordering rules it encodes (pip → pointer page → data page, split bucket → parent, and more), the deferred header-write amortization, and the honest gaps (no page checksums, no log-based PITR) — proven live with five `kill -9`s mid-write and a `gfix`/`gbak` cleanup of the resulting orphan pages. The mechanism behind the on-disk-structure document's headline claim.
 - **[The Lock Manager and the Lock Protocol](lock-manager.md)** — the subsystem every other document reaches for, treated as a subject: the `SRQ_PTR` shared-memory arena (`lhb`/`lbl`/`lrq`/`own`/`prc`), the 7×7 compatibility matrix that *is* the entire arbitration policy, the `enqueue` path and its three-way `lck_wait` contract, blocking-AST delivery across process boundaries (`post_blockage` → `signal_owner` → `blocking_action_thread`, with the arena mutex released around every callback), periodic wait-for-graph deadlock detection, and a tour of all thirty-six `lck_t` series — with all three wait outcomes measured live (0.06 s conflict, 3.06 s timeout, a real deadlock caught 10 s late by the scanner).
+- **[Threading and Synchronization](threading-and-synchronization.md)** — the other half of the concurrency story, and an explanation of the `thread_db* tdbb` that opens nearly every code excerpt in this collection: what a thread carries (object stack, memory pool, four-level statistics, held latches, and a *cooperative* scheduling quantum with `SWEEP_QUANTUM = 10` "to make sweeps less disruptive"), how contexts nest, the `SyncObject` reader-writer latch whose entire state is one `AtomicCounter`, a precise latch-vs-lock table, and a census of every long-lived engine thread with its real declaration site and priority — measured live: 4 idle threads → 12 under load → **10 retained**, proving threads are pooled, plus the Cache Writer and Garbage Collector visible as named system attachments in `MON$ATTACHMENTS`.
 
 ### ③ Query processing
 Text to results — the query lifecycle.
