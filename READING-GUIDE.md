@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of thirty-three companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of thirty-four companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -58,6 +58,7 @@ flowchart TB
         G5["replication-architecture"]
         G6["security-architecture"]
         G7["migration-and-interoperability"]
+        G8["services-api"]
     end
 ```
 
@@ -117,6 +118,7 @@ Running Firebird in production.
 - **[Replication Architecture](replication-architecture.md)** — the evolution from FB3 (none) to FB4+ logical replication, with a validated setup.
 - **[Security Architecture](security-architecture.md)** — authentication, wire and at-rest encryption, and authorization.
 - **[Migration and Interoperability](migration-and-interoperability.md)** — version upgrades, engine-to-engine migration with type mapping, and runtime interoperability.
+- **[The Services API](services-api.md)** — the channel every other operations document quietly uses: `service_mgr`, the `services[]` dispatch table whose entry points *are* `BURP_main`/`ALICE_main`/`GSEC_main`/`main_gstat`, the `UtilSvc` seam that lets one function serve both the command line and the network, SPB→argv conversion, the 1 KB output ring buffer that blocks the worker when undrained, and the two-layer authorization model — with the operational headline proven live: a service backup writes **on the server, as the server's user**, byte-identical to the CLI's output.
 
 ## Reading paths by goal
 
