@@ -1,6 +1,6 @@
 # Threading and Synchronization
 
-Twenty-one documents in this collection mention threads — the [GC thread](garbage-collection-and-sweep.md), the [sweep thread](garbage-collection-and-sweep.md), the [service thread](services-api.md), the [event watcher thread](firebird-events.md), the [lock manager's blocking-action thread](lock-manager.md), [SuperServer's per-attachment threads](deployment-and-operations.md), [parallel workers](monitoring-and-tuning.md). Each document meets one thread, explains what it does, and moves on.
+Twenty-one documents in this collection mention threads — the [GC thread](garbage-collection-and-sweep.md), the [sweep thread](garbage-collection-and-sweep.md), the [service thread](services-api.md), the [event watcher thread](firebird-events.md), the [lock manager's blocking-action thread](lock-manager.md), [SuperServer's per-attachment threads](deployment-and-operations.md), [parallel workers](parallel-workers.md). Each document meets one thread, explains what it does, and moves on.
 
 And there is a second, quieter gap. Nearly every code excerpt quoted anywhere in this collection begins the same way:
 
