@@ -167,7 +167,7 @@ inline constexpr int trs_log_full = 0x0008;  // session trace log is full
 
 `trs_system` marks the **audit** session — the one the engine starts for itself at startup when `AuditTraceConfigFile` is set in `firebird.conf`. Audit and user trace are the same machinery throughout; they differ in who starts them, who may see them, and where the output goes. That is why this document does not treat them as two subsystems.
 
-[`update_sessions()`](extern/firebird/src/jrd/trace/TraceManager.cpp#L132) is the reconciliation routine that runs whenever the change counter moves. It walks the registry, keeps sessions it already knows, instantiates plugins for new ones, releases plugins for sessions that have gone — and then rebuilds `trace_needs` from scratch as the union of the surviving plugins' declared interests, falling back to a hard zero when no sessions remain:
+[`update_sessions()`](extern/firebird/src/jrd/trace/TraceManager.cpp#L132) is the reconciliation routine that runs whenever the change counter moves. It walks the registry, keeps sessions it already knows, instantiates plugins for new ones, releases plugins for sessions that have gone — and then rebuilds `trace_needs` from scratch as the union of the surviving plugins' declared interests, [falling back to a hard zero](extern/firebird/src/jrd/trace/TraceManager.cpp#L196) when no sessions remain:
 
 ```cpp
 // nothing to trace, clear needs
@@ -181,7 +181,7 @@ else
 }
 ```
 
-One line in its session-scanning loop matters more than it looks:
+[One line](extern/firebird/src/jrd/trace/TraceManager.cpp#L155) in its session-scanning loop matters more than it looks:
 
 ```cpp
 if ((session.ses_flags & trs_active) && !(session.ses_flags & trs_log_full))
@@ -203,7 +203,7 @@ The obvious answer — block the producer until there is room — is the answer 
 
 Trace refuses that answer, and refuses it three times over in about forty lines.
 
-First, [`TraceLog::write()`](extern/firebird/src/jrd/trace/TraceLog.cpp#L142) never waits. If the reader has gone entirely, it discards and reports success:
+First, [`TraceLog::write()`](extern/firebird/src/jrd/trace/TraceLog.cpp#L153) never waits. If the reader has gone entirely, it discards and reports success:
 
 ```cpp
 // if reader already gone, don't write anything
@@ -252,7 +252,7 @@ Setting `trs_log_full` bumps the registry's change counter. Every attachment's n
 
 And then the closing comment: `// report successful write`. The function returns `size` — a lie, told deliberately, so that a full log never surfaces as an error to whatever statement was unlucky enough to be executing when the buffer filled.
 
-Recovery is symmetric. When `fbtracemgr` drains enough that a quarter of the buffer is free (`FREE_SPACE_THRESHOLD = INIT_LOG_SIZE / 4`), [`read()`](extern/firebird/src/jrd/trace/TraceLog.cpp#L95) clears `FLAG_FULL`; [`TraceService.cpp`](extern/firebird/src/jrd/trace/TraceService.cpp#L313) then clears `trs_log_full` in the registry, the change counter moves again, and attachments re-attach their plugins.
+Recovery is symmetric. When `fbtracemgr` drains enough that a quarter of the buffer is free (`FREE_SPACE_THRESHOLD = INIT_LOG_SIZE / 4`), [`read()`](extern/firebird/src/jrd/trace/TraceLog.cpp#L136) clears `FLAG_FULL`; [`TraceService.cpp`](extern/firebird/src/jrd/trace/TraceService.cpp#L313) then clears `trs_log_full` in the registry, the change counter moves again, and attachments re-attach their plugins.
 
 ```mermaid
 stateDiagram-v2
@@ -287,7 +287,7 @@ The trade-off is stated honestly: **you can lose trace records.** Firebird decid
 
 Trace shows you other people's SQL, with parameter values. It is a privileged channel, and the code asks two separate questions.
 
-**Who may manage a session?** [`TraceSvcJrd::checkPrivileges()`](extern/firebird/src/jrd/trace/TraceService.cpp#L343) governs `-list`, `-stop`, `-suspend` and `-resume`. You may manage your own sessions; `SYSDBA` and the `RDB$ADMIN` role may manage anyone's. The code carries a frank admission that this is coarser than the rest of Firebird's authorization model:
+**Who may manage a session?** [`TraceSvcJrd::checkPrivileges()`](extern/firebird/src/jrd/trace/TraceService.cpp#L343) governs `-list`, `-stop`, `-suspend` and `-resume`. You may manage your own sessions; `SYSDBA` and the `RDB$ADMIN` role may manage anyone's. The code carries a [frank admission](extern/firebird/src/jrd/trace/TraceService.cpp#L379) that this is coarser than the rest of Firebird's authorization model:
 
 ```cpp
 // TODO: add privileges for list\manage sessions and check it here
@@ -295,7 +295,7 @@ if (s_user == DBA_USER_NAME || t_role == ADMIN_ROLE || s_user == session.ses_use
     return true;
 ```
 
-**Whose attachments may a session observe?** This is enforced somewhere more interesting — in [`update_session()`](extern/firebird/src/jrd/trace/TraceManager.cpp#L207), at the moment a plugin would be instantiated for a given attachment:
+**Whose attachments may a session observe?** This is enforced somewhere more interesting — in [`update_session()`](extern/firebird/src/jrd/trace/TraceManager.cpp#L215), at the moment a plugin would be instantiated for a given attachment:
 
 ```cpp
 // if this session is not from administrator, it may trace connections
@@ -317,7 +317,7 @@ Trace is one of the ten plugin types listed in [extensibility](extensibility.md)
 
 The interface is wide but shallow: `trace_attach`, `trace_detach`, `trace_transaction_start`, `trace_dsql_execute` and the rest, each receiving read-only `ITrace*` accessor objects (`ITraceDatabaseConnection`, `ITraceSQLStatement` with `getText()`/`getPlan()`/`getExplainedPlan()`/`getPerf()`, `ITraceTransaction`, `ITraceSweepInfo`). A plugin cannot change what the engine does; it can only be told about it. Each method returns a boolean, and `false` means "I failed."
 
-What the engine does with that `false` is the design's last refusal. From `check_result()`:
+What the engine does with that `false` is the design's last refusal. From [`check_result()`](extern/firebird/src/jrd/trace/TraceManager.cpp#L73):
 
 ```cpp
 gds__log("Trace plugin %s returned error on call %s.\n\tError details: %s",
