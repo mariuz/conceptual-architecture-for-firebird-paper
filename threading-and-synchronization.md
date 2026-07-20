@@ -101,7 +101,7 @@ public:
 This one struct explains why `tdbb` is threaded through every function signature. It carries:
 
 - **The object stack** — database, attachment, transaction, request. Rather than passing four parameters everywhere, the engine passes one context that knows all four. A function deep in the storage layer can ask "which transaction am I serving?" without the call chain having handed it down.
-- **The memory pool.** `defaultPool` is why allocation inside the engine is implicitly per-context; `PAR_parse`'s `MemoryPool& pool = *tdbb->getDefaultPool()` from the [BLR document](blr-intermediate-language.md) is the pattern everywhere.
+- **The memory pool.** `defaultPool` is why allocation inside the engine is implicitly per-context; `PAR_parse`'s `MemoryPool& pool = *tdbb->getDefaultPool()` from the [BLR document](blr-intermediate-language.md) is the pattern everywhere. What that pool *is* — a node in a hierarchy that mirrors the object tree, freed in bulk rather than per object, and swapped by the RAII `ContextPoolHolder` this field cooperates with — is the subject of [memory management](memory-management.md).
 - **Statistics at four levels simultaneously** — `reqStat`, `traStat`, `attStat`, `dbbStat`. Every counted operation increments all four, which is how [`MON$` tables](monitoring-and-tuning.md) can report I/O per request *and* per transaction *and* per attachment *and* per database without separate accounting passes.
 - **The status vector** — thread-local error state, which is why the engine can use a C-style status vector without it being a global.
 - **`tdbb_bdbs`** — the buffers this thread currently holds latched. The destructor asserts, in debug builds, that it is empty:
