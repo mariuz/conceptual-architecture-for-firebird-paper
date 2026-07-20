@@ -1,6 +1,6 @@
 # Reading Guide: The Firebird Architecture Collection
 
-This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of thirty-two companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
+This repository grew from a single 2005 student paper on Firebird's conceptual architecture into a **collection of thirty-three companion documents** that dissect Firebird 6 subsystem by subsystem and compare each with PostgreSQL, MySQL and SQLite — every claim grounded in the vendored [`extern/firebird`](extern/firebird) source and, wherever possible, verified live against a running Firebird 6 server. This guide is the map: it organizes the collection into themed tracks, offers reading paths for different goals, and draws out the ideas that recur across documents.
 
 Start with the [main paper](README.md) itself — the conceptual architecture (pipe-and-filter top level, REMOTE / DSQL / JRD / LOCK, the Y-valve, and the [evolution from Firebird 3 to 6](README.md#architectural-evolution-firebird-3-to-6)) — then follow whichever track below fits your goal.
 
@@ -27,6 +27,7 @@ flowchart TB
         B8["catalog-bootstrap"]
         B9["page-cache-coherency"]
         B10["careful-writes-and-crash-safety"]
+        B11["lock-manager"]
     end
     subgraph T3["③ Query processing"]
         C1["grammar-and-parser"]
@@ -81,6 +82,7 @@ How bytes and types are laid out on disk.
 - **[How the Engine Bootstraps Its Own Catalog](catalog-bootstrap.md)** — the chicken-and-egg of reading `RDB$RELATIONS` before knowing its format, cut by two fixed points: system-table formats compiled into the binary (`ini.epp`, `relations.h`) and one header word (`hdr_PAGES`) anchoring the self-describing `RDB$PAGES`. With a hex-level walk of a fresh database and the `initdb`/BKI and SQLite-page-1 comparison. The prequel to the [request trace](request-lifecycle-code-trace.md).
 - **[The Page Cache and Cross-Process Coherency](page-cache-coherency.md)** — how Classic processes and embedded attachments keep private page caches coherent: the three arbitration layers (OS file lock, `LCK_database` probe, per-buffer `LCK_bdb` locks), the blocking-AST flush-and-downgrade protocol, and data traveling cache-to-cache *through the disk* — live-proven with `fb_lock_print` showing two processes sharing 106 page locks. The load-bearing use of the lock manager.
 - **[Careful Writes and Crash Safety](careful-writes-and-crash-safety.md)** — the precedence graph (`cch.cpp`'s `Precedence` blocks, `check_precedence`/`related`/`write_buffer` recursion) that lets Firebird guarantee crash-consistent files with no write-ahead log, the concrete page-ordering rules it encodes (pip → pointer page → data page, split bucket → parent, and more), the deferred header-write amortization, and the honest gaps (no page checksums, no log-based PITR) — proven live with five `kill -9`s mid-write and a `gfix`/`gbak` cleanup of the resulting orphan pages. The mechanism behind the on-disk-structure document's headline claim.
+- **[The Lock Manager and the Lock Protocol](lock-manager.md)** — the subsystem every other document reaches for, treated as a subject: the `SRQ_PTR` shared-memory arena (`lhb`/`lbl`/`lrq`/`own`/`prc`), the 7×7 compatibility matrix that *is* the entire arbitration policy, the `enqueue` path and its three-way `lck_wait` contract, blocking-AST delivery across process boundaries (`post_blockage` → `signal_owner` → `blocking_action_thread`, with the arena mutex released around every callback), periodic wait-for-graph deadlock detection, and a tour of all thirty-six `lck_t` series — with all three wait outcomes measured live (0.06 s conflict, 3.06 s timeout, a real deadlock caught 10 s late by the scanner).
 
 ### ③ Query processing
 Text to results — the query lifecycle.
