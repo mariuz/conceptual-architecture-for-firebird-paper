@@ -476,7 +476,7 @@ No operator intervention, no restart, no lost attachment — the session shed it
 | **Reaches other sessions?** | Yes — server-wide, gated by `TRACE_ANY_ATTACHMENT` | Yes, once preloaded | Yes | No — one connection only |
 | **Output destination** | Server file (audit) or shared-memory ring read by a remote client (user session) | Server log file | Server file, or `performance_schema` tables | Whatever the callback does |
 | **Slow consumer** | Log fills → **session self-suspends**, engine unaffected | Log writing is synchronous; a slow log device slows backends | Audit log writing is synchronous | Callback runs inline — a slow callback slows the query |
-| **Accumulated statistics** | `MON$` + `RDB$PROFILER` (FB5) | `pg_stat_statements` | `performance_schema`, `sys` | — |
+| **Accumulated statistics** | `MON$` + [`RDB$PROFILER`](profiler.md) (FB5) | `pg_stat_statements` | `performance_schema`, `sys` | — |
 
 The genuine peer is **MySQL's audit plugin API**, which shares the essential shape: a runtime-loadable plugin, a taxonomy of event classes, and a per-plugin subscription mask so the server can skip dispatch when nothing subscribes. MySQL also has the richer accumulated-statistics story in `performance_schema`. Where Firebird differs is at the delivery end: MySQL audit plugins write where they write, synchronously, and a plugin that blocks blocks the server. Firebird interposes the shared-memory ring buffer precisely so that the consumer's problems stay the consumer's.
 
