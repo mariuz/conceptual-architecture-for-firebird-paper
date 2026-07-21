@@ -225,6 +225,12 @@ median and hypothetical rank of a 175 sale:
   region=West  median=300  rank_of_175=1
 ```
 
+### Rust sample — [`samples/rust/src/bin/windows.rs`](samples/rust/src/bin/windows.rs)
+
+The same four query groups through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin windows`), printed from untyped `Row`s. Window functions are plain SQL, so mostly the driver needs nothing special — but one delta hides in the flagship query: `SUM` over `NUMERIC(10,2)` widens to `NUMERIC(20,2)`, which travels as INT128, a wire type rsfbclient cannot fetch (`Unsupported column type (32752 1)`), so the running total is `CAST` back to `NUMERIC(10,2)` to stay fetchable — the aggregate-widening rule from the [numerics document](numeric-and-precision-arithmetic.md), enforced by a driver error. The other delta: no `getPlan` API, so instead of the legacy plan string the sample queries Firebird 6's `RDB$SQL.EXPLAIN` table function — plain SQL that returns a *more* detailed access path than the four nested `SORT`s the C++ twins printed.
+
+Verified: all numbers match the other twins — running totals 100/300/450 (East) and 300/550/950 (West), `RANK(175)` = 3 in East and 1 in West, row 2's neighbour average `125` with its own `200` excluded from the frame. The explained plan shows what the legacy `PLAN SORT (SORT (SORT (SORT (...))))` compresses: five `Window Partition` nodes over one `Table "PUBLIC"."SALES" Full Scan`, four of them fed by their own `Sort` node (key lengths 24, 24, 12, 28 — one per distinct window ordering) with a `Record Buffer` between every pair — the document's `SortedStream` → `WindowedStream` execution story, node by node.
+
 ### Things to try
 
 - Change the FB6 exclusion to `EXCLUDE TIES` or `EXCLUDE GROUP` after adding a duplicate amount — the frame drops peers instead of the current row.

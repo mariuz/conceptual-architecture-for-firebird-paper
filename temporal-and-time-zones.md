@@ -187,6 +187,12 @@ CURRENT_TIMESTAMP  : 2026-07-21 16:35:59.3560 Asia/Tokyo
 
 The zone survives only server-side — `EXTRACT(TIMEZONE_NAME FROM …)` or a `CAST` to VARCHAR — and a zoneless `TIMESTAMP` is materialized into a `Date` using the *Node process's* `TZ`, not the session zone: two different "local" notions in one program. `SET TIME ZONE` persists across the driver's per-query transactions because it is attachment-level, matching the [session-zone rules above](#the-session-time-zone).
 
+### Rust sample — [`samples/rust/src/bin/temporal.rs`](samples/rust/src/bin/temporal.rs)
+
+The third driver attitude to the zone, through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin temporal`). Where the C++ twins decode the wire struct and node-firebird silently drops the zone, rsfbclient *refuses*: a zoneless `TIMESTAMP` arrives as `chrono::NaiveDateTime` — a type whose very name admits it carries no zone, matching the SQL type exactly — but `TIMESTAMP WITH TIME ZONE` fits no `SqlType` variant at all, and a raw fetch of the New York literal errors out instead of degrading. So the sample runs everything zone-flavoured server-side — `EXTRACT(TIMEZONE_NAME FROM …)`, `CAST … AS VARCHAR`, `AT TIME ZONE` across the DST boundary, `SET TIME ZONE` — plain SQL the engine renders to text before any driver limitation can touch it.
+
+Verified: the raw TZ fetch fails with `Unsupported column type (32754 0)` — 32754 is `SQL_TIMESTAMP_TZ`, the honest gap stated by error code — while the server-side path recovers everything: zone `America/New_York`, text `2026-07-18 12:00:00.0000 America/New_York`, the DST pair `17:00`/`16:00` UTC for the same NY noon in winter/summer, the `EQUAL` verdict for `10:00 -02:00` vs `09:00 -03:00`, and `CURRENT_TIMESTAMP` jumping nine hours (11:14 Etc/UTC to 20:14 Asia/Tokyo) after `SET TIME ZONE` on the same attachment.
+
 ### Things to try
 
 - Change the C++ named-zone literal to `2026-11-01 01:30:00 America/New_York` — the doubled DST-overlap hour — and check which of the two possible UTC instants the wire struct holds (the docs promise the *first*, pre-transition occurrence).

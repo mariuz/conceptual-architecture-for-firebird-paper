@@ -224,6 +224,12 @@ The same six statements through node-firebird (`cd samples/nodejs && node parser
 
 To *see* the grammar the parser is running, the repo's [`tools/grammar_to_mermaid.py`](tools/grammar_to_mermaid.py) (the [generator section](#how-to-generate-the-diagram-in-mermaid) above) renders any rule's neighbourhood — `--root select_expr --depth 3` maps exactly the sublanguage these statements exercise.
 
+### Rust sample — [`samples/rust/src/bin/parser_errors.rs`](samples/rust/src/bin/parser_errors.rs)
+
+The same six strings through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin parser_errors`). Like node-firebird it has no prepare-only step — each `tr.query(sql, params)` prepares and executes in one call — and it exposes no statement metadata at all, so the C++ run's "input params / output columns" report is honestly out of reach; successful parses show themselves through the rows they return instead, walked generically as `Vec<Row>` with each column's `name` printed alongside its value. What survives fully intact is the error channel: the status vector rides back through libfbclient and `FbError`'s `Display` carries every line of it, prefixed with the driver's own `sql error -104:` summary line.
+
+Verified: the three good parses return `FIRST_NAME=Robert` for `?` bound to 2, `EMP_NO=2` for the row-limit `FIRST`, and `FIRST=1` for `FIRST` as a column name; the failures print `sql error -104: ... Token unknown - line 1, column 1 / SELEC`, `Token unknown - line 3, column 7 / ORDER`, and `sql error -206: ... Column unknown "FRST_NAME" At line 1, column 8` — the same tokens, lines and columns as all three other runs, byte for byte after the driver's summary prefix.
+
 ### Things to try
 
 - Feed the C++ sample a statement using a *reserved* word as an identifier (`SELECT order FROM rdb$database`) and compare with the non-reserved `FIRST` case; the token lists at the top of [`parse.y`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/parse.y) explain the difference.

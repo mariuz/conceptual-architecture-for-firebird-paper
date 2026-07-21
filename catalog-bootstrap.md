@@ -209,6 +209,12 @@ Verified: identical fixed points to the OO-API run — relation ids 0/1/2/6 for 
 
 The same four steps over the wire protocol (`cd samples/nodejs && node catalog.js`), with the `hdr_PAGES` cross-check done the Node way — `fs.readSync` of four bytes at offset 28, `readUInt32LE`. Verified output matches the C++ run (same fixed ids, same `0 / 60 / 598`, same two format rows for relation 128); only incidental page numbers differ (e.g. the TIP landed on page 223 rather than 287 — allocation order is not part of the contract, the fixed points are). One driver note: `Firebird.drop()` holds its socket open, so the sample ends with an explicit `process.exit(0)`.
 
+### Rust sample — [`samples/rust/src/bin/catalog.rs`](samples/rust/src/bin/catalog.rs)
+
+The same four self-description steps through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin catalog`). The fresh-database dance is `drop_database()` followed by a reconnect (the shared `connect` helper creates the file when it is missing); DDL runs through `SimpleTransaction::execute`, and every catalog query comes back as a typed tuple `Vec` — `Vec<(i64, String)>` for the fixed ids, `Vec<(i64, i64, i64, i64)>` for the `RDB$PAGES` rows — so there is no null-indicator or descriptor bookkeeping in sight. The `hdr_PAGES` anchor check is done the Rust way but stays just as primitive as its C++ and Node twins: `std::fs::read` of the database file and `u32::from_le_bytes` over bytes 28..32 of page 0, because that anchor lives below every API and every language.
+
+Verified: the same fixed points as the other three runs — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `FORMATS_ROWS 0 SYS_RELATIONS 60 SYS_FIELDS 598`, and after the two DDL statements format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id. Incidentally the TIP landed on page 287 and the generator page on 85, matching the C++ runs on an equally fresh file.
+
 ### Things to try
 
 - Add a third DDL statement (`ALTER TABLE t1 ALTER b TYPE VARCHAR(20)`) and watch `RDB$FORMATS` grow to format 3 — then `SELECT` the table and see all rows decode, the lazy-conversion story of [the metadata-cache document](metadata-cache.md#formats-the-on-disk-half-of-the-same-idea).

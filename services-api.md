@@ -508,6 +508,12 @@ service detached. done.
 
 Same 74 lines as the C++ run — `BURP_main` neither knows nor cares which client, or which language, is on the other end of the pipe.
 
+### Rust sample — [`samples/rust/src/bin/services.rs`](samples/rust/src/bin/services.rs)
+
+[rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client, has **no Services API at all** — no `attachServiceManager`, no SPB builder, no `isc_info_svc_line` loop — so its twin (`cd samples/rust && cargo run --bin services`) inverts the exercise: how much of the service territory can a plain SQL attachment cover? The information requests become one `MON$DATABASE` query plus `RDB$GET_CONTEXT('SYSTEM', 'ENGINE_VERSION')`; user management — a Services action in the gsec era — is `CREATE USER`/`DROP USER` DDL checked against `SEC$USERS`; and nbackup's lock/unlock is `ALTER DATABASE BEGIN BACKUP`/`END BACKUP`, watched through `MON$BACKUP_STATE`. What stays out of reach it states plainly: gbak backup/restore, trace sessions, online validation and sweep still need `service_mgr` or the command-line tools. A version-coupling footnote surfaced along the way: the crate's own `SystemInfos::server_engine()` parses the same context variable into an `EngineVersion` enum that stops at V5.
+
+Verified: engine version `6.0.0`, page size `8192`, ODS `14.0`, sweep interval `20000` from SQL — while `conn.server_engine()` fails with `error: Version not detected: 6.0.0` against Firebird 6; `SVC_DEMO_USER` appearing in `SEC$USERS` (1 row) and gone after the drop; and `MON$BACKUP_STATE` walking `0 (normal)` → `1 (stalled)` after `BEGIN BACKUP` (writes diverted to the .delta) → `0 (normal)` after `END BACKUP`.
+
 ### Things to try
 
 - Drop `isc_spb_verbose` from the C++ start block: the backup completes in a handful of polls with almost no lines — the non-verbose escape hatch from [the pipe section](#the-service-thread-and-the-1-kb-pipe).

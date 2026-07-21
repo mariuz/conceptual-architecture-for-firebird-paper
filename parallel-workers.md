@@ -339,6 +339,12 @@ Verified: phase A reports `granted: mon$parallel_workers = 1` against server con
 
 The twin (`cd samples/nodejs && node parallel-workers.js`) runs the same poll-during-`CREATE INDEX` technique against the live server and reports the honest zero: `'<Worker>' attachments seen in 63 polls: 0`. It first reads both knobs from `RDB$CONFIG` and its own grant from `MON$ATTACHMENTS.MON$PARALLEL_WORKERS` (= 1), so the zero is *predicted* before it is measured. A pure-JS driver has no embedded escape hatch — phase B of the C++ sample is exactly the door that is closed to it (see the [embedded comparison](embedded-architecture-comparison.md)) — which makes the pair a clean statement of who controls parallelism: the server process's config, never the client.
 
+### Rust sample — [`samples/rust/src/bin/parallel_workers.rs`](samples/rust/src/bin/parallel_workers.rs)
+
+The same two phases through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin parallel_workers`), sitting between the two neighbours above. Like node-firebird, rsfbclient's builder exposes no `isc_dpb_parallel_workers` — and unlike fb-cpp it has no raw-DPB escape hatch either — so phase A cannot even *ask* for workers; it reads both knobs from `RDB$CONFIG` and its own grant from `MON$PARALLEL_WORKERS`, showing the clamp as data. But unlike node-firebird, phase B's door is open: `builder_native().with_dyn_link().with_embedded()` boots the whole engine in-process under a private `FIREBIRD` root the sample writes itself (`ParallelWorkers = 4 / MaxParallelWorkers = 8`), and the `MON$ATTACHMENTS` poller is an ordinary `std::thread` holding a *second* embedded attachment to the same in-process engine, publishing its widest roster through an `Arc<Mutex<String>>` and `AtomicI64`.
+
+Verified: phase A reports server config `ParallelWorkers = 1, MaxParallelWorkers = 1` and `MON$PARALLEL_WORKERS = 1`; phase B matches both C++ runs — 200,000 rows across 4 pointer pages, `create index: 10648 ms; max '<Worker>' attachments seen: 3`, the same seven-attachment roster (two `SYSDBA`, Cache Writer, Garbage Collector, three `<Worker>` rows, all workers `system_flag 1`), and 3 workers still pooled after the build.
+
 ### Things to try
 
 - In the C++ sample's private root, set `ParallelWorkers = 8` and watch `getMaxWorkers()` cap the width at the pointer-page count instead (the output already prints both numbers).

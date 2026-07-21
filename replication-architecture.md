@@ -300,6 +300,12 @@ Verified: the same four-state progression — `RDB$DEFAULT` with `ACTIVE_FLAG 0 
 
 The same state walk through node-firebird (`cd samples/nodejs && node replication.js`), output as compact lines per state. Verified: identical progression ending in `MON$REPLICA_MODE = 0 (0 = not a replica: this is a publishing primary)`. Both samples reset the publication on entry (`EXCLUDE ALL FROM PUBLICATION` + `DISABLE PUBLICATION`), so they double as a demonstration that the whole publication lifecycle is reversible from a client.
 
+### Rust sample — [`samples/rust/src/bin/replication.rs`](samples/rust/src/bin/replication.rs)
+
+The same state walk through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin replication`). With no replication-specific API anywhere, what shows is the driver's shape for a DDL-heavy script: one explicit `SimpleTransaction` carries all four states, `tr.commit_retaining()` publishing each DDL step without giving up the transaction, and the idempotent reset leans on Firebird's statement-level atomicity — each `DROP` / `DISABLE` is a discarded `let _ = tr.execute(sql, ())`, because a failed statement dooms only itself, not the transaction (where fb-cpp needed `try`/`catch` per statement). The read-backs land in typed tuples — `Vec<(String, i64, i64)>` for `RDB$PUBLICATIONS` — and the `CHAR(63)` blank-padding the fb-cpp section flags is dealt with at the source, `TRIM(...)` in the query rather than in client code.
+
+Verified: the identical four-state progression — `RDB$DEFAULT` at `active=0 auto_enable=0` with no published tables, then `active=1`, then `PUBLIC.REPL_ORDERS`, then `PUBLIC.REPL_ORDERS, PUBLIC.REPL_SCRATCH` with `auto_enable=1` after `INCLUDE ALL` — ending in `MON$REPLICA_MODE = 0` (this side publishes; it is not a replica).
+
 ### Things to try
 
 - Create a new table *after* `INCLUDE ALL` and re-read `RDB$PUBLICATION_TABLES` — `RDB$AUTO_ENABLE` means it appears without any further DDL.

@@ -210,6 +210,12 @@ Verified: the three-state map progression printed exactly as described (`libfbcl
 
 The twin (`cd samples/nodejs && node embedded-demo.js`) can only do the remote half, and says so: measured `48.73 ms` average attach+detach over the wire, and *no embedded number at all*. The gap is architectural — embedded mode is native engine code (`libEngine14.so`) loaded through the native client's Y-valve, and a driver that reimplements the wire protocol in pure JavaScript has no native code to load. A local path in its options would still be opened by a *server* process, not by node. This is the SQLite comparison inverted: SQLite bindings for node embed trivially (the engine is just C code in the process) but can never become a network client; node-firebird is the mirror image.
 
+### Rust sample — [`samples/rust/src/bin/embedded_demo.rs`](samples/rust/src/bin/embedded_demo.rs)
+
+The same three demonstrations through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin embedded_demo`). rsfbclient is the one driver here that contains *both* sides of the JavaScript section's dichotomy in a single crate: its pure-Rust backend reimplements the wire protocol like node-firebird and so can never embed, while the native backend used here (`builder_native().with_dyn_link().with_embedded()`) links the same libfbclient as the C++ samples — and the whole continuum opens up: a credential-free in-process attach (the builder gets a `user()` but no `pass()`), the Y-valve pulling `libEngine14.so` into the Rust process on first attach, and detach as `Drop` (the timing helper is literally `drop(f()?)` around an `Instant`). Because `with_dyn_link` binds libfbclient at build time, the `/proc/self/maps` ladder has two states like the OO-API sample's, not fb-cpp's runtime-loaded three.
+
+Verified: `libEngine14 mapped=no` before the attach, `yes` after, with `libfbclient` mapped `yes` throughout; `rows=3 max(name)=sprocket NETWORK_PROTOCOL=<null: in-process>` and `engine pid=28054, my pid=28054 — the 'server' is this process`; the continuum measured at `1.34 ms` embedded vs `16.86 ms` remote attach+detach average over 5 runs — the same order-of-magnitude gap as both C++ runs.
+
 ### Things to try
 
 - Run `./build/embedded_demo` while `/opt/firebird/bin/isql /tmp/fbhandson/embedded_demo.fdb` sits attached in another shell — observe the 08001 exclusive-open error from the footnote above; then point both at a `FIREBIRD` root whose `firebird.conf` says `ServerMode = Classic` and watch them coexist.

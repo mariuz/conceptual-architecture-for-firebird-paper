@@ -269,6 +269,12 @@ who am I : user=SYSDBA auth=Srp256 wirecrypt=Arc4 protocol=TCPv4
 
 Same server, same user, same `Srp256` authentication — but **`Arc4`** wire encryption where fbclient negotiated `ChaCha64`: the cipher is chosen by the *client's* plugin preference order, exactly the negotiation described in the [wire-protocol document](firebird-wire-protocol.md#wire-encryption-from-the-session-key-to-the-cipher). The failed login arrives as one flattened message with `gdscode 335544472` (`isc_login`) — the same error chain the C++ status vector carries structured.
 
+### Rust sample — [`samples/rust/src/bin/security.rs`](samples/rust/src/bin/security.rs)
+
+The full four-step scenario through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin security`) — and where the JavaScript twin stops at read-only observations, this one repeats the whole least-privilege experiment. The role travels through the connection builder's `.role("HANDSON_MONITOR")` (the DPB `isc_dpb_sql_role_name`, one method call like fb-cpp's `setRole`), and because the sample uses the native backend, the wire is fbclient's — `ChaCha64`, not the `Arc4` the pure-JS driver negotiates. `SEC$ADMIN` arrives as a genuine Rust `bool` (the output prints `false`/`true` where the C++ sample renders `FALSE`/`TRUE`), and the deferred-at-commit user management the OO-API section documents dictates the sample's structure: every `CREATE`/`DROP USER` batch runs in its own `SimpleTransaction` with a full commit, and the idempotent cleanup must commit-and-ignore rather than execute-and-ignore, since `DROP USER` of a missing user only fails at `COMMIT`.
+
+Verified: the same layer-by-layer story — `auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4` on the admin and both `HANDSON_USER` attachments, `HANDSON_USER`/`Srp`/`false` in `SEC$USERS`, 1 visible attachment without the role and 2 with it under `role=HANDSON_MONITOR` — and the failed login flattened into `sql error -902: Your user name and password are not defined. Ask your database administrator to set up a Firebird login.`, the SQLCODE-first rendering of the same `isc_login` chain.
+
 ### Things to try
 
 - Grant `HANDSON_MONITOR` more bits — `set system privileges to MONITOR_ANY_ATTACHMENT, USE_GSTAT_UTILITY` — and re-run the doc's `fbsvcmgr ... action_db_stats` as `HANDSON_USER`: the [services-api document's layer-2 rejection](services-api.md#authorization-two-independent-layers) turns into success.

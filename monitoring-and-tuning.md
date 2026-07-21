@@ -209,6 +209,12 @@ Verified: OIT 9 / OAT 10 / NEXT 11 from `MON$DATABASE`, then the identical freez
 
 The same walk through node-firebird (`cd samples/nodejs && node monitoring.js`), with one driver-behaviour lesson built in: outside an explicit `transaction()`, each node-firebird `query()` auto-commits its own transaction, so every MON$ read would get a *fresh* snapshot and the "stale counters" effect would never appear. The sample therefore does the whole demonstration inside one explicit SNAPSHOT transaction — verified output shows the identical freeze-then-refresh pattern (`seq=40428` twice, then `seq=50560`).
 
+### Rust sample — [`samples/rust/src/bin/monitoring.rs`](samples/rust/src/bin/monitoring.rs)
+
+The same walk through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin monitoring`). The JS lesson applies with a twist: rsfbclient's trap is not auto-commit per query but the connection's hidden *default* transaction, which would decide the snapshot boundaries silently — so the sample runs everything through explicit `SimpleTransaction` objects, one held open across the workload to reproduce the freeze, a second created to get the refresh. The `BIGINT` counters land directly in typed tuples (`(i64, i64, i64, i64, i64)` from `query_first`), so the before/after comparison is on wire-delivered integers, like fb-cpp and unlike the OO-API sample's VARCHAR coercion.
+
+Verified: OIT 15 / OAT 16 / NEXT 17 and `page_buffers=2048` from `MON$DATABASE`; the hierarchy join finds the sample's own attachment 7 (SYSDBA), tx 16, with `MON$SQL_TEXT` showing the very query that took the snapshot. The freeze holds exactly — `seq_reads=18281 idx_reads=1602 page_fetches=75723` identical before and after the 10 000-row `COUNT(*)` scan and the indexed point lookup — then the new transaction reads `seq_reads=28281` (+10 000, the full scan) and `idx_reads=1636`, with inserts flat at 10 023.
+
 ### Things to try
 
 - Open a second connection running `SELECT COUNT(*) FROM MON_WORK` in a loop and re-run the sample: the hierarchy query (drop the `WHERE ... = CURRENT_CONNECTION`) now shows two attachments, and their statements' `MON$SQL_TEXT` side by side.

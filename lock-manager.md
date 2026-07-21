@@ -447,6 +447,12 @@ WAIT:            granted after 2.002 s
 
 Identical timings, different error text — the record-conflict path reports the `isc_deadlock`/`isc_update_conflict` chain naming the concurrent transaction, where the reservation path reported the bare `isc_lock_conflict`/`isc_lock_timeout`. Same arbitration, two client-visible dialects.
 
+### Rust sample — [`samples/rust/src/bin/lock_manager.rs`](samples/rust/src/bin/lock_manager.rs)
+
+The same scenario through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin lock_manager`). rsfbclient shares node-firebird's gap — no `RESERVING`, no custom TPB — so it probes the three `lck_wait` modes through the same row conflicts, but the mapping is a typed enum rather than an options object: `TrLockResolution::NoWait` → `isc_tpb_nowait`, `Wait(Some(3))` → `isc_tpb_lock_timeout`, `Wait(None)` → `isc_tpb_wait`, set in a `TransactionConfiguration` per `SimpleTransaction`. Where this sample goes past both twins is a fourth act: two SNAPSHOT/WAIT transactions cross-update rows 1 and 2 from two threads, building a genuine wait-for cycle through `LCK_tra` locks, and the clock measures how long the cycle sits undetected until the periodic scan (`DeadlockTimeout`, 10 s default) finds it and picks a victim.
+
+Verified: NO WAIT fails after 0.002 s and LOCK TIMEOUT 3 after 3.001 s, both with `sql error -913: deadlock; update conflicts with concurrent update; concurrent transaction number is 33` — the record-conflict dialect, with the blocker's transaction number; WAIT is granted after 1.997 s, right when the holder commits. The manufactured deadlock resolves at 10.0 s on the dot: B fails with the same `-913` chain (naming transaction 38) while A's update proceeds — the scan interval, not the cycle, set the price.
+
 ### Things to try
 
 - While the C++ holder has `t1` reserved, run `fb_lock_print -d /tmp/fbhandson/lock_manager.fdb -o -r` *(or `-f` on the `fb_lock_*` file)*: the reservation appears as an `LCK_relation`-series request at state 6 (EX), and the LOCK TIMEOUT probe shows up as `Pending` for exactly three seconds.

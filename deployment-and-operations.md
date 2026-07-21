@@ -199,6 +199,12 @@ Verified: the three layers report the same facts as the OO-API run — ODS `14.0
 
 The same three layers through node-firebird (`cd samples/nodejs && node deployment.js`). One line differs, and instructively so: `WIRE_CRYPT_PLUGIN` reports **`Arc4`** instead of fbclient's **`ChaCha64`** — the two clients negotiated different wire-encryption plugins with the same server (node-firebird implements only the older Arc4), a per-session deployment fact that `RDB$CONFIG`'s server-wide `WireCrypt` row cannot show.
 
+### Rust sample — [`samples/rust/src/bin/deployment.rs`](samples/rust/src/bin/deployment.rs)
+
+The same three layers through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin deployment`). Rows come back as typed tuples — `query_first` yields an `Option<(Option<String>,)>`, and `RDB$CONFIG_IS_SET` lands in a real Rust `bool` much as fb-cpp's `getBool` does, with NULL handled by `Option` rather than indicator checks. Because these samples default to rsfbclient's *native* backend (dyn-linked libfbclient), the session facts side with the C++ runs rather than node-firebird's: `WIRE_CRYPT_PLUGIN` is `ChaCha64` again, not `Arc4`. The sample closes with a driver gap that is typed *too* literally — `SystemInfos::server_engine()` parses `ENGINE_VERSION` into an enum that stops at V5, so against this server the typed accessor refuses the very value the raw context variable reports happily.
+
+Verified: the same facts against its scratch database — ODS `14.0`, page size `8192`, sweep interval `20000`, forced writes `1`, `ServerMode Super` among 69 settings all `set in config: false`, engine `6.0.0` over `TCPv4` with `ChaCha64` — and then `rsfbclient server_engine() on this server: error: Version not detected: 6.0.0`. Deployments outlive driver assumptions.
+
 ### Things to try
 
 - Run the C++ sample with an `xnet://` or `inet6://` URL (or embedded, with a direct path and `FIREBIRD=` set) and watch `NETWORK_PROTOCOL`, `CLIENT_ADDRESS` and `WIRE_CRYPT_PLUGIN` change while `RDB$CONFIG` stays identical — deployment facts vs session facts.

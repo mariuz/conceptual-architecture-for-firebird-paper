@@ -230,6 +230,12 @@ Verified: plan for plan identical to the OO-API run — the flip from `PLAN ("PU
 
 node-firebird never requests plan info items from the wire, so there is no driver-level `getPlan` — the twin instead uses the honest SQL-level route new in Firebird 6: the **`RDB$SQL.EXPLAIN`** package procedure, which prepares the given statement server-side and returns the detailed plan as *rows* (one per operator, with a `LEVEL` column giving tree depth — the sample indents by it). Run with `cd samples/nodejs && node plans.js`; it replays the same index-flip experiment and prints the identical `Full Scan` → `Bitmap → Index Range Scan` transition and the `Hash Join` tree, confirming that the plan text is produced by the engine, not the client library.
 
+### Rust sample — [`samples/rust/src/bin/plans.rs`](samples/rust/src/bin/plans.rs)
+
+The same five experiments through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin plans`). Like node-firebird it has no `getPlan` equivalent, so it takes the same `RDB$SQL.EXPLAIN` route the JavaScript section describes — and the terse legacy `PLAN (...)` string stays a C++ exclusive, since only a driver that requests plan info items can get it. The Rust-flavoured details: each operator row lands as a typed tuple in `Vec<(i64, i64, String)>` (`plan_line`, `LEVEL`, `access_path`), the query `CAST`s `ACCESS_PATH` to `VARCHAR(1024)` so it arrives as a plain `String` rather than a blob, and the indentation is computed from `LEVEL` — with the wrinkle that one EXPLAIN row can carry a multi-line text (an index retrieval prints its `Bitmap`/`Index` children inline), which the sample re-indents line by line.
+
+Verified: the same engine text as all three other runs — `Table "PUBLIC"."EMP" Full Scan` flipping to `Access By ID -> Bitmap -> Index "PUBLIC"."EMP_DEPT" Range Scan (full match)` after `CREATE INDEX`, `Index "PUBLIC"."RDB$PRIMARY6" Unique Scan` for `id = 42` (the constraint index is `RDB$PRIMARY6` in this scratch database, versus `RDB$PRIMARY2` in the fb-cpp run — the sequence number is allocation order, not identity), `Sort (record length: 108, key length: 8)` over the nested-loop join, and `Hash Join (inner) (keys: 1, total key length: 4)` with a `Record Buffer (record length: 25)` on the inner side.
+
 ### Things to try
 
 - Add `ROWS 10` or an `ORDER BY id` to the `dept_id = 5` query and re-prepare: watch `FirstRowsStream` appear, or the plan switch to `ORDER` (index-order walk) instead of `SORT`.

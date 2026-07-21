@@ -404,6 +404,12 @@ Verified: statement type `DDL` at prepare (0.08 ms), execute at 105.78 ms with t
 
 The same round trip where [Stage 2's](#stage-2-the-remote-module-client-side) client half is JavaScript rather than fbclient (`cd samples/nodejs && node request_lifecycle.js`). node-firebird has no separate prepare call, so the DDL travels as a single `op_execute`; the MON$ deltas match the C++ run (+20 record inserts, +16 page writes). The twin adds the visibility cross-check the C++ sample only does from inside: a *second* transaction on the same connection sees `TRACE_DEMO rows in RDB$RELATIONS = 0` until the DDL transaction commits — the catalog write is an ordinary [MVCC record version](transactions-and-concurrency.md) until `TRA_commit` flips the TIP bits.
 
+### Rust sample — [`samples/rust/src/bin/request_lifecycle.rs`](samples/rust/src/bin/request_lifecycle.rs)
+
+The same instrumented round trip through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin request_lifecycle`). Where node-firebird collapses the DDL into a single `op_execute`, rsfbclient's typed `Transaction` keeps prepare visible: `tra.prepare(sql, false)` is its own timed step (`op_prepare_statement` — Stages 1–5), `stmt.execute(())` the next, `tra.commit()` the third. The borrow checker reshapes the instrumentation: a `Transaction` mutably borrows its connection, so the MON$ sampling cannot ride a side transaction on the worker connection as the C++ sample does — the sample opens a *second attachment* as monitor, reading the worker's `MON$IO_STATS`/`MON$RECORD_STATS` by attachment id in a fresh transaction per sample (MON$ snapshots are frozen per transaction), and an explicit `drop(stmt)` releases the borrow before commit. That forced second attachment buys the visibility check both earlier samples split between them: the same uncommitted catalog row checked from inside *and* outside the writing transaction.
+
+Verified: prepare at 0.09 ms, execute at 57.84 ms with the same `+20` catalog record inserts (page marks `+128`), commit at 13.99 ms draining `+14` page writes (`+2115` fetches over the whole trip) — and around the commit, `RDB$RELATIONS has TRACE_DEMO = 1` in the writing transaction while the monitor attachment `sees 0  (TRA_commit has not happened)`, flipping to `sees 1  (the DDL is now durable and public)` after.
+
 ### Things to try
 
 - Add a column or a second index to the `CREATE TABLE` and watch the record-insert delta grow by exactly the extra catalog rows.

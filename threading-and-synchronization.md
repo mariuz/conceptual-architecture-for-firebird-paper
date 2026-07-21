@@ -370,6 +370,12 @@ after they detach:        22 threads (pooled)
 
 Twelve new attachments, **zero** new threads — the pool left behind by the C++ run absorbed all of them. Thread creation is a first-connection cost, not a per-connection cost.
 
+### Rust sample — [`samples/rust/src/bin/threading.rs`](samples/rust/src/bin/threading.rs)
+
+The same census through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin threading`) — and the inverse of the JavaScript inversion: here the client side really is twelve `std::thread` workers, each owning its own connection. That per-thread ownership is not a style choice — rsfbclient's `SimpleConnection` is not `Sync`, so the documented rule that an attachment must not be shared between threads without a lock is enforced by the borrow checker at compile time; the program that shares one connection across threads simply does not build. The measurement itself is unchanged: `MON$SERVER_PID` from SQL, `/proc/<pid>/task` counted before, during and after.
+
+Verified: 10 threads with one attachment open, 19 with the twelve extras (`13 user attachments, 1 distinct server pid`), and still 19 after the workers detach — pooled, not destroyed, the same retention signature as both C++ runs. The closing `MON$ATTACHMENTS` table shows the `Cache Writer` and `Garbage Collector` as `MON$SYSTEM_FLAG = 1` attachments, and the sample's own row carries `MON$REMOTE_PROCESS = .../samples/rust/target/debug/threading` — the monitoring tables name the client binary, whatever language it was written in.
+
 ### Things to try
 
 - Raise the worker count above the pool size (e.g. 40) and watch the thread count climb by exactly the shortfall.

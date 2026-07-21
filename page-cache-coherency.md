@@ -169,6 +169,12 @@ node-firebird is a wire-protocol client, so it can only reach the server's one s
 
 Conn B performed **zero** physical reads — thousands of logical fetches all served from buffers conn A's writes kept hot. That is what "coherency by shared memory" means: the SuperServer case has nothing to keep coherent.
 
+### Rust sample — [`samples/rust/src/bin/page_cache.rs`](samples/rust/src/bin/page_cache.rs)
+
+Both phases through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin page_cache`) — and this sample is where rsfbclient's backend split earns its keep. Its `pure_rust` backend is a wire-protocol client like node-firebird and would stop at phase 1; the sample instead uses `builder_native().with_dyn_link()` and flips one builder call between phases — `.with_remote().host("localhost")` for the shared-cache run, `.with_embedded()` for the private-cache run — so, unlike the JavaScript twin, Rust *can* be a full embedded engine and run phase 2. The process choreography is `std::process::Command` re-spawning `current_exe()` with the `FIREBIRD` env var pointed at a SuperClassic sandbox the sample builds itself (`std::fs` + `std::os::unix::fs::symlink`), and the referee query lands the three `MON$IO_STATS` counters in one typed tuple `(i64, i64, i64)`.
+
+Verified: the same coherency price as the C++ runs — phase 1 (shared cache) reads=43 and 71 per worker, phase 2 (private caches over `/tmp/fbhandson_rust_emb/page_cache_rust.fdb`) reads=1045 and 1051, writes near 900 in both phases, and every checker line `final: id=1 v=300` / `id=2 v=300` — roughly a 20-fold jump in physical reads for the identical workload, with not one update lost in either topology.
+
 ### Things to try
 
 - Give the two rows their own pages (`create table t (id int primary key, v int, pad char(4000))` forces ~one row per 8K page) and rerun: phase 2's `reads` collapse — no shared page, no ping-pong, the protocol goes quiet.

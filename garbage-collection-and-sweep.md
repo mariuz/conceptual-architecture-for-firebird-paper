@@ -182,6 +182,12 @@ Verified: the record-stats trajectory reproduces the OO-API run exactly — `upd
 
 The same experiment through node-firebird (`cd samples/nodejs && node gc_sweep.js`). Two instructive deltas in a real run made *after* the C++ one: the database-level counters are cumulative for the life of the loaded database, so the previous run's rolled-back stump is still visible — `OIT=28` stays pinned while `Next` has advanced to 59 — and the post-release cleanup was booked as `imgc=10→11` rather than a `purge`, showing that *which* collector disposes of a chain depends on which code path trips over it first, not on the garbage itself.
 
+### Rust sample — [`samples/rust/src/bin/gc_sweep.rs`](samples/rust/src/bin/gc_sweep.rs)
+
+The same experiment through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin gc_sweep`). The snapshot pin is a typed `TransactionConfiguration { isolation: TrIsolationLevel::Concurrency, .. }` and each counter peek a five-way tuple from `query_first` under a fresh transaction — but the stump experiment hits the limit of that typed surface: `TransactionConfiguration` speaks only isolation, lock resolution and access mode, with no `no_auto_undo` field and no raw-TPB escape hatch like the byte pair node-firebird sends or fb-cpp's `setNoAutoUndo(true)`. So the sample demonstrates the *absence* instead: a default rollback keeps its undo log, the engine undoes the work in memory and books the transaction as committed in the TIP — no stump, and the OIT keeps moving.
+
+Verified: the pinned snapshot reads `val = 0` through all twelve updates (`upd` 12→24, `imgc=10`, `backreads` 18→50 on this reused database, whose counters are cumulative like the JavaScript run's); the post-release cleanup lands as `imgc` 10→11 — the cooperative path again, no purge — and the delete as `expunges` 18→19; then the rollback moves the header from `OIT=114 ... Next=115` to `OIT=116 ... Next=117`: the OIT advances right past where the C++ twin's `no_auto_undo` stump would have frozen it.
+
 ### Things to try
 
 - Set the updates loop to 100: `imgc` grows to ~98 but `max versions` stays 2 (check with `fbsvcmgr localhost:service_mgr -user SYSDBA -password masterkey action_db_stats dbname /tmp/fbhandson/gc_sweep.fdb sts_record_versions`).

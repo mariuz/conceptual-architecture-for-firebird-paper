@@ -350,6 +350,12 @@ hdr_page_size @16  = 32768
   ...
 ```
 
+### Rust sample — [`samples/rust/src/bin/ods_header.rs`](samples/rust/src/bin/ods_header.rs)
+
+The same two-act structure through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin ods_header`). The driver act is small and typed: the seven `MON$DATABASE` columns arrive as one Rust tuple `(i64, i64, ...)` from `tr.query_first(...)` — no column-by-column getters — and a few warm-up `SimpleTransaction` commits first push the TIP markers off a fresh file's floor. Then `conn.close()?` detaches and the driver exits the story: `std::fs::read` pulls the whole file and the header is decoded with three helpers built on `u16::from_le_bytes` / `u64::from_le_bytes` — Rust's middle path between the C++ struct-offset reads and Node's `Buffer.readUInt16LE`, endianness explicit in the code but no structs anywhere. Unlike node-firebird's 32 KB creation default, rsfbclient's `create_database` yields the same 8 KB pages as `fb_sample.h`, so the census is directly comparable to the C++ runs.
+
+Verified: against its scratch file `/tmp/fbhandson/ods_header_rust.fdb` — `hdr_ods_version @18 = 0x800e -> ODS 14`, page size 8192, `hdr_flags 0x12 (force_write SQL_dialect_3)`, `hdr_PAGES = 3`, GUID `{4A0CF623-C7EB-45DD-9816-7D8E5AD6CEF4}`, and TIP markers next 16 / OIT 15 / OAT 16 / OST 16 — higher than the C++ run's 5/4/5/5 precisely because of the warm-up commits (and matching `MON$DATABASE`'s view exactly). The census is byte-for-byte the same 294-page skeleton: 40 `pag_pointer`, 40 `pag_root`, 106 `pag_index`, 97 `pag_data`, one each of header/PIP/TIP/generators/SCN.
+
 ### Things to try
 
 - Point both samples at a copy of `employee.fdb` (`gbak` it, or use any restored copy) and compare the census: user data changes the data/index page mix, not the fixed skeleton.

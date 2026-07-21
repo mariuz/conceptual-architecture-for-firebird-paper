@@ -373,6 +373,12 @@ Verified: byte-for-byte the same dump as the OO-API run — `FULL_NAME`'s BLR is
 
 The same read through node-firebird (`cd samples/nodejs && node blr.js`). Blob columns arrive as a function that streams `Buffer` chunks; the sample collects them and runs the identical mini-disassembler (opcode values transcribed from `blr.h`). The output is **byte-for-byte identical** to the C++ run — `05 27 27 17 00 09 4c ...`, 37 bytes — which is the document's stability argument made empirical: two unrelated client stacks, one wire protocol, one stored artifact, no translation anywhere.
 
+### Rust sample — [`samples/rust/src/bin/blr.rs`](samples/rust/src/bin/blr.rs)
+
+The same read through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin blr`), with each BLR program arriving as one `Vec<u8>` — no blob handles, no chunk streams — and the same mini-disassembler rewritten in Rust with the opcode constants (`BLR_VERSION5 = 5`, `BLR_CONCATENATE = 39`, `BLR_FIELD = 23`, ...) transcribed from `firebird/impl/blr.h`. One driver quirk earns its place in the queries: rsfbclient's row reader only understands blob subtypes 0 and 1, and `RDB$COMPUTED_BLR` is subtype 2 (BLR), so fetching it directly fails with "Unsupported column type" — the sample `CAST`s the column to `BLOB SUB_TYPE BINARY` on the server first. The bytes are unchanged by the cast, which is the point: a third client stack, a third fetching idiom, and the stored artifact still decodes identically.
+
+Verified: `FULL_NAME`'s BLR is the same 37 bytes (`05 27 27 17 00 09 4c ...`) as the C++ and JavaScript runs, decoding to nested `blr_concatenate` over `blr_field context 0, 'LAST_NAME'`, the `", "` `blr_text2` literal and `FIRST_NAME`, ending in `blr_eoc`; `GET_EMP_PROJ` is 155 bytes opening with `blr_version5, blr_begin`, then `blr_message 0, 2 fields: blr_short(scale 0) blr_short(scale 0)` and `blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)`.
+
 ### Things to try
 
 - Point the sample at your own scratch database, create `CREATE TABLE t (a INT, b COMPUTED BY (a * 2 + 1))`, and decode the arithmetic: you will meet `blr_multiply`/`blr_add` (prefix, two operands each) and a `blr_literal blr_long`.

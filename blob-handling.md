@@ -202,6 +202,12 @@ done.
 
 The five ~1 KB chunks are the driver's own write-side segmentation coming back to it. One honest limitation: node-firebird 2.x exposes `maxInlineBlobSize` for the [FB5 inline-blob wire optimization](#segmented-and-stream-access) (`op_inline_blob`), but enabling it against this Firebird 6 server hangs the query — a driver/protocol-19 issue, so the sample sticks to the classic segment stream.
 
+### Rust sample — [`samples/rust/src/bin/blobs.rs`](samples/rust/src/bin/blobs.rs)
+
+The Rust version through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin blobs`), sits at the opposite extreme from both neighbours: where C++ hand-drives `putSegment`/`getSegment` and node-firebird at least surfaces the read side as a chunk stream, rsfbclient makes a blob simply a whole Rust value — a `String` or `Vec<u8>` bound like any other parameter. The segmented API still runs underneath, with rules worth knowing: a `String` parameter up to 32767 bytes travels as VARCHAR and the *server* coerces it into the blob column; above that the driver switches to `isc_create_blob` + `isc_put_segment` in 64K chunks; a `Vec<u8>` parameter always takes the blob path regardless of size. On fetch the driver drains `isc_get_segment` 255 bytes at a time into one buffer. Segment boundaries, `getInfo` statistics (segment count, longest segment, segmented vs stream), blob seek and BPB options are all invisible — the honest cost of the whole-value model. The catalog view of subtypes and `BLOB_APPEND` work exactly as in the other samples.
+
+Verified: the 46-char short text round-trips via the VARCHAR coercion path; the 40000-byte long parameter (`> 32767`) becomes a driver-created blob reporting `40000 octets / 40000 chars on the server`; the 1000-byte binary `Vec<u8>` reads back `identical: true`; `RDB$FIELDS` shows `DATA` subtype 0 with charset `<null>` and `NOTE` subtype 1 `UTF8`; and `BLOB_APPEND` yields `17 octets, 17 chars, content "part1-part2-part3"` — the same 17 bytes the JavaScript run prints.
+
 ### Things to try
 
 - Grow the C++ text blob (e.g. 64 putSegment calls of 4 KB) and watch `getInfo` report the level change indirectly: re-run `gstat -r` on the table and see blob pages appear, then compare `Average record length` — it stays ~15 bytes no matter how big the blobs get.

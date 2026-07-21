@@ -194,6 +194,12 @@ pooled attachment works: CURRENT_CONNECTION = 364
 
 Note the asymmetry: `db.detach()` on a pooled connection releases the *slot* without an `op_detach` on the wire, while `pool.destroy()` really detaches — the client pool trades protocol round-trips for reuse exactly as the server's EDS pool does with its idle list.
 
+### Rust sample — [`samples/rust/src/bin/pooling.rs`](samples/rust/src/bin/pooling.rs)
+
+Both directions through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin pooling`). The outbound half is the same SQL as everyone else's — `ALTER EXTERNAL CONNECTIONS POOL SET SIZE / SET LIFETIME`, the three-call `EXECUTE BLOCK`, the `EXT_CONN_POOL_*` context variables read as a tuple of `Option<String>` (context variables are nullable, and the type system makes you say so). The inbound half differs from *both* neighbours: rsfbclient ships no pool of its own — that layer lives in a separate crate, `r2d2_firebird`, the r2d2 adapter maintained in the rsfbclient repository — so instead of exercising a bundled pool the sample shows exactly what such a pool caches: two extra attachments appear as two `MON$ATTACHMENTS` rows, the same `CURRENT_CONNECTION` serves query after query (what a pool would hand out again), and `drop(a)` is a *real* detach whose row vanishes — the round trip a checkout/checkin layer exists to avoid.
+
+Verified: the outbound half matches the C++ runs line for line — `before: size=5 lifetime=30s idle=0 active=0`, `inside the block: idle=0 active=1` for 3 calls, `idle=1` after the full commit, `idle=0` after `CLEAR ALL`; the inbound half opens attachments 619 and 620 (`2 rows in MON$ATTACHMENTS`), reuses `CURRENT_CONNECTION` 619, and after `drop(a)` reports `1 row left — detach really detached`.
+
 ### Things to try
 
 - Run `./build/pooling` twice within 30 seconds: the second run starts with `idle=1` — the pool is per **server process** and outlives your attachment. Wait past the 30-second lifetime (or run `CLEAR OLDEST`) and it starts at `idle=0` again.

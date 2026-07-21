@@ -183,6 +183,12 @@ Verified: output matches the OO-API sample line for line, with the conflict surf
 
 The same scenario through node-firebird's pure-JavaScript wire-protocol driver (`cd samples/nodejs && npm install && node transactions.js`). One behavioural difference is itself instructive: node-firebird's default TPB is **WAIT**, so the conflicting update *blocks* until the holder commits and only then raises the conflict — the sample commits the blocker after 300 ms to let the error surface, exactly the WAIT-policy behaviour described [above](#locking-waiting-and-conflicts).
 
+### Rust sample — [`samples/rust/src/bin/transactions.rs`](samples/rust/src/bin/transactions.rs)
+
+The same scenario through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin transactions`). The three TPB decisions become a typed `TransactionConfiguration` — `TrIsolationLevel::Concurrency` / `ReadCommited(RecordVersion)`, `TrLockResolution::NoWait` — applied through explicit `SimpleTransaction` objects. The explicitness is the lesson learned the hard way: rsfbclient connections also carry a hidden *default* transaction whose `commit()`/`rollback()` are **retaining**, so it keeps its first configuration (and, under SNAPSHOT, its first snapshot) for the life of the connection — the first cut of this sample used it and watched a "NO WAIT" update block forever under the default WAIT policy.
+
+Verified: snapshot holds at 100 while B commits 150, read committed then sees 150, and the NO WAIT conflict surfaces as `sql error -913: deadlock / update conflicts with concurrent update / concurrent transaction number is 22` — the same three-line chain the OO-API sample prints, with the winning transaction's number in the last line.
+
 ### Things to try
 
 - Change `isc_tpb_nowait` to `isc_tpb_wait` in step 3 of the C++ sample and watch the update block until `holdB` commits — then fail anyway (SNAPSHOT cannot see the new version).

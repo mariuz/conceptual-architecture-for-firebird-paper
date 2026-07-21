@@ -268,6 +268,12 @@ uncommitted rows      : 0   <- gone with the killed writer
 
 Same outcome, different failure domain: the C++ sample kills the engine under the transaction; the JS sample kills the client over it. That both converge on "committed survives, uncommitted vanishes, nobody replays anything" is the point — crash and rollback are the same operation in MGA.
 
+### Rust sample — [`samples/rust/src/bin/careful_writes.rs`](samples/rust/src/bin/careful_writes.rs)
+
+The Rust version through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin careful_writes`), gets the C++ sample's failure domain back: because the native backend can load the embedded engine (`builder_native().with_dyn_link().with_embedded()`), the writer process *is* the engine, and killing it mid-flush is a genuine engine crash — the experiment node-firebird's wire-only stack cannot run. The mechanics translate directly: where C++ `fork()`s, the Rust parent re-invokes its own binary with a `--writer` argument via `std::process::Command`, watches `/tmp/careful_writes_rust.fdb` grow as the engine flushes freshly allocated pages of an uncommitted 500,000-row `execute block` insert, then delivers `SIGKILL` through `Child::kill`. Re-attaching embedded (`create_database()` on the first attach, plain `connect()` after the crash) and counting rows is the whole verification — there is no recovery step to invoke because none exists.
+
+Verified: the file grew `2260992 -> 6479872` bytes of uncommitted work before the `SIGKILL` to engine pid 28026; re-attach plus both counts took 35 ms, and the counts read `committed marker rows : 1 <- survived the crash` and `uncommitted rows : 0 <- rolled back by visibility, not replay` — the same verdict as the C++ engine-kill runs, from a third client stack driving the same in-process engine.
+
 ### Things to try
 
 - Rerun the C++ sample and then `gfix -v -full -user SYSDBA /tmp/fbhandson/careful_writes.fdb` (embedded, so run it with `FIREBIRD=/opt/firebird` while no server has the file): like the [live test](#crash-safety-live), you may see orphan-page warnings — allocated-but-never-linked pages, the designed leftover — and zero corruption errors.

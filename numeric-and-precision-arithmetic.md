@@ -170,6 +170,12 @@ NUMERIC(18,2) server text   : 90071992547409.93  <- the value the server actuall
 
 The stored scaled integer `9007199254740993` exceeds `2⁵³`, so the driver's `Number` is off by a cent while the server-side `CAST(... AS VARCHAR)` shows the exact value. `DECFLOAT` cannot be fetched raw at all (−804, as in [the types sample](sql-dialect-and-types.md#javascript-sample--samplesnodejstypesjs)); the CAST route also demonstrates the exact `0.0`. `SET DECFLOAT TRAPS TO` is session-level, so it persists across the driver's per-query transactions on the same attachment.
 
+### Rust sample — [`samples/rust/src/bin/numerics.rs`](samples/rust/src/bin/numerics.rs)
+
+The same scenario through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin numerics`). Rust has exact integers, yet the 2^53 trap comes back anyway — by a different mechanism than in JS: rsfbclient's native backend rewrites the scaled `SQL_INT64` XSQLVAR to `SQL_DOUBLE` and lets the client library convert, so every `NUMERIC` arrives as `SqlType::Floating(f64)` no matter what the program could have held. The sample fishes the `raw_type` off the returned `Column` to show the wire still said 580 (`SQL_INT64`) before the flattening. `INT128` and `DECFLOAT` are harsher than in JS: their wire codes are rejected at prepare time, so the only route is the server-side `CAST(... AS VARCHAR)` — which the sample then uses to demonstrate exactness, overflow, and the trap toggle.
+
+Verified: `(0.1+0.2)-0.3` gives `5.551115123125783e-17` in DOUBLE PRECISION and exactly `0.0` in DECFLOAT(34) via CAST, while the raw DECFLOAT fetch fails with `Unsupported column type (32762 0)` (rsfbclient's spelling of node-firebird's −804). `NUMERIC(18,2)` `90071992547409.93` comes back as f64 `90071992547409.92` — off by a cent, raw scaled int 9007199254740993 > 2^53 — against the server text `90071992547409.93`. INT128 max round-trips as text, max+1 raises `sql error -802: arithmetic exception, numeric overflow, or string truncation`, and DECFLOAT 1/0 flips from `sql error -901: Decimal float divide by zero` to `Infinity` after `SET DECFLOAT TRAPS TO` on the same transaction.
+
 ### Things to try
 
 - Add `SET DECFLOAT ROUND CEILING` before a `SELECT CAST(1 AS DECFLOAT(16))/3*3` in either sample — the result becomes `1.000000000000001` (the doc's rounding-mode demo).

@@ -448,6 +448,12 @@ Verified: line-for-line agreement with the OO-API run — the same `-206` `Colum
 
 The same two-attachment script over the wire protocol (`cd samples/nodejs && node metadata_cache.js`), using node-firebird's explicit transactions for the uncommitted DDL and `ISOLATION.SNAPSHOT` for demo 2. Verified output matches the C++ run line for line — same `-206 Column unknown`, same `newVersion: table 128 is used by transaction 10`, same three formats — which is itself the point: the visibility rule lives in the server's cache, and every client sees the same one.
 
+### Rust sample — [`samples/rust/src/bin/metadata_cache.rs`](samples/rust/src/bin/metadata_cache.rs)
+
+The same four demonstrations through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin metadata_cache`). Everything runs through explicit `SimpleTransaction` objects for a reason specific to this topic: rsfbclient connections carry a hidden default transaction, and letting a query silently ride it would blur exactly the transaction boundaries the visibility rule is about — which prepare happened inside which transaction *is* the experiment. B's open SNAPSHOT in demo 2 is a `TransactionConfiguration` with `TrIsolationLevel::Concurrency`, and the probe helper treats both outcomes as data, printing either the fetched `Option<i64>` or the flattened `FbError` — whose string already carries the full status chain, `newVersion` line included.
+
+Verified: the same story with this run's own numbers — B's probe fails with `sql error -206: ... Column unknown "E"` while A sees `<null>` in the same uncommitted transaction; B's open SNAPSHOT then reads `d` from an ALTER committed after the snapshot began; demo 3 fails with `sql error -607: unsuccessful metadata update / ALTER TABLE "PUBLIC"."T" failed / newVersion: table 130 is used by transaction 35` (note the schema-qualified `"PUBLIC"."T"` — Firebird 6's spelling of the same error the other samples got for table 128); and `RDB$FORMATS` holds 3 shapes, with the shape-1 row decoding as `a=1, e=<null>, d=<null>`.
+
 ### Things to try
 
 - In demo 2, move the `SELECT d FROM t` *before* A's second ALTER commits, keep the statement handle, and re-execute it after the commit: an already-prepared statement keeps running against the version it was compiled with — resolution is at *prepare* time, which is the precise wording the document insists on.

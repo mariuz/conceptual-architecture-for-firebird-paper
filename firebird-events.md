@@ -205,6 +205,12 @@ done.
 
 Same three semantics — with one instructive difference. Where `isc_event_counts` hands the C++ client a *delta*, node-firebird emits the **raw running counter** from the EPB, and that counter is `evnt_count + 1` (the engine adds one when serializing the delivery block — `event.cpp:884`): a fresh event block reports `1` at baseline and `4` after three posts. The C++ idiom never notices the `+1` because subtracting the baseline cancels it; a raw-counter client must do its own subtraction, as the sample does.
 
+### Rust sample — [`samples/rust/src/bin/events.rs`](samples/rust/src/bin/events.rs)
+
+The same commit semantics through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin events`). The driver offers two altitudes: `wait_for_event(name)` — the blocking `isc_wait_for_event` dance, run here on its own thread so `main` can watch whether it woke — and `listen_event(name, closure)`, which packages the one-shot re-queue loop: the closure runs after each delivery, gets the connection back (the sample runs SQL from inside it), and stops the loop by returning `false`. Two honest gaps against the sections above: the wakeup carries no counts — `wait_for_event` returns only `()`, so the "one delivery, count 3" that `isc_event_counts` and node-firebird's raw counter expose stays hidden inside the client library — and events are native-backend only, which the sample proves by making the same call on a pure-Rust connection.
+
+Verified: the listener stays `still blocked` after `POST_EVENT` + `ROLLBACK` and again before the `COMMIT` of the triple post, then `wait_for_event returned` once it commits; `listen_event: handler fired 2 times over 2 committed posts` before its closure ended the re-queue loop; and the pure-Rust backend answers the identical call with `error: Events only works with the native client` — no auxiliary channel in the wire implementation yet.
+
 ### Things to try
 
 - Set `EVENTS_DEMO_PAUSE_MS=5000` and, during the pause, list the demo process's sockets (`ss -tnp | grep events_demo`): two attachments, **three** TCP connections — the third is the aux channel to a non-3050 ephemeral port, the [`RemoteAuxPort` firewall pitfall](#the-wire-the-auxiliary-connection) made visible.

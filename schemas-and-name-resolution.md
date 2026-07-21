@@ -529,6 +529,12 @@ APP.WHICH_ONE returns  : from APP  <- still its own schema
 dependency recorded    : APP.CUSTOMERS
 ```
 
+### Rust sample — [`samples/rust/src/bin/schemas.rs`](samples/rust/src/bin/schemas.rs)
+
+The same five demonstrations through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin schemas`), with two driver-shaped twists worth the run on their own. First, rsfbclient keeps a client-side cache of prepared statements per connection, and names bind at *prepare* time — so after `SET SEARCH_PATH TO APP, PUBLIC`, re-running the byte-identical `SELECT ORIGIN FROM CUSTOMERS` still answers with the old resolution, because the cached statement bound `PUBLIC.CUSTOMERS` when it was prepared; appending a comment (`/* fresh */`) changes the cache key, forces a fresh prepare, and the same query flips to `APP`. The resolution-happens-at-prepare rule, demonstrated by a driver optimization. Second, rsfbclient has no `getPlan()` surface at all, so the plans-and-errors observation goes through Firebird 6's `RDB$SQL.EXPLAIN` table function instead — plain SQL replacing the missing API.
+
+Verified: `from PUBLIC` for the cached text under the new path, `from APP` for the freshly-prepared text; `"APP", "SYSTEM"` after the auto-append; `APP.WHICH_ONE` still answering `from APP` with `RDB$DEPENDENCIES` recording `APP.CUSTOMERS` after the session flips to `PUBLIC`; and the explain output resolving the unqualified name to `Table "PUBLIC"."CUSTOMERS" Full Scan` — the schema-qualified access path, from SQL rather than from `getPlan()`.
+
 ### Things to try
 
 - Add the [shadowing experiment](#shadowing-and-the-hazard-search-paths-always-carry): `CREATE TABLE PUBLIC."RDB$DATABASE" (X INT)` and watch an unqualified `SELECT ... FROM RDB$DATABASE` on a fresh connection find yours; then `SET SEARCH_PATH TO SYSTEM, PUBLIC` to defuse it.

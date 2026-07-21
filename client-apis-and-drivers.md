@@ -180,6 +180,12 @@ Verified: prints `[fb-cpp ] engine version = 6.0.0` — the same engine version 
 
 The JavaScript counterpart is the existing [`query.js`](samples/nodejs/query.js) (`cd samples/nodejs && node query.js`), and the architectural point is *which path it takes*: node-firebird is a **Path B** driver ([Figure 2](#two-ways-to-build-a-driver)) — no `fbclient` is loaded at all; the driver re-implements the wire protocol, SRP and Arc4 in JavaScript. So where `api_styles.cpp` shows two APIs over one client library, `query.js` shows no client library whatsoever — the two driver strategies of this document, both verified against the same server (re-run output in the [wire-protocol document](firebird-wire-protocol.md#worked-examples)).
 
+### Rust sample — [`samples/rust/src/bin/api_styles.rs`](samples/rust/src/bin/api_styles.rs)
+
+The Rust twin through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin api_styles`), and its contribution to this document is that it contains *both* driver strategies of [Figure 2](#two-ways-to-build-a-driver) behind one API: `builder_native().with_dyn_link().with_remote()` loads the same `libfbclient` the C++ sample links and drives its `isc_*` entry points (the legacy half's DPB and descriptor bookkeeping written once, inside the driver), while `builder_pure_rust()` is an independent reimplementation of the wire protocol — no client library, no Y-valve, just sockets, the same Path B node-firebird takes. The same `query_first` call runs the same `SELECT` through both, and a shared `SystemInfos` trait (`db_name()`, `server_engine()`) answers over either stack. One typed convenience lags honestly: `server_engine()` parses `ENGINE_VERSION` into an `EngineVersion` enum that ends at V5, so against Firebird 6 the wrapper errors while the raw query underneath succeeds.
+
+Verified: both backends report `engine version = 6.0.0` — the native line annotated `(isc_* calls inside libfbclient)`, the pure-Rust line `(op_attach/op_execute on a socket)` — and both resolve `db_name()` to the same server-side file `/opt/firebird/examples/empbuild/employee.fdb`; `server_engine()` fails with `error: Version not detected: 6.0.0`, the enum-stops-at-V5 driver-lag delta stated in the code.
+
 ### Things to try
 
 - Break the password in `iscStyle()` and in `ooStyle()` and compare how the same `isc_login` error surfaces: `fb_interpret` loop output versus one `FbException` — the two error models of the [API table](#comparison-postgresql-mysql-sqlite).

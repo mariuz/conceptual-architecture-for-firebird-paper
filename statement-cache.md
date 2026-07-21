@@ -333,6 +333,12 @@ Verified: identical text hits at 0.03 ms/prepare; the three miss runs cost 0.84,
 
 The same experiment where the driver forces a limitation worth knowing: node-firebird cannot prepare without executing (each `query()` is allocate + prepare + execute + drop), so every timing includes execution — which is why the sample's join is nearly free to run. Verified (`cd samples/nodejs && node stmt_cache.js`): identical text 2.42 ms/query, whitespace-varied 4.28 ms/query — the ~1.9 ms delta is the same compile cost the C++ run isolated. The DDL-interleaved run reports 35 ms/query, but that figure includes the `RECREATE TABLE` itself; the honest comparison is runs 1 vs 2.
 
+### Rust sample — [`samples/rust/src/bin/stmt_cache.rs`](samples/rust/src/bin/stmt_cache.rs)
+
+The same experiment through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin stmt_cache`) — with a wrinkle neither C++ twin has: there are *two* statement caches in play. rsfbclient keeps its own client-side LRU cache of prepared statements, per connection, keyed — like the server's — by the verbatim SQL text (`stmt_cache_size(n)` on the builder, default 20). With that cache on, a repeated `query()` sends no prepare at all, so the server cache — this document's subject — is invisible behind it. The sample therefore adds a run 0 with the client cache at its default, then opens the probe connection with `stmt_cache_size(0)` so every `query()` really prepares. Like node-firebird, rsfbclient cannot prepare without executing; unlike the JavaScript twin, run 4 times only the `query()` call, keeping the interleaved `RECREATE TABLE` (issued from a second connection) out of the figure.
+
+Verified: run 0 (client cache on) costs 0.26 ms/query with no prepare sent; run 1 (client cache off, identical text) 0.34 ms/query — server hits; trailing spaces and distinct literals miss at 1.10 and 0.91 ms/query, and byte-identical text after each DDL commit misses at 1.48 ms/query. The hit-versus-miss gap is ~3–4× here rather than C++'s 20×, because every rsfbclient timing includes an execution — but the ordering is the same, and run 0 sitting *below* run 1 shows the client cache shaving off even the cheap server-hit prepare.
+
 ### Things to try
 
 - Change run 2 to vary *case* instead of whitespace (`Select` / `sElect`…) — same misses, same reason.

@@ -166,6 +166,12 @@ Verified: the same threshold signature — the big sort peaks at 1 unlinked `fb_
 
 The MON$ half of the same experiment through the wire protocol (`cd samples/nodejs && node sorting.js`; it reuses the C++ sample's `bulk` table, building it if missing). One connection sorts, a second polls `MON$MEMORY_USAGE` — node-firebird runs each `db.query` in its own transaction, so every poll is a fresh MON$ snapshot with no extra code. Verified peaks: `+67506176 over idle` for the big sort, `+19378176` for the small one — the same threshold signature, without the `/proc` half (a browser-less Node process could run remotely; the fd table only exists on the server box).
 
+### Rust sample — [`samples/rust/src/bin/sorting.rs`](samples/rust/src/bin/sorting.rs)
+
+Both halves of the experiment through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin sorting`). The watcher runs on its *own* connection — Rust's ownership rules won't let a second thread borrow the main attachment, so the two-attachment discipline the C++ sample chose by design is enforced here by the compiler — and each MON$ poll is a fresh `SimpleTransaction` whose `query_first` hands back `MON$MEMORY_ALLOCATED` as a typed `(i64,)` tuple. The `/proc/<pid>/fd` half is the same shell-out as everywhere else. The one real delta: rsfbclient has no `getPlan`, so instead of the legacy plan string the sample feeds each query to Firebird 6's `RDB$SQL.EXPLAIN` — and gets back *more* than `PLAN SORT (...)`: the explained tree prints the Sort node with its record and key lengths, the very numbers the 82 MB estimate is made of.
+
+Verified: the explained plan shows `Sort (record length: 430, key length: 408)` under a `Refetch` node — 408 of the 430 bytes *are* the key, confirming why refetch cannot shrink this particular sort. The threshold signature is identical to both C++ twins: the big sort peaks at 1 unlinked `fb_sort_*` file of exactly 73400320 bytes with MON$ growth of +68620288 over a 21008384-byte idle; the small sort shows 0 scratch files, 0 bytes, and +20492288 of in-memory growth.
+
 ### Things to try
 
 - Drop the `desc` and `first 1` and fetch everything: the numbers barely move — the sort is a pipeline breaker, so the *open* pays for the whole sort whether you fetch one row or all 200,000.

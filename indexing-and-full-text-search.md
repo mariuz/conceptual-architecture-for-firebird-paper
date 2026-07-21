@@ -172,6 +172,12 @@ Verified: plan-for-plan identical to the OO-API run — `DOC_UPPER_TITLE` and `D
 
 The same five plans through the wire protocol (`cd samples/nodejs && node indexes.js`) — with one driver excursion worth knowing: node-firebird's public API never requests plans, but its internal `Connection.prepare(tx, sql, plan, cb)` takes a `plan` flag that adds `isc_info_sql_get_plan` (item 22) to the prepare-info request and surfaces the result as `statement.plan`. The sample reaches one level down to use it, and the verified output is plan-for-plan identical to the C++ run — the plan is the server's answer, whichever client asks.
 
+### Rust sample — [`samples/rust/src/bin/indexes.rs`](samples/rust/src/bin/indexes.rs)
+
+The same five queries through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin indexes`). Where the other three sections each found some way to ask the *statement* for its plan — `getPlan` after prepare, `setPrefetchLegacyPlan` at prepare, an internal `plan` flag — rsfbclient offers no plan accessor at all, so the sample asks the *engine* instead: Firebird 6's `RDB$SQL.EXPLAIN('<sql>')` table function returns the access path as rows (`PLAN_LINE`, `LEVEL`, `ACCESS_PATH`), fetched here as a `Vec<(i64, i64, Option<String>)>` and indented by `LEVEL`. The workaround out-explains the originals: what comes back is the detailed `SET EXPLAIN` form the document's isql sessions show, not the one-line legacy `PLAN` string.
+
+Verified: all five access paths agree with the other runs, in explain form — `Index "PUBLIC"."DOC_UPPER_TITLE" Range Scan (full match)` for the expression index, `Index "PUBLIC"."DOC_ACTIVE" Full Scan` for the partial, `First N Records` over `Index "PUBLIC"."DOC_ID_DESC" Full Scan` for the descending walk, a `Bitmap Or` combining `DOC_NUM` and `DOC_ID_DESC` range scans, and `Table "PUBLIC"."DOC" Full Scan` for `CONTAINING`, closing with the same count: `matched 111 rows by scanning all 3000`.
+
 ### Things to try
 
 - Drop `doc_active` and re-run: the `status = 'active'` query falls back to... check whether the optimizer picks `doc_num` (it can't) or `NATURAL` — then recreate the partial index with `WHERE status = 'done'` and watch the `'active'` query *ignore* it: a partial index only serves predicates that imply its condition.

@@ -38,6 +38,22 @@ and debugging"** section built on a pair of samples here:
   a feature the document says so honestly — and those deltas (type-mapping
   gaps, Arc4-vs-ChaCha wire crypt, WAIT-vs-NO WAIT defaults) are themselves
   part of what the samples teach.
+- **`rust/src/bin/<topic>.rs`** — the Rust twin, written against
+  [rsfbclient](https://github.com/fernandobatels/rsfbclient) (one cargo
+  package, one binary per topic, shared helper in
+  [`rust/src/lib.rs`](rust/src/lib.rs)). rsfbclient speaks two dialects —
+  the NATIVE backend drives the same libfbclient as the C++ samples, and
+  the PURE RUST backend is an independent wire-protocol implementation
+  (protocol 13, Srp256, Arc4 — the protocol samples contrast both) — plus
+  embedded mode (`with_embedded()`), which several twins use for
+  crash-safety and cache-topology experiments. Its deltas teach too:
+  transactions are typed `TransactionConfiguration` objects but the
+  connection's hidden default transaction is commit-RETAINING; the type
+  mapping is coarse (all integers → `i64`, NUMERIC → lossy `f64`, no
+  INT128/DECFLOAT/TIMESTAMP-TZ — CAST to VARCHAR or lose precision); there
+  is no Services API (the trace twin is the only one that cannot run its
+  document's demonstration at all) and no plan API (the twins use Firebird
+  6's `RDB$SQL.EXPLAIN` instead).
 
 Each document's Hands-on section shows its pair's *verified* output, a
 "things to try" list, and gdb breakpoints into the engine functions the
@@ -189,6 +205,21 @@ The per-document twins run the same way once the driver is installed:
 cd samples/nodejs
 node transactions.js        # or any other <topic>.js
 ```
+
+## Rust samples
+
+The [`rust/`](rust/) directory holds the same per-document twins in Rust.
+With a Rust toolchain (rustup) and the Firebird client library installed:
+
+```sh
+cd samples/rust
+cargo run --bin transactions   # or any other <topic>
+```
+
+The first build compiles rsfbclient from crates.io; the `linking` feature
+links `libfbclient` at build time, so `firebird-dev` (or an equivalent
+client install) must be present. Scratch databases go to
+`/tmp/fbhandson/<topic>_rust.fdb` like the other twins.
 
 ## Debugging
 

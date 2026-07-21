@@ -189,6 +189,12 @@ Verified: the same gbak log as the OO-API run — backup ends with `gbak:3 recor
 
 The same round trip through node-firebird, which implements the Services API wire protocol (`op_service_attach`/`op_service_start`/`op_service_info`) in pure JavaScript: `Firebird.attach({ manager: true })` returns a `ServiceManager` whose `backupAsync`/`restoreAsync` build the same SPB blocks and hand back a Node `Readable` stream of gbak's verbose lines (`cd samples/nodejs && node backup.js`). Verified: identical gbak log, ending in `restored database says: 3 rows, max name = gamma`. One wire-level delta worth noticing: the driver's restore always sends a page-size tag (default 4096), so the sample passes `pagesize: 8192` explicitly — a reminder that a gbak restore *re-decides* physical parameters rather than copying them.
 
+### Rust sample — [`samples/rust/src/bin/backup.rs`](samples/rust/src/bin/backup.rs)
+
+The Rust version through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin backup`), leads with an honest gap: rsfbclient has no Services API at all — nothing in the crate can attach to `service_mgr`, so `isc_action_svc_backup`/`_restore` are out of reach from Rust code, unlike both the C++ sample (which builds the SPB in-process) and node-firebird (which reimplements `op_service_attach` on the wire). The sample therefore does what any driver-less client does: it prepares the source database in-driver (`SimpleTransaction` DDL and inserts building `BR_ITEMS`), spawns `gbak -se localhost:service_mgr` for the backup and `-c -rep` restore — the exact same server-side service path, just entered through the tool instead of the API — and then reconnects in-driver to the restored copy to verify it. The backup runs while the source attachment is still open, demonstrating the online property the same way the other samples do.
+
+Verified: the gbak log matches the other runs — `gbak:3 records written`, `closing file, committing, and finishing. 3072 bytes written` on backup; `backup version is 12`, `3 records restored` and `activating and creating deferred index "PUBLIC"."RDB$PRIMARY3"` on restore — and the in-driver check of `/tmp/fbhandson/backup_rust_restored.fdb` prints `restored database says: 3 rows, max name = gamma`.
+
 ### Things to try
 
 - Add `start->insertTag(&st, isc_spb_bkp_metadata_only)` (C++) or `metadataonly: true` (JS) and compare the `.fbk` sizes and the restore log — structure without data, the `-SKIP_DATA` idea from the [gbak section](#gbak-logical-backup).

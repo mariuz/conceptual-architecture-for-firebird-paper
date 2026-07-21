@@ -369,6 +369,12 @@ Verified: output matches the OO-API sample line for line — engine version `6.0
 
 `query.js` (`cd samples/nodejs && node query.js`) is the same report through node-firebird — re-verified, and still negotiating **Arc4** where fbclient picks ChaCha64, the two-clients-one-server contrast discussed [above](#wire-encryption-from-the-session-key-to-the-cipher). `srp-handshake.js` (`node srp-handshake.js`) is the from-scratch implementation: on re-run it again negotiated protocol 20 and plugin `Srp256` and attached over Arc4, but every SRP value differed from the transcript in [Worked examples](#worked-examples) — `a` and `b` are random per session, so `A`, `B`, `u`, `S`, `K` and the proof `M` are session-specific (this run's `K` did *not* start with `00`; the captured one did, which is exactly the 1-in-256 edge case of [deviation 2](#how-firebirds-srp-differs-from-the-papers)).
 
+### Rust sample — [`samples/rust/src/bin/protocol.rs`](samples/rust/src/bin/protocol.rs)
+
+One program, both kinds of client. [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin protocol`), ships two interchangeable backends, and the sample attaches through each in turn and asks `MON$ATTACHMENTS` what was negotiated: the **native** backend loads libfbclient — the very library the C++ samples link, so its attachment is the Remote provider's handshake — while `rsfbclient::builder_pure_rust()` selects **rsfbclient-rust**, the crate's own wire-protocol implementation (XDR-encoded `op_connect`/`op_attach` packets, protocol versions 10–13, Srp with SHA-1 and Srp256 with SHA-256 client proofs, Arc4 wire encryption) with no fbclient anywhere in the call path — an independent re-implementation in the same spirit as node-firebird's, but switchable against the reference client without changing the program.
+
+Verified: same server, same `SYSDBA`, same `Srp256` — but the native attachment reports wire protocol `P20`, wire crypt `ChaCha64` and client version `LI-T6.0.0.2076 Firebird 6.0 fd83f03`, while the pure-Rust attachment reports `P13`, `Arc4` and no client version string at all: the version-list negotiation meeting each client where it stands, recorded by the engine itself.
+
 ### Things to try
 
 - In `srp-handshake.js`, offer only `Srp` instead of `Srp256,Srp` in `CNCT_plugin_list` — the server accepts and the proof drops to SHA-1: the downgrade the in-tree README [warns about](#what-srp256-improves), performed by hand.

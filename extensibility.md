@@ -212,6 +212,12 @@ Verified: `gen_rows(1, 5)` yields `n = 1` through `n = 5`, `sum_args(19, 20, 3)`
 
 The twin (`cd samples/nodejs && node extensibility.js`) does the same DDL, calls and `RDB$CONFIG` listing — and loses *nothing*, in instructive contrast to the [architecture](architecture-comparison.md) and [embedded](embedded-architecture-comparison.md) samples where the pure-JS driver could only reach half the story. The reason: this document's extension seams live on the **server** side of the wire. `EXTERNAL NAME ... ENGINE udr` is plain DDL and `gen_rows(1,5)` a plain `SELECT`; the `udr_engine` plugin loads the native module inside the server process, and the protocol neither knows nor cares that the rows were produced by compiled C++ (`gen_rows(1, 5) -> 1, 2, 3, 4, 5` verified).
 
+### Rust sample — [`samples/rust/src/bin/extensibility.rs`](samples/rust/src/bin/extensibility.rs)
+
+The same UDR walk through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin extensibility`). The JavaScript section's lesson — server-side seams cost a wire-protocol driver nothing — holds here for *both* of rsfbclient's backends, since `EXTERNAL NAME 'udrcpp_example!gen_rows' ENGINE udr` is just DDL through `tr.execute` and the calls are just queries. The client idiom is typed tuples rather than accessor methods: the table-valued `gen_rows` fetch is a `Vec<(i64,)>` from `tr.query`, the scalar `sum_args` call an `(i64,)` from `query_first`, and the nullable `RDB$CONFIG_VALUE` an `Option<String>` — note the `i64`, rsfbclient's one integer width for the `INTEGER` columns the fb-cpp sample reads with `getInt32`.
+
+Verified: `gen_rows(1, 5)` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, and the plugin roster matches the other runs — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
+
 ### Things to try
 
 - Declare more of the shipped module: `gen_rows2` (same logic via typed `FB_UDR_MESSAGE`s), `mult`, or the `replicate` UDR *trigger* ([`extern/firebird/examples/udr/`](extern/firebird/examples/udr/) shows each declaration in a comment above its implementation).

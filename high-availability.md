@@ -228,6 +228,12 @@ Verified: same lifecycle on its own scratch database (`ha_fbcpp.fdb`/`ha_fbcpp.s
 
 The identical exercise through node-firebird (`cd samples/nodejs && node ha.js`) — `CREATE SHADOW`/`DROP SHADOW` are ordinary DSQL statements, so the pure-JavaScript driver needs nothing special; `fs.statSync` plays the role of `stat()`. Verified: same lock-step growth, `RDB$FILES rows left: 0` after the drop. Run it twice: both samples clean up after themselves (`DROP SHADOW ... DELETE FILE` on entry), demonstrating that the shadow lifecycle is fully scriptable from a client.
 
+### Rust sample — [`samples/rust/src/bin/ha.rs`](samples/rust/src/bin/ha.rs)
+
+The same lifecycle through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin ha`). Like the JavaScript twin it needs nothing driver-specific — `CREATE SHADOW 1 '...'`/`DROP SHADOW 1 DELETE FILE` go through `tr.execute` as ordinary DSQL, `std::fs::metadata` plays `stat()`, and the idempotent cleanup is a `let _ = tr.execute(...)` that discards the error instead of catching fb-cpp's typed `DatabaseException`. The `RDB$FILES` listing comes back as a `Vec<(String, Option<i64>, Option<i64>)>` — nullable `RDB$SHADOW_NUMBER`/`RDB$FILE_FLAGS` as `Option` handled with `unwrap_or(0)`, no indicator in sight.
+
+Verified: same shape on its own scratch pair (`ha_rust.fdb`/`ha_rust.shd`) — `RDB$FILES` shows `/tmp/fbhandson/ha_rust.shd shadow# 1 flags 1`; `3284992`/`3211264` bytes after `CREATE SHADOW` growing to `3719168`/`3538944` after the 5000 inserts (both files larger than the C++ runs' because this scratch database is reused across runs); then shadow at `-1 bytes` (gone) and `RDB$FILES rows left: 0` after the drop.
+
 ### Things to try
 
 - Create the shadow with `CREATE SHADOW 1 AUTO` vs `MANUAL` and read `RDB$FILE_FLAGS` again — the flag bits encode the [conditional/manual modes](#firebird-ha-building-blocks) that decide what happens when the shadow becomes unavailable.

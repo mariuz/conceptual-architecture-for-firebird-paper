@@ -181,6 +181,12 @@ encoding NONE : name_win="Café" [43 61 66 e9]  name_bin="CafÃ©" [43 61 66 c3 
 
 With `encoding: 'UTF8'` everything transliterates server-side and decodes to proper strings. With `encoding: 'NONE'` the server passes stored bytes through and node-firebird decodes them byte-per-byte (latin1): the `WIN1252` column *accidentally* looks right (`E9` ≈ latin1 `é`) while the UTF8 column becomes the classic mojibake `CafÃ©` — the same no-transliteration path that makes issue [#422](https://github.com/hgourvest/node-firebird/issues/422) bite on NONE-charset databases like `employee.fdb` (which is why [`common.js`](samples/nodejs/common.js) defaults to `encoding: 'NONE'` there).
 
+### Rust sample — [`samples/rust/src/bin/intl.rs`](samples/rust/src/bin/intl.rs)
+
+The same scenario through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin intl`). The builder's `.charset(..)` *is* the lc_ctype, and it does double duty: it names the connection charset sent to the server and the codec the driver uses to turn `Text` columns into Rust `String`s. The sample's second attachment hand-builds `Charset { on_firebird: "NONE", on_rust: None }` — no Rust-side codec — so the driver's mandatory UTF-8 `String` decode becomes the measuring instrument: under UTF8 the decode is an identity check (the `String`'s own bytes *are* the wire bytes), and under NONE the untransliterated WIN1252 byte `E9` fails that decode — which is itself the proof that no server-side conversion happened. Where C++ hex-dumps a raw buffer and JS hands over latin1 mojibake, Rust refuses to construct the string at all.
+
+Verified: same collation numbers — 3 vs 1 matches for `UNICODE_CI_AI` vs `UCS_BASIC`, `UPPER('café èñ ß')` → `CAFÉ ÈÑ ß`, and sort orders `cafe CAFE Café` (CI_AI) vs `CAFE Café cafe` (binary). The UTF8 connection reads `name_win` as `len= 5  43 61 66 C3 A9`; the NONE connection instead reports `Found column with an invalid UTF-8 string: incomplete utf-8 byte sequence from index 3` — the raw stored `E9` arriving unconverted — while the UTF8-typed `name_bin` column's bytes `43 61 66 C3 A9` pass through NONE untouched because they happen to be valid UTF-8.
+
 ### Things to try
 
 - Add `COLLATE UNICODE_CI` (case- but not accent-insensitive) as a third column: `'cafe'` then matches 2 of the 3 rows — the missing middle step between the sample's 3 and 1.

@@ -1,0 +1,15 @@
+[package]
+name = "fb-handson-rust"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rust twins of the hands-on samples, written against rsfbclient"
+
+[dependencies]
+# The native backend links libfbclient (the same client library the C++
+# samples use); the pure_rust backend is rsfbclient's own wire-protocol
+# implementation and is exercised by the samples that discuss the wire.
+rsfbclient = { version = "0.27.0", features = ["linking", "pure_rust"] }
+
+[profile.dev]
+debug = true

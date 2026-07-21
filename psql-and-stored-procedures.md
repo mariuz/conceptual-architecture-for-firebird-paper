@@ -316,6 +316,12 @@ Verified: `NEW_ID = 1` and `2` both tagged `[type=EXEC_PROCEDURE]`, 2 audit rows
 
 The same objects called through node-firebird (`cd samples/nodejs && node psql.js`). The driver surfaces the same distinctions in JavaScript shapes: `EXECUTE PROCEDURE hire(?, ?)` resolves to a **plain object** (`{ NEW_ID: 1 }` — one output message, no cursor) while `SELECT ... FROM raises(10)` resolves to an **array of rows**; and the failing call rejects with an `Error` whose message is the identical status vector, stack trace included: `Exception 1, "PUBLIC"."LOW_SALARY", salary below minimum, At procedure "PUBLIC"."HIRE" line: 4, col: 29`.
 
+### Rust sample — [`samples/rust/src/bin/psql.rs`](samples/rust/src/bin/psql.rs)
+
+The same four module types through [rsfbclient](https://github.com/fernandobatels/rsfbclient), Rust's Firebird client (`cd samples/rust && cargo run --bin psql`). The executable-vs-selectable divide gets its cleanest expression yet in the type system: `tr.execute_returnable(call, ())` maps the single output message of `EXECUTE PROCEDURE hire(...)` straight into a typed tuple `(i64,)` — no cursor, no plain-object convention — while the `SUSPEND`-streaming `raises(10)` is just `tr.query(...)` collecting a `Vec<(i64, String, f64)>` like any table. The `f64` in that tuple is rsfbclient's coarse type surface showing: `NUMERIC(10,2)` arrives as a float, where the OO-API and fb-cpp samples keep the scale exact through string rendering. The custom exception comes back as an `FbError` whose `Display` is the whole status vector, stack trace included.
+
+Verified: `NEW_ID = 1` and `2` from the two hires, 2 audit rows from the trigger, `raises(10)` streaming `5500.00` / `6600.00`, and the failing hire printing `sql error -836: exception 1` followed by the identical chain — `"PUBLIC"."LOW_SALARY"`, `salary below minimum`, `At procedure "PUBLIC"."HIRE" line: 4, col: 29` — the one delta being that rsfbclient leads with the SQLCODE where the C++ samples lead with the `exception 1` line.
+
 ### Things to try
 
 - Add a nested call (`hire` invoked from an `EXECUTE BLOCK`, or from a second procedure) and watch the stack trace grow to multiple `At procedure ... At block` lines — the `dbginfo` machinery described in the [BLR document](blr-intermediate-language.md#both-directions-of-translation).
