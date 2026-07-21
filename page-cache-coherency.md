@@ -155,7 +155,7 @@ cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-
 ./build/fbcpp_page_cache
 ```
 
-Verified: the same coherency price as the OO-API run — phase 1 (shared cache) reads=36 and 78 per worker, phase 2 (private caches) reads=1053 and 1047, with writes near 900 in both phases and the checker reporting `id=1 v=300` and `id=2 v=300` — no lost updates in either topology. (The first cut of the check loop called `fetchNext()` straight after `execute()` and silently skipped row 1 — `Statement::execute()` already lands on the first row, a real fb-cpp idiom difference worth remembering.)
+Verified: the same coherency price as the OO-API run — phase 1 (shared cache) reads=36 and 78 per worker, phase 2 (private caches) reads=1053 and 1047, with writes near 900 in both phases and the checker reporting `id=1 v=300` and `id=2 v=300` — no lost updates in either topology. (The first cut of the check loop called `fetchNext()` straight after `execute()` and silently skipped row 1 — `Statement::execute()` already lands on the first row, a real fb-cpp idiom difference worth remembering; reported upstream as [fb-cpp#59](https://github.com/asfernandes/fb-cpp/issues/59).)
 
 ### JavaScript sample — [`samples/nodejs/page_cache.js`](samples/nodejs/page_cache.js)
 
