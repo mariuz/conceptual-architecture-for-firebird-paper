@@ -157,6 +157,71 @@ This picture (developed in the [architecture comparison](architecture-comparison
 
 **The through-line:** all four share the instinct to isolate variation behind an interface; they simply chose different boundaries, and each boundary produced the ecosystem it could. Firebird's choice — plugins around a single core plus native UDR — gives operational flexibility (swap auth/crypto by config) and native-code escape hatches without surrendering the integration of one storage engine.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/extensibility.cpp`](samples/cpp/extensibility.cpp)
+
+The [end-to-end UDR path](#a-udr-routine-end-to-end-validated) as a runnable program, on a scratch database. It binds two SQL names to entry points in the shipped example module (`plugins/udr/libudrcpp_example.so`, whose source is vendored at [`extern/firebird/examples/udr/`](extern/firebird/examples/udr/)) — the selectable procedure `gen_rows` and the variadic-style function `sum_args` — then calls both with plain SQL. It closes with the two SQL-visible surfaces of the plugin architecture: `RDB$PROCEDURES`/`RDB$FUNCTIONS` store the `module!entry` binding as ordinary metadata (`RDB$ENGINE_NAME`, `RDB$ENTRYPOINT`), and `RDB$CONFIG` names the plugin filling each role of [the plugin-type table](#the-plugin-architecture) above.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/extensibility        # default: inet://localhost//tmp/fbhandson/extensibility.fdb
+```
+
+Verified output (trimmed):
+
+```text
+select n from gen_rows(1, 5):
+N
+-
+1
+2
+3
+4
+5
+
+select sum_args(19, 20, 3):  42
+
+external routines recorded in the system tables:
+GEN_ROWS  ->  udrcpp_example!gen_rows  (engine UDR)
+SUM_ARGS  ->  udrcpp_example!sum_args  (engine UDR)
+
+plugins filling each role (rdb$config):
+RDB$CONFIG_NAME       RDB$CONFIG_VALUE
+--------------------- --------------------------
+Providers             Remote, Engine14, Loopback
+AuthServer            Srp256
+UserManager           Srp
+DefaultProfilerPlugin Default_Profiler
+TracePlugin           fbtrace
+WireCryptPlugin       ChaCha64, ChaCha, Arc4
+```
+
+### JavaScript sample — [`samples/nodejs/extensibility.js`](samples/nodejs/extensibility.js)
+
+The twin (`cd samples/nodejs && node extensibility.js`) does the same DDL, calls and `RDB$CONFIG` listing — and loses *nothing*, in instructive contrast to the [architecture](architecture-comparison.md) and [embedded](embedded-architecture-comparison.md) samples where the pure-JS driver could only reach half the story. The reason: this document's extension seams live on the **server** side of the wire. `EXTERNAL NAME ... ENGINE udr` is plain DDL and `gen_rows(1,5)` a plain `SELECT`; the `udr_engine` plugin loads the native module inside the server process, and the protocol neither knows nor cares that the rows were produced by compiled C++ (`gen_rows(1, 5) -> 1, 2, 3, 4, 5` verified).
+
+### Things to try
+
+- Declare more of the shipped module: `gen_rows2` (same logic via typed `FB_UDR_MESSAGE`s), `mult`, or the `replicate` UDR *trigger* ([`extern/firebird/examples/udr/`](extern/firebird/examples/udr/) shows each declaration in a comment above its implementation).
+- Break the binding: change the entry point to `'udrcpp_example!no_such'` or the engine to `ENGINE nope` — note *when* each error surfaces (DDL time vs first call) and what it says about lazy module loading.
+- Call `sum_args(1, NULL, 3)` — verified to return NULL, but only because the example's C++ checks each null flag and decides to propagate ([`Functions.cpp`](extern/firebird/examples/udr/Functions.cpp)); a UDR sees raw null indicators and *chooses* its NULL semantics, unlike PSQL where SQL rules apply automatically.
+- List the plugin *files* the config names: `ls /opt/firebird/plugins` next to the `RDB$CONFIG` output, and match `plugins.conf`'s `UDR_config` path to `plugins/udr/`.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), run the sample against a **local path** instead of `inet://` — then the engine, the `udr_engine` plugin *and* `libudrcpp_example.so` all load into the sample's own process and every seam in Figure 2 is a breakpoint:
+
+```gdb
+break PluginManager::getPlugins           # src/yvalve/PluginManager.cpp:1152 — every by-type plugin lookup
+break ExtEngineManager::getEngine         # src/jrd/ExtEngineManager.cpp:2287 — resolving 'ENGINE udr' by name
+break ExtEngineManager::makeProcedure     # src/jrd/ExtEngineManager.cpp:2044 — binding GEN_ROWS to the external engine
+break Engine::loadModule                  # src/plugins/udr_engine/UdrEngine.cpp:590 — the dlopen of libudrcpp_example.so
+break ExtEngineManager::Procedure::open   # src/jrd/ExtEngineManager.cpp:1346 — SELECT ... FROM gen_rows() entering native code
+```
+
+The order the breakpoints fire *is* the document's layering: the plugin manager finds the `EXTERNAL_ENGINE` plugin, `ExtEngineManager` resolves the engine name from the routine's metadata (watch `name` = `UDR`), `loadModule` maps the module named before the `!` in `RDB$ENTRYPOINT`, and `Procedure::open`'s backtrace shows a perfectly ordinary DSQL cursor (`Cursor::fetchNext` → …) whose leaf happens to be your compiled code — the call-site indistinguishability the [validated section](#a-udr-routine-end-to-end-validated) claims. From `Procedure::open`, `step` takes you straight into `examples/udr/Procedures.cpp`.
+
 ## Further research
 
 **Firebird**

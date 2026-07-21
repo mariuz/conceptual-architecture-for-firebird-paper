@@ -315,6 +315,74 @@ What it costs is equally clear from the header. Name-based binding makes parsing
 
 The recurring theme this document adds evidence to is **append-only durability**. Three subsystems now — [lock series](lock-manager.md), [system relation ids](catalog-bootstrap.md), BLR opcodes — follow the identical rule, for the identical reason: the number escaped into something durable that a future version must still read. Firebird's answer is always the same, and always to grow rather than renumber. `//#define blr_version6` is that philosophy in a single commented-out line.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/blr.cpp`](samples/cpp/blr.cpp)
+
+The [validated section](#blr-in-action-validated) read BLR through the engine's BLOB filter; the sample removes even that mediation and reads the **raw bytes** from the catalog. It fetches `RDB$FIELDS.RDB$COMPUTED_BLR` for `EMPLOYEE.FULL_NAME` as a plain blob (`IAttachment::openBlob` + `getSegment`), hex-dumps it, and then disassembles it with a forty-line decoder written against the real opcode values — the sample `#include`s [`firebird/impl/blr.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/include/firebird/impl/blr.h) itself, so the header's claim to be "the specification" is taken literally. The decoder is a direct exercise of [the encoding section](#the-encoding): prefix operators, one-byte length-prefixed names, two-byte little-endian literal lengths. For `GET_EMP_PROJ` it decodes just the opening message declarations (the wire-format row layouts) and stops, deferring to isql for the rest.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/blr                      # default: inet://localhost/employee (read-only)
+```
+
+Verified output:
+
+```text
+== computed column EMPLOYEE.FULL_NAME — RDB$FIELDS.RDB$COMPUTED_BLR
+05 27 27 17 00 09 4c 41 53 54 5f 4e 41 4d 45 15
+0f 00 00 02 00 2c 20 17 00 0a 46 49 52 53 54 5f
+4e 41 4d 45 4c (37 bytes total)
+blr_version5
+   blr_concatenate
+      blr_concatenate
+         blr_field context 0, 'LAST_NAME'
+         blr_literal blr_text2 charset 0, len 2, ", "
+      blr_field context 0, 'FIRST_NAME'
+blr_eoc
+
+== procedure GET_EMP_PROJ — RDB$PROCEDURES.RDB$PROCEDURE_BLR
+05 02 04 00 02 00 07 00 07 00 04 01 03 00 0f 00
+00 05 00 07 00 07 00 0c 00 02 03 00 00 0f 00 00
+... (155 bytes total)
+blr_version5, blr_begin
+blr_message 0, 2 fields: blr_short(scale 0) blr_short(scale 0)
+blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)
+... 132 more bytes — see isql SET BLOB ALL for the full dump
+```
+
+The hex line is the [worked example](#a-worked-example) in its native form: `05` = `blr_version5`, `27` = `blr_concatenate` (39), `17 00 09` = `blr_field`, context 0, nine name bytes, `2c 20` = `", "`, and the closing `4c` = `blr_eoc` (76). For the full symbolic dump of any BLR blob from any SQL client, the zero-tooling route remains:
+
+```sql
+SET BLOB ALL;  -- isql: render blobs through the engine's BLR blob filter
+SELECT RDB$PROCEDURE_BLR FROM RDB$PROCEDURES WHERE RDB$PROCEDURE_NAME = 'GET_EMP_PROJ';
+```
+
+### JavaScript sample — [`samples/nodejs/blr.js`](samples/nodejs/blr.js)
+
+The same read through node-firebird (`cd samples/nodejs && node blr.js`). Blob columns arrive as a function that streams `Buffer` chunks; the sample collects them and runs the identical mini-disassembler (opcode values transcribed from `blr.h`). The output is **byte-for-byte identical** to the C++ run — `05 27 27 17 00 09 4c ...`, 37 bytes — which is the document's stability argument made empirical: two unrelated client stacks, one wire protocol, one stored artifact, no translation anywhere.
+
+### Things to try
+
+- Point the sample at your own scratch database, create `CREATE TABLE t (a INT, b COMPUTED BY (a * 2 + 1))`, and decode the arithmetic: you will meet `blr_multiply`/`blr_add` (prefix, two operands each) and a `blr_literal blr_long`.
+- Dump `RDB$INDICES.RDB$CONDITION_BLR` of a partial index or `RDB$EXPRESSION_BLR` of an expression index — the [third home](#the-three-homes-of-blr) claims they are the same format; confirm it.
+- Compare `RDB$TRIGGERS.RDB$TRIGGER_BLR` for a `CHECK` constraint with the constraint's text in `RDB$CHECK_CONSTRAINTS` — one SQL predicate, two stored artifacts.
+- Extend the decoder until it can walk all 155 bytes of `GET_EMP_PROJ`, using `SET BLOB ALL`'s output as the answer key; every operand layout you need is in `par.cpp`.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), both directions of translation are directly observable:
+
+```gdb
+break GEN_statement       # src/dsql/gen.cpp:260 — DSQL nodes emitting bytes (downward)
+break Jrd::PAR_parse      # src/jrd/par.cpp:755 — stored bytes back to a node tree (upward)
+break Jrd::blb::open      # src/jrd/blb.cpp:1310 — the sample's openBlob, server side
+break filter_blr          # src/jrd/filters.cpp:266 — SET BLOB ALL entering the BLR blob filter
+break fb_print_blr        # src/yvalve/gds.cpp:2155 — the pretty-printer with the full opcode table
+```
+
+Preparing any query stops in `GEN_statement`, where `dsqlScratch->appendUChar(...)` calls append exactly the bytes the sample later hex-dumps; executing a stored procedure (or just `SELECT * FROM GET_EMP_PROJ(...)`) stops in `PAR_parse` with `csb->csb_blr_reader` positioned over the same 155 bytes read from `RDB$PROCEDURE_BLR` — inspect them with `x/16xb blr`. The version dispatch (`case blr_version4: case blr_version5:`, `par.cpp:652`) is two lines down from the breakpoint; watch it accept `5` and reflect on the commented-out `blr_version6`. Running the sample itself only triggers `blb::open` — reading BLR raw involves no BLR machinery at all, which is precisely why the bytes survive unchanged.
+
 ## Further research
 
 * [`src/include/firebird/impl/blr.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/include/firebird/impl/blr.h) — the specification, such as it is. Read it sorted numerically to see the historical layers.

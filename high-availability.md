@@ -181,6 +181,63 @@ SQLite, an in-process library, has **no native HA** — HA means wrapping it in 
 
 **Read scaling is the shared easy win.** Independent of failover, every replicated system here can point read traffic at a hot standby / read-only replica, and all four (via their replication) support it. Firebird's read-only replica (`gfix -replica read_only`) is a first-class way to offload analytics from the primary — an HA investment that pays off in performance every day, not just during a failure.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/ha.cpp`](samples/cpp/ha.cpp)
+
+Of the three [HA building blocks](#firebird-ha-building-blocks), one is pure client-side SQL: the **shadow**. The sample creates a shadow on a scratch database, shows it registered in `RDB$FILES` (flag 1 = shadow), then `stat()`s both files — server and sample share a host here — to prove the mirror exists and grows in lock-step as 5000 rows are inserted, and finally retires it with `DROP SHADOW 1 DELETE FILE`. Replica promotion (`gfix -replica none`) and `sync_replica` need server-side configuration and stay as text in the sections above.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/ha        # default: inet://localhost//tmp/fbhandson/ha.fdb
+```
+
+Verified output:
+
+```text
+CREATE SHADOW 1 done — the engine dumped every page to the mirror
+
+RDB$FILE_NAME         RDB$SHADOW_NUMBER RDB$FILE_FLAGS
+--------------------- ----------------- --------------
+/tmp/fbhandson/ha.shd 1                 1
+
+after CREATE SHADOW:         main =  2564096 bytes, shadow =  2433024 bytes
+after 5000 inserts:          main =  2899968 bytes, shadow =  2818048 bytes
+
+DROP SHADOW 1 DELETE FILE done
+after DROP SHADOW:           main =  2899968 bytes, shadow =       -1 bytes
+
+RDB$FILES rows left: 0
+done.
+```
+
+Both files grow by the same ~330 KB during the insert burst — every page write went to both, synchronously, exactly the "media failure" primitive of [Figure 1](#firebird-ha-building-blocks). (The shadow stays a page or two smaller than the main file: it mirrors used pages, not the main file's preallocation.)
+
+### JavaScript sample — [`samples/nodejs/ha.js`](samples/nodejs/ha.js)
+
+The identical exercise through node-firebird (`cd samples/nodejs && node ha.js`) — `CREATE SHADOW`/`DROP SHADOW` are ordinary DSQL statements, so the pure-JavaScript driver needs nothing special; `fs.statSync` plays the role of `stat()`. Verified: same lock-step growth, `RDB$FILES rows left: 0` after the drop. Run it twice: both samples clean up after themselves (`DROP SHADOW ... DELETE FILE` on entry), demonstrating that the shadow lifecycle is fully scriptable from a client.
+
+### Things to try
+
+- Create the shadow with `CREATE SHADOW 1 AUTO` vs `MANUAL` and read `RDB$FILE_FLAGS` again — the flag bits encode the [conditional/manual modes](#firebird-ha-building-blocks) that decide what happens when the shadow becomes unavailable.
+- While the inserts run, watch both files from another terminal (`watch -n1 ls -l /tmp/fbhandson/ha.*`) to see the synchronous mirroring live.
+- Simulate the failover path on the *replication* primitive instead: take any scratch database, `gfix -replica read_only` it, verify writes are refused, then promote it back with `gfix -replica none` — the two-command core of [Figure 2](#firebird-failover-what-is-manual-what-is-external).
+- Point `DROP SHADOW 1 PRESERVE FILE` at it instead and inspect the orphaned `.shd` with `gstat -h` — it is a structurally complete database image frozen at drop time.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the shadow machinery of `src/jrd/sdw.cpp` maps one-to-one onto the sample's phases:
+
+```gdb
+break SDW_add                  # src/jrd/sdw.cpp:70  — CREATE SHADOW arrives in the engine
+break SDW_dump_pages           # sdw.cpp:267 — the initial full page dump into the mirror
+break CCH_write_all_shadows    # src/jrd/cch.cpp:2435 — every subsequent page write, fanned out
+break SDW_rollover_to_shadow   # sdw.cpp:576 — the failover: main file I/O fails, shadow takes over
+break SDW_start                # sdw.cpp:755 — shadow files being opened on attach
+```
+
+`SDW_dump_pages` fires once, right after `CREATE SHADOW` — its loop over the page space *is* the "engine dumped every page" line in the output. During the insert burst, `CCH_write_all_shadows` fires on each page flush with the shadow list hanging off `dbb->dbb_shadow`; that call sitting inside the buffer-cache write path is the architectural fact that shadows are synchronous and page-level, not logical. `SDW_rollover_to_shadow` is the branch you hope never executes: reached when a write to the main file fails, it promotes the shadow in place — the built-in half of the failover story whose external half (detection, redirection) [Figure 2](#firebird-failover-what-is-manual-what-is-external) assigns to the operator.
+
 ## Further research
 
 **Firebird**

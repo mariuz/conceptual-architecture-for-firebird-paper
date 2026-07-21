@@ -162,6 +162,77 @@ All four separate a lexer from a grammar-driven parser, but they differ in the g
 
 **What the parser emits reveals the engine.** Firebird lowers to **BLR**, a *stored, stable* intermediate language (procedures are kept as BLR), and SQLite lowers straight to **VDBE bytecode** — both are true compiler back-ends producing a durable IR, which is why both have such compiler-like pipelines (a point the [architecture comparison](architecture-comparison.md#sqlite) also makes). PostgreSQL and MySQL instead build in-memory parse trees that are analyzed, rewritten and planned but never serialized to an external language. The grammar is the front door; what comes out of it is the clearest signal of how each engine is built.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/parser_errors.cpp`](samples/cpp/parser_errors.cpp)
+
+The sample drives the parser this document describes from the client side, through `IAttachment::prepare` — every string it sends lands in `Parser::parse()` over the BtYacc-generated tables from `parse.y`. It shows four things: a **dynamic-SQL placeholder** (`?`) coming back as a typed input parameter (the parser builds the parameter node, the semantic pass resolves its type from the column — `sqltype=500` is `SQL_SHORT`, matching `EMP_NO`); the token `FIRST` accepted in **two grammatical roles** — the row-limit clause `SELECT FIRST 1 ...` and a plain column name — the kind of keyword/identifier ambiguity the [backtracking grammar](#firebirds-grammar-btyacc-not-plain-yacc) absorbs instead of reserving the word; two **syntax errors** whose status vectors carry the offending token with its exact line and column; and a **semantic error** (unknown column) proving position tracking survives past the parse into the DSQL pass. Everything runs read-only against the stock `employee` database.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/parser_errors            # default: inet://localhost/employee
+```
+
+Verified output:
+
+```text
+---- SELECT first_name FROM employee WHERE emp_no = ?
+  parsed OK: type=SELECT, input params=1, output columns=1
+    param 0: sqltype=500, length=2
+---- SELECT FIRST 1 emp_no FROM employee
+  parsed OK: type=SELECT, input params=0, output columns=1
+---- SELECT first FROM (SELECT 1 AS first FROM rdb$database)
+  parsed OK: type=SELECT, input params=0, output columns=1
+---- SELEC 1 FROM rdb$database
+  prepare failed:
+Dynamic SQL Error
+-SQL error code = -104
+-Token unknown - line 1, column 1
+-SELEC
+---- SELECT emp_no
+FROM employee
+WHERE ORDER BY 1
+  prepare failed:
+Dynamic SQL Error
+-SQL error code = -104
+-Token unknown - line 3, column 7
+-ORDER
+---- SELECT frst_name
+FROM employee
+  prepare failed:
+Dynamic SQL Error
+-SQL error code = -206
+-Column unknown
+-"FRST_NAME"
+-At line 1, column 8
+```
+
+### JavaScript sample — [`samples/nodejs/parser_errors.js`](samples/nodejs/parser_errors.js)
+
+The same six statements through node-firebird (`cd samples/nodejs && node parser_errors.js`). The driver has no separate prepare step — each `query()` allocates, prepares and executes in one round trip — but the parser's status vector travels back over the [wire protocol](firebird-wire-protocol.md) unchanged, so the identical `Token unknown - line 3, column 7 / ORDER` report surfaces as the JavaScript error message. Successful parses are shown by the rows they return (`SELECT FIRST 1 emp_no` → `EMP_NO=2`), including the parameterised query executed with `[2]` bound to the `?`.
+
+To *see* the grammar the parser is running, the repo's [`tools/grammar_to_mermaid.py`](tools/grammar_to_mermaid.py) (the [generator section](#how-to-generate-the-diagram-in-mermaid) above) renders any rule's neighbourhood — `--root select_expr --depth 3` maps exactly the sublanguage these statements exercise.
+
+### Things to try
+
+- Feed the C++ sample a statement using a *reserved* word as an identifier (`SELECT order FROM rdb$database`) and compare with the non-reserved `FIRST` case; the token lists at the top of [`parse.y`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/parse.y) explain the difference.
+- Add a statement with an unclosed quoted string or `/* comment` — lexer errors report positions too, but different ones (`Unexpected end of command`).
+- Move the syntax error deeper into a long statement and watch the column number track it; then put two errors in one statement and confirm only the first is reported — the parse aborts at the first dead end even a backtracking parser cannot recover from.
+- Run `python3 tools/grammar_to_mermaid.py --root delete --depth 2` and follow the diagram while stepping the equivalent SQL through the debugger below.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the whole pipeline of this document is a handful of breakpoints:
+
+```gdb
+break Jrd::prepareStatement       # src/dsql/dsql.cpp:519 — DSQL entry: text + dialect in hand
+break Jrd::Parser::parse          # src/dsql/Parser.cpp:121 — wraps the BtYacc-generated dsql_yyparse
+break Jrd::Parser::yylexAux       # src/dsql/Parser.cpp:395 — the hand-written lexer, one token per call
+break Jrd::Parser::yyerror_detailed  # src/dsql/Parser.cpp:1260 — builds "Token unknown - line N, column M"
+```
+
+`yylexAux` fires once per token — stepping through it on `SELEC 1 ...` shows the lexer happily returning `SELEC` as a plain identifier token; it is the *parser* that rejects it, landing in `yyerror_detailed` where `posn`'s first line/column pair becomes the numbers in the sample's output. On the `FIRST`-as-column statement, watch `parse()` return successfully despite the grammar conflicts: the backtracking machinery has tried and unwound the FIRST-clause interpretation. A breakpoint on `Jrd::PAR_error` (`src/jrd/par.cpp:854`) marks the *other* parser — the BLR parser of [blr-intermediate-language.md](blr-intermediate-language.md) — and never fires for these pure syntax errors, a clean demonstration that DSQL and JRD are separate layers. The [debugging guide](debugging-firebird.md) shows how to attach so these engine-side breakpoints land in the same process as the sample (embedded) or in the server.
+
 ## Further research
 
 **Firebird**

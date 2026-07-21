@@ -117,6 +117,68 @@ The framing that makes Firebird's position clear: **PostgreSQL and InnoDB avoid 
 
 This document shows the lock manager under its heaviest load: the [trace document](request-lifecycle-code-trace.md) showed the lock table's structure, the [GC document](garbage-collection-and-sweep.md) its record-level uses, the [events document](firebird-events.md) its shared-memory sibling, and the [lock-manager document](lock-manager.md) dissects the protocol itself — and here is the load it was actually built to carry: thousands of page locks, AST traffic on every cache conflict, all invisible to SQL. The protocol's elegance is its economy — cache validity *is* lock possession, cache-to-cache transfer *is* the ordinary flush-and-read, and the whole thing degrades to nearly free when a process discovers it is alone. Its cost is equally honest: every Classic page miss talks to a shared-memory table, and hot-page ping-pong turns commits into forced writes — the fundamental reason SuperServer's shared cache is the default and Classic is the choice for isolation over throughput.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/page_cache.cpp`](samples/cpp/page_cache.cpp)
+
+The same hot-page ping-pong run against both cache topologies, with per-attachment `MON$IO_STATS` as the referee. The parent process never touches Firebird — it only forks/execs children, because each **phase 2 child is a full embedded engine**: the sample builds the [SuperClassic sandbox](#coherency-in-action-validated) itself (`/tmp/fbhandson/fbemb` — symlinks to the real `plugins/`, `intl/`, `tzdata/`, plus a one-line `firebird.conf`), so the two workers attach by local path with shared file locks and *private* page caches. Rows 1 and 2 share one data page; each worker commits 300 updates to its own row.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/page_cache
+```
+
+Verified output:
+
+```text
+phase 1: two client processes, ONE SuperServer shared cache
+  worker pid 203824 row 1: 300 commits | page fetches=8435   reads=53   writes=879
+  worker pid 203825 row 2: 300 commits | page fetches=13089  reads=57   writes=893
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+phase 2: two EMBEDDED engine processes, PRIVATE page caches
+  worker pid 203876 row 1: 300 commits | page fetches=17444  reads=1044 writes=913
+  worker pid 203877 row 2: 300 commits | page fetches=17272  reads=1038 writes=912
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+same workload — the private caches paid for coherency in disk I/O.
+```
+
+The `reads` column is the protocol made visible: ~55 physical reads per worker under the shared cache (startup metadata only) versus **~1 040** under private caches — every ping-pong is a blocking AST, a flush in the holder, a downgrade, and a forced re-read in the requester, exactly Figure 2's round trip, because [data travels through the disk](#data-travels-through-the-disk). And both phases end at `v=300`/`v=300`: not one update lost between two independent engines writing one page. (Writes are similar in both phases — the created databases run with forced writes on, so commits flush either way; coherency's own price shows up as *reads*.)
+
+### JavaScript sample — [`samples/nodejs/page_cache.js`](samples/nodejs/page_cache.js)
+
+node-firebird is a wire-protocol client, so it can only reach the server's one shared cache — it is the twin of phase 1, and phase 2 is C++-only by nature (you cannot run an embedded engine from a socket). Two connections, same 300-round ping-pong (`cd samples/nodejs && node page_cache.js`):
+
+```text
+  conn A (row 1): page fetches=16048 reads=87 writes=908
+  conn B (row 2): page fetches=4932 reads=0 writes=924
+  A sees B's row: v=300; B sees A's row: v=300 (expected 300)
+```
+
+Conn B performed **zero** physical reads — thousands of logical fetches all served from buffers conn A's writes kept hot. That is what "coherency by shared memory" means: the SuperServer case has nothing to keep coherent.
+
+### Things to try
+
+- Give the two rows their own pages (`create table t (id int primary key, v int, pad char(4000))` forces ~one row per 8K page) and rerun: phase 2's `reads` collapse — no shared page, no ping-pong, the protocol goes quiet.
+- Point `fb_lock_print -f` at the sandbox's lock table (under `/tmp/firebird*` for the `/tmp/fbhandson/fbemb` root) mid-run of phase 2: series-3 (`LCK_bdb`) locks with two owners, plus a climbing `Blocks:` counter — each block one AST, as in the [validated section](#coherency-in-action-validated).
+- Change the sandbox's `firebird.conf` to `ServerMode = Super` and rerun phase 2: the second worker fails with `isc_already_opened` — layer 1's exclusive `fcntl` lock, live.
+- Raise `ROUNDS` to 2000 and watch reads scale linearly in phase 2 but stay flat in phase 1.
+
+### Debugging this in C++ (gdb)
+
+The C++ sample's phase-2 workers run the whole engine in-process, so attach gdb to one worker (or run one under gdb with the other free-running) per the [debugging guide](debugging-firebird.md):
+
+```gdb
+break lock_buffer         # cch.cpp:4071 — page entering the cache; return value says "reread needed"
+break blocking_ast_bdb    # cch.cpp:2592 — fires in the HOLDER when the other process wants the page
+break down_grade          # cch.cpp:3367 — the heart: flush-if-dirty, then downgrade
+break CCH_fetch           # cch.cpp:778  — every page access funnels here
+break init_database_lock  # jrd.cpp:7732 — layer 2's EX-probe-then-SW dance at attach
+```
+
+`blocking_ast_bdb` is the one worth sitting on: it fires on the AST thread, *not* on any thread running your SQL — the backtrace shows the lock manager's delivery path instead of a statement, which is the clearest possible demonstration that coherency runs beside the query engine, not inside it. Once in `down_grade`, `bdb->bdb_flags & BDB_dirty` decides whether you'll see a `write_page` call before the lock is released (the careful-writes handoff), and stepping to the *other* process shows its next `lock_buffer` returning "lock slipped below READ — page must be read". `lockDatabaseFile` (`os/posix/unix.cpp:969`) is layer 1 if you want to watch the `fcntl` itself.
+
 ## Further research
 
 * [`src/jrd/cch.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/cch.cpp) — `lock_buffer`, `blocking_ast_bdb`, `down_grade`, `CCH_down_grade_dbb`; read `down_grade`'s precedence handling against the [careful-writes section](on-disk-structure.md).

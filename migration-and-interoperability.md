@@ -131,6 +131,81 @@ The same file is a SQL table to Firebird and a flat file to any other tool — a
 
 **SQLite's `.sqlite` file is the portability champion, by having almost nothing to migrate.** Because the [file format is stable and self-contained](embedded-architecture-comparison.md) across versions and architectures, "migration" for SQLite is usually copying a file — no ODS upgrade, no server, no dump. Firebird's `.fdb` is likewise cross-platform within an ODS, but a major version can require the `gbak` cycle. This is the [embedded-vs-server split](embedded-architecture-comparison.md) once more: the server engines invest in migration tooling because their formats and features evolve; SQLite optimizes for the file just working everywhere, forever.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/migration.cpp`](samples/cpp/migration.cpp)
+
+The [type-mapping table](#type-mapping) made concrete. The sample creates a probe table holding exactly the types migrations trip over — `INT128`, `NUMERIC(38,8)`, `DECFLOAT(34)`, `TIMESTAMP WITH TIME ZONE`, `BOOLEAN`, `CHAR(16) CHARACTER SET OCTETS` (UUID) — and inspects it the two ways a migration tool does: first the **described metadata** (`IMessageMetadata::getType()` — the raw `SQL_*` wire codes a driver must recognize or fail on), then the **text face** (every column fetched with the output coerced to `VARCHAR`, the engine's own rendering that a generic "select strings, copy strings" ETL receives).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/migration        # default: inet://localhost//tmp/fbhandson/migration.fdb
+```
+
+Verified output:
+
+```text
+described output metadata of SELECT * FROM TYPE_PROBE:
+
+column     code wire type                length scale
+C_INT128  32752 SQL_INT128                   16     0
+C_NUM     32752 SQL_INT128                   16    -8
+C_DEC     32762 SQL_DEC34 (DECFLOAT 34)      16     0
+C_TSTZ    32754 SQL_TIMESTAMP_TZ             12     0
+C_BOOL    32764 SQL_BOOLEAN                   1     0
+C_UUID      452 SQL_TEXT (CHAR)              16     0
+C_VC        448 SQL_VARYING (VARCHAR)        80     0
+
+same row fetched with every column coerced to VARCHAR:
+
+  C_INT128 = 170141183460469231731687303715884105727
+  C_NUM    = 123456789012345678901234567890.12345678
+  C_DEC    = 12345678901.23456789012345678901234
+  C_TSTZ   = 2026-07-21 12:00:00.0000 Europe/Bucharest
+  C_BOOL   = TRUE
+  C_VC     = naïve ütf8 text
+  C_UUID   = CB72F3B3-0D88-4278-8C6F-5BAA11F6CE48   (rendered via UUID_TO_CHAR)
+```
+
+Two details reward attention. `NUMERIC(38,8)` describes as `SQL_INT128` with scale −8 — high-precision numerics ride on the INT128 carrier, so a driver that "supports NUMERIC" but not `SQL_INT128` fails on wide columns. And the text face preserves everything, named time zone included — which is why "cast to text on the way out" is the universal fallback in the [flat-file and ETL paths](#runtime-interoperability) above.
+
+### JavaScript sample — [`samples/nodejs/migration.js`](samples/nodejs/migration.js)
+
+The same table probed column by column through node-firebird (`cd samples/nodejs && node migration.js`) — a pure-JavaScript driver forced to map each wire type onto JavaScript's few value types, exactly the downcasting problem every migration faces. Verified results, which are the document's ⚠ marks reproduced live:
+
+```text
+  C_INT128 -> string  0.170141183460469231731687303715884105727
+  C_NUM    -> string  123456789012345678901234567890.12345678
+  C_DEC    -> ERROR: SQL error code = -804, SQLDA missing or incorrect ...
+  C_TSTZ   -> Date  2026-07-21T09:00:00.000Z
+  C_BOOL   -> boolean  true
+  C_UUID   -> ERROR: Malformed string
+  C_VC     -> string  naïve ütf8 text
+```
+
+Every line teaches something: `NUMERIC(38,8)` arrives as a correct string, but scale-0 `INT128` hits a driver formatting bug (a spurious `0.` prefix — node-firebird 2.11's scale handling); `DECFLOAT(34)` cannot be described by the driver at all; `TIMESTAMP WITH TIME ZONE` becomes a JS `Date` holding the correct *instant* (12:00 Bucharest = 09:00 UTC) with the zone name lost — the classic lossy mapping; and OCTETS data fails UTF-8 decoding (with `encoding: 'NONE'` it arrives as a raw `Buffer` instead). The sample closes with the fallback that always works: the same values `CAST` to `VARCHAR` server-side, all of them intact.
+
+### Things to try
+
+- Change the connection `encoding` to `'NONE'` in the JS sample and re-probe `C_UUID` — a 16-byte `Buffer` now, no error: charset coercion happens client-side, per connection.
+- Add a `DECFLOAT(16)` column: fbclient describes it as `SQL_DEC16` (32760); check whether the JS driver's column-by-column probe treats it like `DECFLOAT(34)`.
+- Round-trip the probe table through gbak (`./build/backup` shows the Services route) and re-run the C++ probe on the restored copy — the transportable format preserves every wire type exactly.
+- Export the table through an [external-file table](#flat-file-interchange-validated) (all columns CAST to CHAR) and re-import — measure what the flat-file path keeps and what it flattens.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the type machinery behind both samples is a handful of well-named functions:
+
+```gdb
+break CVT_move                        # src/common/cvt.cpp:3843 — every conversion, incl. the coercion to VARCHAR
+break Int128::toString                # src/common/Int128.cpp:123 — INT128/NUMERIC(38) rendered to text (note the scale arg)
+break Decimal128::toString            # src/common/DecFloat.cpp:711 — DECFLOAT(34)'s text face
+break TimeZoneUtil::format            # src/common/TimeZoneUtil.cpp:543 — the zone name/offset appended to a TZ timestamp
+break TimeZoneUtil::localTimeStampToUtc  # TimeZoneUtil.cpp:703 — named zone -> UTC on input (the instant JS receives)
+```
+
+Run the C++ sample's text-face query under these: each row fetch descends from the cursor into `CVT_move` once per column, and for `C_NUM` you can watch `Int128::toString` receive scale −8 — the single integer that turns `12345678901234567890123456789012345678` into `123456789012345678901234567890.12345678`, i.e. the exact place where the [type-mapping table's](#type-mapping) "INT128-backed NUMERIC" row is implemented. `TimeZoneUtil::format` shows the named-zone id (a small integer indexing the tzdata tables) being expanded to `Europe/Bucharest` — the information a `Date`-shaped driver type has nowhere to put, which is why that mapping is marked lossy.
+
 ## Further research
 
 **Firebird**

@@ -131,6 +131,76 @@ The sharpest contrast is SQLite. In SQLite, a column has a **type affinity** (a 
 
 **Static-by-default is the server consensus; SQLite's dynamic typing is the deliberate outlier.** Three of the four enforce declared types because multi-user, long-lived databases benefit from the guarantee; SQLite relaxes it because a single-application embedded store benefits more from flexibility and small size (the same trade-off as its [single-writer concurrency](embedded-architecture-comparison.md#the-decisive-difference-concurrency) and its [lack of a server](embedded-architecture-comparison.md)). Both directions are now converging slightly — SQLite added `STRICT` tables, MySQL made strict `sql_mode` the default — but the defaults still tell you what each system optimises for.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/types.cpp`](samples/cpp/types.cpp)
+
+One table round-trips the headline types [described above](#firebird-data-types-in-depth) — `BOOLEAN`, `INT128` at its maximum, `DECFLOAT(34)` holding an exact `0.1`, `TIMESTAMP WITH TIME ZONE` with a named IANA zone, and a `CHECK`-constrained [domain](#firebirds-type-system). The sample shows both faces of the type system: the **wire type codes** straight from `IMessageMetadata::getType` (the client-side reflection of `struct dsc`'s `dtype`), and the **engine's own text rendering** of every value (`fb_sample.h` coerces output columns to VARCHAR, so the server's CVT rules do the formatting). It also inserts an invalid value into the domain column to show the `CHECK` travelling with the type.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/types            # default: inet://localhost//tmp/fbhandson/types.fdb
+```
+
+Verified output:
+
+```text
+domain CHECK rejected 'not-an-address':
+    validation error for column "PUBLIC"."SHOWCASE"."MAIL", value "not-an-address"
+
+column  wire type (IMessageMetadata::getType)
+------  --------------------------------------
+FLAG    32764 = SQL_BOOLEAN
+BIG     32752 = SQL_INT128
+MONEY   32762 = SQL_DEC34 (DECFLOAT(34))
+BORN    32754 = SQL_TIMESTAMP_TZ
+MAIL    448 = SQL_VARYING (VARCHAR)
+
+FLAG BIG                                     MONEY BORN                                      MAIL
+---- --------------------------------------- ----- ----------------------------------------- ----------------
+TRUE 170141183460469231731687303715884105727 0.1   2026-07-21 12:00:00.0000 Europe/Bucharest user@example.com
+```
+
+Note the round-trip fidelity: INT128's full 39 digits, `0.1` exactly, and the *named zone* `Europe/Bucharest` — not an offset.
+
+### JavaScript sample — [`samples/nodejs/types.js`](samples/nodejs/types.js)
+
+The same table through node-firebird 2.11 (`cd samples/nodejs && node types.js`) is a study in driver coverage: a pure-JavaScript wire-protocol driver must decode every wire type itself, and the FB4 types are exactly where it shows. Verified:
+
+```text
+flag   -> true  [boolean]
+born   -> "2026-07-21T09:00:00.000Z"  [Date]
+mail   -> "user@example.com"  [string]
+big    -> "0.170141183460469231731687303715884105727"  [string]
+money  -> FETCH FAILED: SQL error code = -804, SQLDA missing or incorrect version, ...
+
+server-side CAST(... AS VARCHAR) — the reliable route:
+big    -> "170141183460469231731687303715884105727"  [string]
+money  -> "0.1"  [string]
+```
+
+`BOOLEAN` maps to a native JS boolean and `TIMESTAMP WITH TIME ZONE` to a JS `Date` — the *instant* is correct (12:00 Bucharest = 09:00Z) but the zone name is gone, because a JS `Date` has nowhere to keep it. `INT128` is worse than unsupported: the driver returns a **wrong value** (`0.170…` — it mis-applies a scale), and `DECFLOAT` cannot be fetched at all (−804). The honest workaround is `CAST(... AS VARCHAR)`, making the server's CVT conversion do the work — the same route the C++ helper takes for every column. The domain `CHECK` fires over the wire identically in both languages.
+
+### Things to try
+
+- Add an `INT128` overflow: insert `1.7e38` cast to `INT128`, or `SELECT 170141183460469231731687303715884105727 + 1` — watch dialect-3 exact arithmetic refuse instead of wrapping.
+- Change the C++ `attach` charset from `UTF8` to `NONE` and re-run: the `TIMESTAMP_TZ` text is unchanged (dates don't transliterate) but accented text in `mail` would arrive as raw bytes — the [per-column charset](#firebirds-type-system) mechanics, explored fully in [internationalization.md](internationalization.md).
+- Create a dialect-1 database (`isql -sqldialect 1`) and watch `"double quotes"` become string literals and `DATE` grow a time part.
+- In `types.js`, try `SELECT big + 0 FROM showcase` — the sum comes back as INT128 too, so the CAST workaround is needed for computed columns as well.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the type machinery is directly observable:
+
+```gdb
+break CVT_move_common      # src/common/cvt.cpp:1678 — every type conversion funnels here
+break datetime_to_text     # cvt.cpp:2363 — fires when the TIMESTAMP_TZ column becomes text
+break Firebird::Int128::toString   # src/common/Int128.cpp:123 — INT128 rendered to digits
+break EVL_validate         # src/jrd/evl.cpp:599 — the domain CHECK being evaluated
+```
+
+`CVT_move_common` receives the two descriptors (`const dsc* from, dsc* to`) this document's [type-system section](#firebirds-type-system) describes — print `from->dsc_dtype` and `to->dsc_dtype` to watch the sample's VARCHAR coercion happen one column at a time. When the invalid `mail` insert runs, `EVL_validate` evaluates the domain's `CHECK` and its error path posts `isc_not_valid_for` (`evl.cpp:662`) — the backtrace shows the assignment node that carried the domain's validation expression into the INSERT. The [debugging guide](debugging-firebird.md) explains how to run the sample against an embedded engine so these breakpoints fire in-process.
+
 ## Further research
 
 **Firebird**

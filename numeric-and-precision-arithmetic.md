@@ -58,7 +58,7 @@ DECFLOAT is the distinctive one: it is **exact decimal arithmetic that also floa
 Because DECFLOAT is a full IEEE decimal implementation, Firebird exposes its **rounding mode** and **exception traps** as session settings (`SET DECFLOAT`, parsed in `parse.y`):
 
 - **`SET DECFLOAT ROUND <mode>`** — the rounding applied when a result exceeds the available digits: `CEILING`, `FLOOR`, `UP`, `DOWN`, `HALF_UP`, `HALF_DOWN`, `HALF_EVEN` (banker's rounding, the default), and `REROUND`. This is far more explicit control than most databases offer.
-- **`SET DECFLOAT TRAPS TO <list>`** — which IEEE conditions raise an error instead of returning a special value: `Division_by_zero`, `Inexact`, `Invalid_operation`, `Overflow`, `Underflow`. By default a DECFLOAT can produce `Infinity`/`NaN`; enabling a trap turns that condition into a SQL exception — so, for example, a division by zero can *raise* rather than silently yield infinity.
+- **`SET DECFLOAT TRAPS TO <list>`** — which IEEE conditions raise an error instead of returning a special value: `Division_by_zero`, `Inexact`, `Invalid_operation`, `Overflow`, `Underflow`. The default trap set is `Division_by_zero, Invalid_operation, Overflow` (`doc/sql.extensions/README.data_types`), so a division by zero *raises* out of the box; clearing the traps (`SET DECFLOAT TRAPS TO` with an empty list) lets the same operation yield `Infinity`/`NaN` instead.
 
 These are per-session (settable in an `ON CONNECT` trigger for a database-wide default), giving applications precise, auditable control over financial rounding behavior.
 
@@ -112,6 +112,73 @@ Every behavior held: `DECFLOAT` summed `0.1 + 0.2` to exactly `0.3`, produced 34
 **On the common cases the four converge, with SQLite the exception.** For ordinary exact decimal — money, invoices, ledgers — Firebird's scaled-integer `NUMERIC`, PostgreSQL's arbitrary-precision `numeric`, and MySQL's packed `DECIMAL` are all correct and interchangeable in spirit (PostgreSQL wins on maximum precision, Firebird on the native `INT128` backing and the `DECFLOAT` option). **SQLite is the odd one out: it has no native exact decimal type at all** — its numeric storage classes are 64-bit `INTEGER` and IEEE `REAL` (`double`), so storing money as a number invites the classic binary-rounding bug, and exact decimal requires the loadable decimal extension or storing scaled integers/text by hand. This is the [embedded-vs-server trade-off](embedded-architecture-comparison.md) surfacing in arithmetic: the tiny library ships the two numeric types the CPU has, and pushes exact decimal to an extension.
 
 **Firebird's explicit rounding and trap control is a quiet differentiator.** `SET DECFLOAT ROUND` (eight IEEE modes) and `SET DECFLOAT TRAPS` (raise on division-by-zero, inexact, overflow, …) give financial applications auditable, per-session control over exactly how rounding and exceptional results behave — where PostgreSQL and MySQL bake in a fixed rounding rule and SQLite offers nothing. Combined with `INT128` and `DECFLOAT`, it makes Firebird one of the stronger engines for high-precision and financial arithmetic — a domain where "close enough" is a bug.
+
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/numerics.cpp`](samples/cpp/numerics.cpp)
+
+Four experiments, one per section of this document: the residue of `(0.1 + 0.2) − 0.3` in binary vs decimal floating point; a **raw fetch** of `NUMERIC(18,4)` that prints the untouched output metadata (`IMessageMetadata::getType`/`getScale`) and the actual message bytes, proving the [scaled-integer claim](#exact-integers-and-scaled-numeric) on the wire; `INT128` at `2¹²⁷−1` and the overflow one step beyond; and the [`Division_by_zero` trap](#decfloat-rounding-and-traps) — on by default, then cleared with `SET DECFLOAT TRAPS TO` so the same query returns `Infinity`.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/numerics         # default: inet://localhost//tmp/fbhandson/numerics.fdb
+```
+
+Verified output:
+
+```text
+(0.1+0.2)-0.3 in DOUBLE PRECISION : 5.551115123125783e-17
+(0.1+0.2)-0.3 in DECFLOAT(34)     : 0.0
+
+NUMERIC(18,4) wire format: type=580 (SQL_INT64), length=8, scale=-4
+message bytes (little-endian)  : 15 cd 5b 07 00 00 00 00
+raw integer                    : 123456789
+value = raw * 10^scale         : 123456789 * 10^-4 = 12345.6789
+
+INT128 max  : 170141183460469231731687303715884105727
+INT128 max+1: arithmetic exception, numeric overflow, or string truncation
+-Integer overflow.  The result of an in
+
+1/0 with default traps : Decimal float divide by zero.  The code attempted to divide
+1/0 with traps cleared : Infinity
+```
+
+`0x075bcd15` = 123456789: the message really carries an ordinary little-endian `int64` plus `scale=-4` in the metadata — `NUMERIC` *is* an integer with a decimal-point annotation.
+
+### JavaScript sample — [`samples/nodejs/numerics.js`](samples/nodejs/numerics.js)
+
+The twin (`cd samples/nodejs && node numerics.js`) adds a trap the C++ sample cannot show: **JavaScript itself only has IEEE binary doubles**, so node-firebird's decoding of scaled `NUMERIC` into a JS `Number` re-introduces the rounding problem the type exists to avoid. Verified:
+
+```text
+NUMERIC(18,4) 12345.6789    : 12345.6789   (JS number, exact — scaled int fits in 2^53)
+NUMERIC(18,2) as JS number  : 90071992547409.92  <- off by a cent (raw int 9007199254740993 > 2^53)
+NUMERIC(18,2) server text   : 90071992547409.93  <- the value the server actually stores
+1/0 with default traps      : Decimal float divide by zero. ...
+1/0 after SET DECFLOAT TRAPS TO : Infinity
+```
+
+The stored scaled integer `9007199254740993` exceeds `2⁵³`, so the driver's `Number` is off by a cent while the server-side `CAST(... AS VARCHAR)` shows the exact value. `DECFLOAT` cannot be fetched raw at all (−804, as in [the types sample](sql-dialect-and-types.md#javascript-sample--samplesnodejstypesjs)); the CAST route also demonstrates the exact `0.0`. `SET DECFLOAT TRAPS TO` is session-level, so it persists across the driver's per-query transactions on the same attachment.
+
+### Things to try
+
+- Add `SET DECFLOAT ROUND CEILING` before a `SELECT CAST(1 AS DECFLOAT(16))/3*3` in either sample — the result becomes `1.000000000000001` (the doc's rounding-mode demo).
+- Change the C++ raw-fetch query to `NUMERIC(4,2)` and `NUMERIC(9,2)`: `getType` steps down to `SQL_SHORT` (length 2) and `SQL_LONG` (4) — the backing integer widens with precision exactly as [described above](#exact-integers-and-scaled-numeric).
+- Compute `SELECT CAST(1 AS DECFLOAT(16)) / 3` and the same in `DECFLOAT(34)` — 16 vs 34 significant digits of the same quotient.
+- In the JS sample, sum a column of `NUMERIC(18,2)` cents in JS vs with `SUM()` server-side and watch the drift appear once totals pass 2⁵³.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md):
+
+```gdb
+break ArithmeticNode::execute       # src/dsql/ExprNodes.cpp:2023 — every +,-,*,/ lands here
+break ArithmeticNode::addDialect3   # ExprNodes.cpp:2169 — dialect-3 exact addition, scale math
+break Firebird::Decimal128::add     # src/common/DecFloat.cpp:910 — DECFLOAT(34) addition (decNumber)
+break Firebird::Decimal128::div     # DecFloat.cpp:934 — the division that traps or yields Infinity
+break Firebird::Int128::overflow    # src/common/Int128.cpp:249 — fires on the INT128 max+1 step
+```
+
+`ArithmeticNode::addDialect3` receives the two operand descriptors; printing `desc1->dsc_dtype`/`dsc_scale` shows the scaled-integer alignment (matching scales before an int add) that makes `NUMERIC` exact. Inside `Decimal128::div` the `DecimalContext` destructor calls `checkForExceptions()` (`DecFloat.cpp:98`) — that is the exact point where the session's trap mask (this document's `SET DECFLOAT TRAPS`) decides between raising `isc_decfloat_divide_by_zero` and returning the `Infinity` the untrapped run prints. `Int128::overflow` raises the `isc_exception_integer_overflow` seen in the sample's output. See the [debugging guide](debugging-firebird.md) for running the sample embedded so these fire in-process.
 
 ## Further research
 

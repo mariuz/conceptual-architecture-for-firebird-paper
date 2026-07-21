@@ -156,6 +156,85 @@ Every feature worked: per-partition `ROW_NUMBER`, cross-partition `RANK`, a `ROW
 
 **Under the hood, analytics is "sort then scan", uniformly.** All four compute grouping and windowing by ordering rows so group members are adjacent, then making a group-wise pass — Firebird's `SortedStream` → `AggregatedStream`/`WindowedStream` is a textbook instance, and its plans expose it (`SORT (… NATURAL)`). This is why an appropriate index (providing the sort order for free) or adequate sort memory ([`TempCacheLimit`, `InlineSortThreshold`](monitoring-and-tuning.md#firebird-performance-tuning-knobs)) matters so much for analytical query performance, and why the [optimizer](query-optimizer-and-execution.md)'s sort avoidance is a key lever. The feature surface differs across the four, but the execution shape is the same everywhere.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/windows.cpp`](samples/cpp/windows.cpp)
+
+Recreates the document's six-row `sales` table and runs the [validated queries](#analytics-in-action-validated) live: the flagship window query (partitioned `ROW_NUMBER`, cross-partition `RANK`, a `ROWS`-framed running total, `LAG`), the `FILTER`/`LISTAGG`/`STDDEV_POP` aggregates, `PERCENTILE_CONT` plus a hypothetical-set `RANK(175) WITHIN GROUP`, and — new to Firebird 6 — a frame with **`EXCLUDE CURRENT ROW`** computing each row's neighbours' average without the row itself. It also prints the window query's plan, exposing the sort this document's [execution section](#how-the-engine-executes-them) attributes to `SortedStream` → `WindowedStream`.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/windows          # default: inet://localhost//tmp/fbhandson/windows.fdb
+```
+
+Verified output (trimmed; column headers are the engine's field names — `ROW_NUMBER`, `SUM`, … — since the helper prints `getField`, not the aliases):
+
+```text
+== window functions ==
+REGION AMOUNT ROW_NUMBER RANK SUM    LAG
+------ ------ ---------- ---- ------ ------
+East   100.00 1          6    100.00 <null>
+East   200.00 3          4    300.00 100.00
+East   150.00 2          5    450.00 200.00
+West   300.00 2          2    300.00 <null>
+West   250.00 1          3    550.00 300.00
+West   400.00 3          1    950.00 250.00
+
+plan:
+PLAN SORT (SORT (SORT (SORT ("PUBLIC"."SALES" NATURAL))))
+
+== PERCENTILE_CONT median / hypothetical RANK(175) ==
+REGION PERCENTILE_CONT   RANK_AGG
+------ ----------------- --------
+East   150.0000000000000 3
+West   300.0000000000000 1
+
+== FB6 frame EXCLUDE CURRENT ROW (neighbours' average) ==
+ID AMOUNT CAST
+-- ------ ------
+1  100.00 200.00
+2  200.00 125.00
+3  150.00 250.00
+...
+```
+
+The plan's *four nested SORTs* are the document's execution story in one line: one sort per distinct window ordering plus the final output — grouping and windowing really are "sort, then a group-wise pass". A hypothetical 175-amount sale would rank 3rd in East (above 100 and 150) and 1st in West (below everything), and row 2's neighbour average `125.00 = (100+150)/2` proves its own amount was excluded from its frame.
+
+### JavaScript sample — [`samples/nodejs/windows.js`](samples/nodejs/windows.js)
+
+The twin (`cd samples/nodejs && node windows.js`) runs the same queries through node-firebird — and unlike the FB4 types in the [types](sql-dialect-and-types.md#javascript-sample--samplesnodejstypesjs) and [numerics](numeric-and-precision-arithmetic.md#javascript-sample--samplesnodejsnumericsjs) samples, *everything here decodes cleanly*: analytical results are ordinary INT64/DOUBLE/VARCHAR messages, so the full window/aggregate surface is usable from a pure-JS driver. `LISTAGG` is `CAST` to VARCHAR (it is otherwise a BLOB). Verified (excerpt):
+
+```text
+window functions:
+  region=East  amount=100  rn=1  overall_rank=6  running_total=100  prev_amount=<null>
+  region=East  amount=200  rn=3  overall_rank=4  running_total=300  prev_amount=100
+...
+median and hypothetical rank of a 175 sale:
+  region=East  median=150  rank_of_175=3
+  region=West  median=300  rank_of_175=1
+```
+
+### Things to try
+
+- Change the FB6 exclusion to `EXCLUDE TIES` or `EXCLUDE GROUP` after adding a duplicate amount — the frame drops peers instead of the current row.
+- Add `CREATE INDEX sales_region_amount ON sales (region, amount)` and re-check `getPlan`: does an index that provides the partition order remove a SORT?
+- Swap `ROWS` for `RANGE` in the running total after inserting two rows with equal `id`-ordering keys — `RANGE` includes peers, so the running total jumps in steps.
+- Replace `PERCENTILE_CONT` with `PERCENTILE_DISC` — East's median becomes an actual data value (150.00 stays, but try an even-sized group to see interpolation vs selection differ).
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the three record-source operators of the [execution section](#how-the-engine-executes-them) are directly breakable:
+
+```gdb
+break SortedStream::internalGetRecord      # src/jrd/recsrc/SortedStream.cpp:94 — rows leaving the sort
+break AggregatedStream::internalGetRecord  # recsrc/AggregatedStream.cpp:406 — one group collapsing (GROUP BY)
+break WindowedStream::WindowStream::internalGetRecord  # recsrc/WindowedStream.cpp:597 — one row of a window
+break AggNode::aggPass                     # src/dsql/AggNodes.cpp:399 — each value fed to an aggregate
+break SlidingWindow::moveWithinFrame       # recsrc/WindowedStream.cpp:1424 — the frame cursor moving
+```
+
+Run the sample's window query and the backtrace at `WindowStream::internalGetRecord` *is* Figure 1 as a call stack: the windowed stream pulling from a buffered window over the sorted stream, with `m_frameExtent` and `m_exclusion` (set from the FB6 `EXCLUDE` clause, `WindowedStream.cpp:472`) as member state. `AggNode::aggPass` fires once per row per aggregate — watch `FILTER` short-circuit it: with the `FILTER (WHERE amount > 150)` query, the East partition triggers only one pass. See the [debugging guide](debugging-firebird.md) for the embedded-attach recipe.
+
 ## Further research
 
 **Firebird**

@@ -269,6 +269,65 @@ All four support row triggers with `NEW`/`OLD`, but note PostgreSQL's distinctiv
 
 **MySQL is competent but conservative, and SQLite opts out entirely.** MySQL's SQL/PSM routines cover the basics (procedures, functions, `SIGNAL`/`HANDLER` error handling, row triggers) but lack packages, selectable procedures, `RETURNING`, and DDL/connection triggers, and historically restricted triggers more than the others. SQLite has *no* procedural language at all — only SQL-only triggers — which is entirely consistent with its embedded, application-owns-the-logic design (see the [embedded comparison](embedded-architecture-comparison.md)): the application *is* the procedural layer. The split is the recurring one — server databases invest in in-engine logic; the embedded library deliberately does not.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/psql.cpp`](samples/cpp/psql.cpp)
+
+The sample rebuilds the [worked examples](#worked-examples-validated-on-firebird-6) on a scratch database and drives one of each module type from the client. The API mechanics mirror the language distinctions: the **executable procedure** `hire` returns its output parameters as a *single message* read straight from `IStatement::execute` — there is no cursor to open, which is exactly the executable-vs-[selectable](#selectable-procedures-suspend) divide; the **selectable procedure** `raises` is fetched through `openCursor` like a table, each row a `SUSPEND`; the **BEFORE INSERT trigger** is observed only by its effect (two audit rows for two hires); and the **custom exception** arrives as an `FbException` whose status vector, rendered with `IUtil::formatStatus`, carries the schema-qualified exception name and the PSQL stack trace with line and column. Idempotency needed a PSQL-specific trick worth reading in the source: the procedures are first reduced to body-less stubs with `CREATE OR ALTER` so that `RECREATE TABLE emp` is not blocked by their stored dependencies.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/psql                     # default: inet://localhost//tmp/fbhandson/psql.fdb
+```
+
+Verified output:
+
+```text
+EXECUTE PROCEDURE hire('Ada', 5000)        -> NEW_ID = 1
+EXECUTE PROCEDURE hire('Grace', 6000)      -> NEW_ID = 2
+audit_log rows (trigger emp_bi):              2
+
+SELECT * FROM raises(10):
+ID NAME  NEW_SALARY 
+-- ----- ---------- 
+1  Ada   5500.00    
+2  Grace 6600.00    
+
+EXECUTE PROCEDURE hire('Poorpay', 500) ->
+exception 1
+-"PUBLIC"."LOW_SALARY"
+-salary below minimum
+-At procedure "PUBLIC"."HIRE" line: 4, col: 29
+done.
+```
+
+### JavaScript sample — [`samples/nodejs/psql.js`](samples/nodejs/psql.js)
+
+The same objects called through node-firebird (`cd samples/nodejs && node psql.js`). The driver surfaces the same distinctions in JavaScript shapes: `EXECUTE PROCEDURE hire(?, ?)` resolves to a **plain object** (`{ NEW_ID: 1 }` — one output message, no cursor) while `SELECT ... FROM raises(10)` resolves to an **array of rows**; and the failing call rejects with an `Error` whose message is the identical status vector, stack trace included: `Exception 1, "PUBLIC"."LOW_SALARY", salary below minimum, At procedure "PUBLIC"."HIRE" line: 4, col: 29`.
+
+### Things to try
+
+- Add a nested call (`hire` invoked from an `EXECUTE BLOCK`, or from a second procedure) and watch the stack trace grow to multiple `At procedure ... At block` lines — the `dbginfo` machinery described in the [BLR document](blr-intermediate-language.md#both-directions-of-translation).
+- Wrap the low-salary case in `WHEN EXCEPTION low_salary DO` inside a caller and confirm the error no longer reaches the client.
+- Add `WHERE new_salary > 6000` to the `raises(10)` query: the filter composes over the SUSPENDed stream — a procedure used as a view.
+- A quirk found while writing the sample: calling the failing `EXECUTE PROCEDURE` through `IAttachment::execute` (execute-immediate) with *no output metadata* returns success to this client even though the row is rejected — the prepared path raises correctly. Reproduce it, then trace where the status is lost.
+- Read `RDB$PROCEDURES.RDB$PROCEDURE_BLR` for `raises` with the [BLR sample](blr-intermediate-language.md#hands-on-samples-tests-and-debugging) and find the `blr_stall` opcode — `SUSPEND` in its stored form.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), PSQL execution is a set of `StmtNode::execute` methods dispatched by the EXE looper:
+
+```gdb
+break EXE_start                        # src/jrd/exe.cpp:1185 — a request (proc/trigger body) activated
+break Jrd::ExecProcedureNode::execute  # src/dsql/StmtNodes.cpp:4315 — EXECUTE PROCEDURE entering hire
+break Jrd::SuspendNode::execute        # src/dsql/StmtNodes.cpp:10359 — each SUSPEND in raises
+break Jrd::ExceptionNode::execute      # src/dsql/StmtNodes.cpp:5866 — EXCEPTION low_salary raised
+break EXE_execute_triggers             # src/jrd/exe.cpp:1346 — emp_bi fired around the INSERT
+break stuff_stack_trace                # src/jrd/exe.cpp:1668 — the "At procedure ... line:" being built
+```
+
+Fetching from `raises(10)` stops in `SuspendNode::execute` once per row, and the backtrace shows the caller's fetch pulling the procedure like any record source — the selectable-procedure design visible as a call stack. The failing `hire` stops in `ExceptionNode::execute`, then in `stuff_stack_trace`, where the line/column pair the client later prints is looked up from the debug info stored beside the procedure's BLR; `p request->getStatement()->sqlText` at `EXE_start` shows which body is running when triggers and procedures nest. The [debugging guide](debugging-firebird.md) covers attaching to the engine serving the sample.
+
 ## Further research
 
 **Firebird**

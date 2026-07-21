@@ -321,6 +321,66 @@ The cost is pervasive verbosity and a permanent discipline burden. Every engine 
 
 The cooperative `tdbb_quantum` is the detail that most rewards attention, because it is a piece of 1980s thinking that turned out to age well. In an era of reliable preemptive schedulers it looks redundant — until you notice that what it actually expresses is *priority the OS cannot infer*. The operating system cannot know that this thread is a sweep and that one is a user query; `SWEEP_QUANTUM = 10` encodes that knowledge where it is available. The same instinct appears throughout this collection: [`GCPolicy`](garbage-collection-and-sweep.md) choosing who pays for cleanup, [careful-write precedence](careful-writes-and-crash-safety.md) encoding ordering knowledge the filesystem lacks. Firebird consistently prefers to tell the system what it knows rather than hope the system guesses well.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/threading.cpp`](samples/cpp/threading.cpp)
+
+The [validated section's](#threads-in-action-validated) measurements as a repeatable program. `MON$SERVER_PID` names the engine process from SQL; `/proc/<pid>/task` counts its threads from the client (same host); twelve `std::thread`s each open their own attachment and hold it for two seconds. The sample then lists `MON$ATTACHMENTS` to show the [census's](#a-census-of-engine-threads) background workers as system attachments.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/threading        # default: inet://localhost//tmp/fbhandson/threading.fdb
+```
+
+Verified output:
+
+```text
+engine process: pid 215035, 16 threads (1 attachment open)
+with 12 extra attachments: 24 threads | 13 user attachments, 1 distinct server pid
+after they detach:        22 threads (pooled, not destroyed)
+MON$ATTACHMENT_ID MON$SYSTEM_FLAG TRIM              COALESCE
+----------------- --------------- ----------------- ------------------------
+17                0               SYSDBA            /tmp/fbhandson/threading
+18                1               Cache Writer      <internal>
+19                1               Garbage Collector <internal>
+```
+
+Three claims of this document in three lines: `1 distinct server pid` across thirteen attachments is `ServerMode = Super`'s one-process topology; 16 → 24 threads under load and **22 remaining after detach** is the thread *pool* retaining workers (the [connection-pooling](connection-pooling.md) argument, measured); and the `MON$SYSTEM_FLAG = 1` rows are the Cache Writer and Garbage Collector from the census holding real, queryable attachments. (On a warm server the baseline is higher than the doc's fresh-boot `4` — earlier samples' threads are still pooled; the *delta* is the signal.)
+
+### JavaScript sample — [`samples/nodejs/threading.js`](samples/nodejs/threading.js)
+
+The same measurement from node (`cd samples/nodejs && node threading.js`), with an instructive inversion: node opens its twelve concurrent attachments from **one** event-loop thread — all the concurrency in the experiment is server-side. Run immediately after the C++ sample it also completes the pooling story:
+
+```text
+engine process: pid 215035, 22 threads (1 attachment open)
+with 12 extra attachments: 22 threads | 13 user attachments, 1 distinct server pid
+after they detach:        22 threads (pooled)
+```
+
+Twelve new attachments, **zero** new threads — the pool left behind by the C++ run absorbed all of them. Thread creation is a first-connection cost, not a per-connection cost.
+
+### Things to try
+
+- Raise the worker count above the pool size (e.g. 40) and watch the thread count climb by exactly the shortfall.
+- Run `top -H -p <server pid>` during the run: every thread is named `firebird` — the [observability gap](#threads-in-action-validated) about missing `prctl(PR_SET_NAME)` calls, live.
+- Point the samples at the SuperClassic embedded sandbox from the [page-cache sample](page-cache-coherency.md#hands-on-samples-tests-and-debugging) (`FIREBIRD=/tmp/fbhandson/fbemb`, local path): the topology question disappears — each attachment is its own engine in *your* process.
+- Query `MON$ATTACHMENTS` while a `gfix -sweep` runs against a scratch database: the sweeper appears as another system attachment.
+
+### Debugging this in C++ (gdb)
+
+Attach to an embedded run ([debugging guide](debugging-firebird.md)) and the topology machinery is directly observable:
+
+```gdb
+break Thread::start              # common/ThreadStart.cpp:285 (POSIX) — every engine thread is born here
+break BufferControl::cache_writer      # jrd/cch.cpp:3017  — the census's cache writer body
+break Database::garbage_collector      # jrd/vio.cpp:5699  — the GC thread body
+break LockManager::blocking_action_thread  # lock/lock.cpp:1445 — the THREAD_high AST deliverer
+break thread_db::reschedule      # jrd/jrd.cpp:9409 — the cooperative yield point
+break SyncObject::lock           # common/classes/SyncObject.cpp:44 — the workhorse latch
+```
+
+`Thread::start`'s backtraces reproduce the [census table](#a-census-of-engine-threads) empirically — each hit's caller is a subsystem constructing its member thread. In `thread_db::reschedule`, `tdbb_quantum` has just run down to zero; the function re-arms it to `QUANTUM` or, if `tdbb_flags & TDBB_sweeper`, to `SWEEP_QUANTUM` — [cooperative scheduling](#cooperative-scheduling)'s two constants chosen live. `SyncObject::lock` is high-traffic (use it with a condition or briefly); its `from` argument carries the `FB_FUNCTION` string naming who wants the latch — the `Reasons` diagnostic baked into the primitive, readable straight off the stack.
+
 ## Further research
 
 * [`src/jrd/tdbb.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/tdbb.h) — `thread_db` in full, including the quantum constants and the debug latch-leak assertion.

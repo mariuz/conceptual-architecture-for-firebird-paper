@@ -233,6 +233,61 @@ _Figure 4: SQLite layered architecture (after sqlite.org/arch.html)_
 
 **Where the plugin seam is placed defines the ecosystem.** MySQL put the seam under the SQL layer (storage engines) and got a marketplace of engines that ultimately consolidated on one. PostgreSQL put many small seams everywhere (types, AMs, FDWs) and got the richest extension ecosystem. Firebird put the seam around the engine (providers, auth, crypto, UDR) preserving a single storage core. SQLite put it at the file-system boundary (VFS) and at virtual tables. Same architectural instinct — isolate variation — four different placements, four different ecosystems.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/architecture_comparison.cpp`](samples/cpp/architecture_comparison.cpp)
+
+The comparison table's most unusual row — *"Client-server **and** embedded, same engine (Y-valve providers)"* — demonstrated by one binary linked only against `libfbclient`. The program attaches twice: once with `inet://localhost/employee` (the Y-valve routes to the **Remote provider**, SQL crosses a TCP socket to the server) and once with a bare local path `/tmp/fbhandson/arch_embedded.fdb` (the Y-valve loads the **Engine provider into the running process** — no server involved; the scratch database is created on first run). For each attachment it asks the engine where it is: `ENGINE_VERSION` is the same both ways (same engine code), `NETWORK_PROTOCOL` is `TCPv4` remotely and `NULL` embedded, and `MON$SERVER_PID` names the server's pid remotely but *the sample's own pid* when embedded — the one-line proof that any application linking `fbclient` is also a complete database engine.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/architecture_comparison    # [remote-db] [embedded-path] to override
+```
+
+Verified output:
+
+```text
+One libfbclient, two providers behind the Y-valve.
+
+[1] Remote provider (client-server):
+    connection string : inet://localhost/employee
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : TCPv4
+    MON$SERVER_PID    : 149001   (this process is pid 187251)
+
+[2] Engine provider (embedded, no server):
+    connection string : /tmp/fbhandson/arch_embedded.fdb
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : <null>
+    MON$SERVER_PID    : 187251   (this process is pid 187251 -- the engine runs IN this process)
+
+done.
+```
+
+### JavaScript sample — [`samples/nodejs/architecture-comparison.js`](samples/nodejs/architecture-comparison.js)
+
+The twin (`cd samples/nodejs && node architecture-comparison.js`) can only reproduce attachment [1]: node-firebird is a pure-JavaScript reimplementation of the **wire protocol only**, so `NETWORK_PROTOCOL` comes back `TCPv4` and `MON$SERVER_PID` is the server's, never node's. That missing second half *is* the architectural point of this document: embedded mode is a property of the native client library's Y-valve/provider stack, not of the server, so a driver that reimplements only the network layer — as most pure drivers for PostgreSQL and MySQL do too — gets exactly the client-server half of Firebird and nothing else. A local path in `options.database` is still resolved *by the server* at `options.host`, not by the node process.
+
+### Things to try
+
+- Point both attachments at databases of your own and diff the full `MON$ATTACHMENTS` row (`MON$REMOTE_PROTOCOL`, `MON$REMOTE_PROCESS`, `MON$AUTH_METHOD`) between the two providers — embedded also skips server authentication entirely.
+- Run the embedded leg from two processes at once (e.g. keep `/opt/firebird/bin/isql /tmp/fbhandson/arch_embedded.fdb` open in another shell): the second attach fails with SQLSTATE 08001 *"Database already opened with engine instance, incompatible with current"* — the embedded engine defaults to Super mode's exclusive open, so the *process model* row of the comparison table applies even in-process (`ServerMode = Classic` in a private `firebird.conf` relaxes it).
+- Change the remote connection string to `xnet://employee` — on Windows the Y-valve would pick the XNET shared-memory transport; on Linux observe the error naming the transports that exist.
+- Time attachment [1] vs [2] in a loop — the [embedded comparison document](embedded-architecture-comparison.md) measures exactly that difference.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the Y-valve's routing decision — this document's Figure 1 — is directly watchable:
+
+```gdb
+break Dispatcher::attachOrCreateDatabase   # src/yvalve/why.cpp:6505 — every attach enters the Y-valve here
+break analyze                              # src/remote/client/interface.cpp:7874 — connection string → transport
+break RProvider::attach                    # src/remote/client/interface.cpp:1203 — fires ONLY for the inet:// attach
+break JProvider::internalAttach            # src/jrd/jrd.cpp:1591 — fires ONLY for the local-path attach
+```
+
+Run the sample under gdb with `FIREBIRD=<debug root>` set (breakpoints pending until the providers load). Both attachments hit the first breakpoint — that stack frame *is* the Y-valve. Then they diverge: the remote attach walks `analyze()`, whose chain of `ISC_analyze_protocol()` calls (`interface.cpp:7919–7930`) is the literal parsing of `inet://` into a transport, and ends in `RProvider::attach`; the embedded attach instead lands in `JProvider::internalAttach` with `backtrace` showing the whole engine — JRD and the Remote provider — living in the sample's own process, the same fact the sample prints as `MON$SERVER_PID`.
+
 ## Further research: repositories, papers and videos
 
 ### Source repositories

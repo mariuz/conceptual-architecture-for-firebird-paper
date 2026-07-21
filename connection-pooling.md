@@ -147,6 +147,63 @@ For very high inbound concurrency you can still front Firebird with a generic TC
 
 **The two pooling directions answer to different parts of the architecture.** Inbound pooling is a *deployment* concern shaped by the server's process model and usually solved *outside* the engine (PgBouncer, ProxySQL, driver pools); outbound pooling is an *engine feature* shaped by how the database federates to others, and Firebird chose to solve it *inside* the engine. Keeping the two straight — and matching each to the engine you run — is the whole practical lesson.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/pooling.cpp`](samples/cpp/pooling.cpp)
+
+The whole EDS-pool lifecycle of [Figure 2](#firebirds-external-connections-pool), watched from client code. The sample tunes the pool at runtime (`ALTER EXTERNAL CONNECTIONS POOL SET SIZE / SET LIFETIME` — the [`MODIFY_EXT_CONN_POOL`](security-architecture.md#firebird-authorization)-gated statement), then runs an `EXECUTE BLOCK` making **three** `EXECUTE STATEMENT ON EXTERNAL` calls to the same DSN with the same user — the pool's four-part key — and reads the `EXT_CONN_POOL_*` context variables at each stage: before, inside the block, after commit, after `CLEAR ALL`.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/pooling                  # default: inet://localhost/employee, external DSN likewise
+```
+
+Verified output:
+
+```text
+before:            size=5 lifetime=30s idle=0 active=0
+inside the block:  idle=0 active=1   (3 calls, 1 outbound connection)
+after commit:      size=5 lifetime=30s idle=1 active=0
+after CLEAR ALL:   size=5 lifetime=30s idle=0 active=0
+done.
+```
+
+Three external calls, one outbound connection (`active=1`, never 3); after the **full** commit it is reset via `ALTER SESSION RESET` and parked (`idle=1`); `CLEAR ALL` evicts it. One subtlety found while writing the sample: with `COMMIT RETAINING` the transaction context survives, so the pooled connection stays `active` — only a real commit boundary releases it to the idle list.
+
+### JavaScript sample — [`samples/nodejs/pooling.js`](samples/nodejs/pooling.js)
+
+Both [directions of pooling](#two-directions-of-pooling) in one run (`cd samples/nodejs && node pooling.js`). The **outbound** half replays the same SQL through node-firebird with the same counts. The **inbound** half is what the C++ sample cannot show: node-firebird's *client-side* pool (`Firebird.pool(2, …)`) — the driver-level pooling this document names as Firebird's inbound story. With both slots taken, a third `get()` queues (`waiting=1`) and is served only when a connection is released:
+
+```text
+took 2 of max 2:  total=2 active=2 waiting=0
+asked for a 3rd:  total=2 active=2 waiting=1
+released one:     3rd get served after 202 ms
+pooled attachment works: CURRENT_CONNECTION = 364
+```
+
+Note the asymmetry: `db.detach()` on a pooled connection releases the *slot* without an `op_detach` on the wire, while `pool.destroy()` really detaches — the client pool trades protocol round-trips for reuse exactly as the server's EDS pool does with its idle list.
+
+### Things to try
+
+- Run `./build/pooling` twice within 30 seconds: the second run starts with `idle=1` — the pool is per **server process** and outlives your attachment. Wait past the 30-second lifetime (or run `CLEAR OLDEST`) and it starts at `idle=0` again.
+- Change the external user (`AS USER`) between the three calls in the block: `active` climbs to 2 — user is part of the (connection string, user, password, role) pool key.
+- In `pooling.js`, point two *different* local databases' `EXECUTE STATEMENT` at the same external DSN — the counts are shared: one pool per process, common to all attachments.
+- Set `SET SIZE 0` and re-run: every call opens a fresh external connection (`idle` stays 0 — pooling disabled, the configuration default).
+
+### Debugging this in C++ (gdb)
+
+The EDS pool lives in the engine at `src/jrd/extds/ExtDS.cpp` (all verified in the vendored tree), so these breakpoints need a [debug engine](debugging-firebird.md) — attach the debugger to the server, or run the sample against a local path with `FIREBIRD=<debug root>` so the engine (and its pool) is in your process:
+
+```gdb
+break EDS::Manager::getConnection          # ExtDS.cpp:197 — every ON EXTERNAL lands here first
+break EDS::ConnectionsPool::getConnection  # ExtDS.cpp:931 — the idle-list search by key hash
+break EDS::ConnectionsPool::addConnection  # ExtDS.cpp:1066 — a miss: new connection enters the pool
+break EDS::ConnectionsPool::putConnection  # ExtDS.cpp:962 — reset done, connection parked idle
+break EDS::ConnectionsPool::setMaxCount    # ExtDS.cpp:1132 — ALTER ... POOL SET SIZE arrives
+```
+
+Run the sample's block under these and the counters explain themselves: the first `EXECUTE STATEMENT` reaches `Manager::getConnection`, misses in `ConnectionsPool::getConnection` (the pool searches by the hash of connection string + user + password + role) and calls `addConnection`; the second and third calls never get past `Manager::getConnection`'s first lookup — `getBoundConnection` (ExtDS.cpp:218) returns the connection already bound to the attachment before the pool is even consulted. After commit, the release path (`ExtDS.cpp:494`) calls the virtual `resetSession` — `ALTER SESSION RESET` on the external side — and only if that succeeds does `putConnection` file it as idle, exactly the "reset → idle (or close if reset failed)" edge in Figure 2. `setMaxCount` firing from the sample's first statement shows the runtime-tuning path, per-process and non-persistent as the [management section](#managing-and-observing-the-pool) states.
+
 ## Further research
 
 **Firebird**

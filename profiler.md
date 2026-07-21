@@ -379,6 +379,78 @@ Firebird's distinguishing choice, stated plainly: **it is the only one of the fo
 
 ---
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/profiler.cpp`](samples/cpp/profiler.cpp)
+
+The [accumulation view](#snapshot-stream-accumulation) driven end to end from client code, on a scratch database. One `RDB$PROFILER.START_SESSION` brackets two workloads — a self-join over a 5,000-row table and a 20,000-iteration PSQL loop — then `FINISH_SESSION(TRUE)` flushes and the sample queries `PLG$PROFILER` like any other schema: the record-source view reassembled into an indented plan tree via its `LEVEL` column, and the PSQL view ranked by total time. One subtlety earned a comment in the code: the plugin [flushes through an autonomous transaction](#the-plugin-and-why-the-output-is-a-schema), so a *retained* SNAPSHOT transaction sees none of it — the sample must hard-commit and start a fresh transaction before reading the views (the first version used `commitRetaining` and read back nothing at all).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/profiler        # default: inet://localhost//tmp/fbhandson/profiler.fdb
+```
+
+Verified output:
+
+```text
+profile session 4 finished and flushed
+
+record sources of the join (PLG$PROF_RECORD_SOURCE_STATS_VIEW):
+CAST                                                      OPEN_COUNTER FETCH_COUNTER OPEN_FETCH_TOTAL_ELAPSED_TIME
+--------------------------------------------------------- ------------ ------------- -----------------------------
+Select Expression                                         1            2             4906553
+  -> Aggregate                                            1            2             4906781
+    -> Filter                                             1            5001          5316535
+      -> Hash Join (inner) (keys: 1, total key length: 4) 1            5001          5308724
+        -> Table "PUBLIC"."NUMS" as "A" Full Scan         1            5001          1291149
+        -> Record Buffer (record length: 25)              1            10001         3220893
+          -> Table "PUBLIC"."NUMS" as "B" Full Scan       1            5001          1325379
+
+hotspot procedure, per PSQL line (PLG$PROF_PSQL_STATS_VIEW):
+LINE_NUM COLUMN_NUM COUNTER TOTAL_ELAPSED_TIME AVG_ELAPSED_TIME
+-------- ---------- ------- ------------------ ----------------
+8        5          20000   46002043           2300
+10       5          20000   4059811            202
+6        3          20001   1325393            66
+9        5          20000   21725              1
+3        3          1       2381               2381
+5        3          1       335                335
+2        3          1       43                 43
+12       3          1       0                  0
+
+done.
+```
+
+The signatures from the [live demonstrations](#live-demonstrations) reappear on this fresh database: line 8 (the singleton `SELECT` in the loop) dominates at 46 ms over 20,000 executions, and line 6 — the `WHILE` — counts **20,001**, the loop test that runs once more to decide to stop.
+
+### JavaScript sample — [`samples/nodejs/profiler.js`](samples/nodejs/profiler.js)
+
+The twin (`cd samples/nodejs && node profiler.js`) profiles its own `hotspot_js` procedure and reads the same per-line ranking back (verified: line 8 at 41 ms / 20,000 executions, line 6 at 20,001). As with [extensibility](extensibility.md), the pure-JS driver loses nothing, and that is the payoff of [the plugin's central choice](#the-plugin-and-why-the-output-is-a-schema): the control surface is a SQL package and the output is a SQL schema, so *any* client that can run queries can profile — no native API, no log-file access, no special protocol. (node-firebird's one-transaction-per-query style also sidesteps the snapshot subtlety the C++ sample had to handle explicitly.)
+
+### Things to try
+
+- Add an index on `nums.val`, rerun, and watch the `Hash Join` in the captured plan tree become a nested loop with an `Index Scan` — the profiler as a before/after harness for the [optimizer](query-optimizer-and-execution.md).
+- Time `select total from hotspot` with and without an active session to reproduce the [observer-effect measurement](#the-observer-effect-measured); then check `cat /sys/devices/system/clocksource/clocksource0/current_clocksource` — the profiler README warns that a non-`tsc` clock source inflates exactly this overhead.
+- Start a second session without finishing the first: the first is implicitly finished *without* flushing (`FINISH_SESSION(FALSE)` semantics) and its unflushed data is gone — sessions do not nest.
+- Profile the C++ sample from a second connection: take `MON$ATTACHMENT_ID` from the running sample, call `START_SESSION('remote', NULL, <id>)` there, and reproduce the [remote-profiling walk-through](#profiling-somebody-elses-attachment).
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md) and the sample pointed at a local path (embedded), the whole measurement chain is in one process:
+
+```gdb
+break ProfilerManager::startSession       # src/jrd/ProfilerManager.cpp:434 — the SQL package call arriving in the engine
+break Jrd::RecordSourceStopWatcher::~RecordSourceStopWatcher   # src/jrd/ProfilerManager.h:73 — a reading taken (inline; resolves to many sites)
+break PerformanceStopWatch::queryTicks    # src/common/PerformanceStopWatch.h:43 — the clock read, and every 30 s the self-calibration
+break ProfilerManager::flush              # src/jrd/ProfilerManager.cpp:639 — engine-side accumulation handed to the plugin
+break ProfilerPlugin::flush               # src/plugins/profiler/Profiler.cpp:424 — the plugin writing PLG$PROF_* rows
+break ProfilerManager::blockingAst        # src/jrd/ProfilerManager.cpp:409 — the remote-profiling doorbell ringing in the target
+```
+
+`RecordSourceStopWatcher`'s destructor is the busiest place in the subsystem — one hit per operator per fetch — so make it conditional (or just `tbreak`) before running the join. Inside it, `getElapsedTicksAndAdjustOverhead` is where the [overhead ledger](#measuring-the-observer) is applied; `print accumulatedOverhead` before and after a deep fetch shows children's clock reads being charged away from the parent. `ProfilerPlugin::flush`'s backtrace is the schema argument in one frame: an ordinary `IAttachment::execute` inserting rows, inside the engine, on behalf of the profiler.
+
+---
+
 ## Further reading
 
 - [`doc/sql.extensions/README.profiler.md`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.profiler.md) — the `RDB$PROFILER` package, its procedures and the shipped views.

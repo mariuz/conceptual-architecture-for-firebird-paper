@@ -158,6 +158,64 @@ The interesting contrasts:
 
 The event subsystem is small — one shared-memory table, four opcodes, one PSQL statement — but it closes the architectural loop this collection has traced: it reuses **DFW** (so notification honors transaction semantics for free), **IPC shared memory** in the lock-manager style (so it works identically for Classic processes and SuperServer threads), and the **remote proxy pattern** (the server consumes the same event API it re-exports, with one extra channel where the request/response discipline of the main connection couldn't fit). Nothing in it is new machinery; it is existing machinery composed — which is, in miniature, the recurring Firebird design story the [Reading Guide](READING-GUIDE.md) draws out.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/events_demo.cpp`](samples/events_demo.cpp)
+
+The sample behind [Events in action](#events-in-action-validated): a listener attachment registers `'demo_event'` with `queEvents` (consuming the baseline callback), a poster attachment exercises the three semantics — rollback swallows posts, delivery waits for commit, posts coalesce to a count — with `isc_event_block`/`isc_event_counts` doing the [delta bookkeeping](#the-client-api-one-shot-interests-and-count-deltas).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/events_demo              # default: inet://localhost/employee
+```
+
+Verified output (re-run for this section, identical to the transcript above):
+
+```text
+listener registered for 'demo_event' (baseline consumed)
+after POST_EVENT + ROLLBACK: delivered count = 0  (correct - rollback swallows posts)
+3 x POST_EVENT executed, not yet committed - waiting briefly...
+before COMMIT: delivered count = 0  (correct - delivery is commit-time)
+after COMMIT: delivered count = 3  (correct - one delivery, count 3)
+PASS
+```
+
+### JavaScript sample — [`samples/nodejs/events.js`](samples/nodejs/events.js)
+
+node-firebird implements the whole [auxiliary-channel dance](#the-wire-the-auxiliary-connection) in JavaScript — `db.attachEvent()` sends `op_connect_request` and opens the second socket (`lib/wire/eventConnection.js`), `registerEvent()` sends `op_que_events`, and each `op_event` is emitted as `'post_event'`, after which the driver re-queues the one-shot interest itself. Run: `cd samples/nodejs && node events.js`. Verified output:
+
+```text
+listener subscribed to 'demo_event' over the aux connection (baseline counter = 1)
+after POST_EVENT + ROLLBACK : 0 deliveries (rollback swallows posts)
+3 posts, before COMMIT      : 0 deliveries (delivery is commit-time)
+after COMMIT                : 'demo_event' counter=4, delta=3 (one delivery, 3 posts coalesced)
+done.
+```
+
+Same three semantics — with one instructive difference. Where `isc_event_counts` hands the C++ client a *delta*, node-firebird emits the **raw running counter** from the EPB, and that counter is `evnt_count + 1` (the engine adds one when serializing the delivery block — `event.cpp:884`): a fresh event block reports `1` at baseline and `4` after three posts. The C++ idiom never notices the `+1` because subtracting the baseline cancels it; a raw-counter client must do its own subtraction, as the sample does.
+
+### Things to try
+
+- Set `EVENTS_DEMO_PAUSE_MS=5000` and, during the pause, list the demo process's sockets (`ss -tnp | grep events_demo`): two attachments, **three** TCP connections — the third is the aux channel to a non-3050 ephemeral port, the [`RemoteAuxPort` firewall pitfall](#the-wire-the-auxiliary-connection) made visible.
+- Run both samples at once: one `POST_EVENT` + commit from a third connection (isql) wakes *both* listeners — one `evnt` counter, many interests.
+- In `events.js`, register a second name that is never posted and confirm it never appears: deliveries are per-satisfied-interest, not broadcast.
+- Change the JS poster's three separate `POST_EVENT` blocks to one block posting three *different* names — one `op_event` arrives carrying all three, still one delivery.
+
+### Debugging this in C++ (gdb)
+
+The full posting path is breakpointable in a [debug engine](debugging-firebird.md) (attach to the server process, or run the demo against a local path with `FIREBIRD=<debug root>` for the embedded case where listener callbacks fire in *your* process):
+
+```gdb
+break PostEventNode::execute                 # src/dsql/StmtNodes.cpp:9097 — the PSQL statement: DFW_post_work, no signaling
+break DFW_perform_post_commit_work           # src/jrd/dfw.epp:1556 — commit replays surviving work items
+break EventManager::postEvent                # src/jrd/event.cpp:361 — the evnt counter bumps
+break EventManager::deliverEvents            # event.cpp:401 — wake every process with PRB_wakeup
+break EventManager::watcher_thread           # event.cpp:1297 — the per-process delivery thread
+break aux_request                            # src/remote/inet.cpp:1599 — server binds the aux listener (server-side)
+```
+
+The first three breakpoints, hit in order by the demo's step 3, *are* this document's argument: `PostEventNode::execute` fires three times inside the transaction and nobody wakes (the backtrace ends at `DFW_post_work`); at commit, `DFW_perform_post_commit_work` walks the queue and calls `postEvent` — inspect `event->evnt_count` climbing — and only then does `deliverEvents` post semaphores. In the rollback run, breakpoints two and three never fire at all: the swallowed posts are visibly *absent* from the commit path. `watcher_thread` shows the delivery half asynchronously comparing `rint_count` against `evnt_count` (the one-shot interest retiring in the same pass), and on the wire path `aux_request` fires once per listening attachment — the moment the second socket of Figure 2 comes into being.
+
 ## Further research
 
 * [`src/jrd/event.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/event.cpp) / [`event.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/event.h) — the manager and the shared structures (`evh`/`prb`/`ses`/`req`/`req_int`/`evnt`); `watcher_thread` and `post_process` are the delivery heart.

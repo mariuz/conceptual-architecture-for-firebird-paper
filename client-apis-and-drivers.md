@@ -146,6 +146,50 @@ Firebird.attach(options, (err, db) => {
 
 **The native-vs-pure split is universal, and the runtime decides.** All three server databases show the same pattern Firebird does: managed runtimes (JVM, CLR, Go) favour pure-protocol drivers (pgjdbc, Npgsql, Connector/J, node-postgres, mysql2 all re-implement their protocol), while native ecosystems (Python's psycopg, PHP) often wrap the C client. The Firebird ecosystem is a faithful instance of this — Jaybird, .NET and node-firebird are pure; Python, PHP, Perl and ODBC wrap `fbclient`. The engineering trade-off is identical everywhere: zero-dependency portability versus automatic feature parity (encryption, new auth plugins, embedded) inherited from the vendor's library.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/api_styles.cpp`](samples/cpp/api_styles.cpp)
+
+The [two C APIs](#two-c-apis-oo-and-isc) side by side in one file, running one identical `SELECT` (the engine version) through each. The ISC half is the full legacy liturgy: a DPB assembled byte by byte (tag, length, payload), a 20-slot `ISC_STATUS_ARRAY` checked after every call and rendered by walking the vector with `fb_interpret`, the `allocate → prepare → execute → fetch` DSQL lifecycle, and an `XSQLDA` descriptor whose one `XSQLVAR` the *caller* must point at storage honouring the declared type (a VARCHAR's 2-byte length prefix included). The OO half does the same work in five lines through [`fb_sample.h`](samples/cpp/fb_sample.h) — `IXpbBuilder` builds the DPB, `ThrowStatusWrapper` turns the status vector into exceptions, `IMessageMetadata` replaces the XSQLDA. Same process, same `fbclient`, same [Y-valve](README.md#top-level-architecture) underneath both. (For the OO API written out longhand rather than through the helper, see [`samples/client_test.cpp`](samples/client_test.cpp); for the pure-protocol Path B in C++-free form, the [wire-protocol document](firebird-wire-protocol.md#worked-examples).)
+
+```sh
+cmake -B build samples && cmake --build build
+./build/api_styles               # default: inet://localhost/employee
+```
+
+Verified output:
+
+```text
+[ISC API] engine version = 6.0.0
+[OO API ] engine version = 6.0.0
+same engine, same Y-valve, two API styles. done.
+```
+
+### JavaScript sample — [`samples/nodejs/query.js`](samples/nodejs/query.js)
+
+The JavaScript counterpart is the existing [`query.js`](samples/nodejs/query.js) (`cd samples/nodejs && node query.js`), and the architectural point is *which path it takes*: node-firebird is a **Path B** driver ([Figure 2](#two-ways-to-build-a-driver)) — no `fbclient` is loaded at all; the driver re-implements the wire protocol, SRP and Arc4 in JavaScript. So where `api_styles.cpp` shows two APIs over one client library, `query.js` shows no client library whatsoever — the two driver strategies of this document, both verified against the same server (re-run output in the [wire-protocol document](firebird-wire-protocol.md#worked-examples)).
+
+### Things to try
+
+- Break the password in `iscStyle()` and in `ooStyle()` and compare how the same `isc_login` error surfaces: `fb_interpret` loop output versus one `FbException` — the two error models of the [API table](#comparison-postgresql-mysql-sqlite).
+- In the ISC half, set `out->sqln = 0` before `isc_dsql_prepare` and re-describe with `isc_dsql_describe` — the classic two-step dance every ISC-era driver performs when it doesn't know the column count in advance.
+- Point the sample at an embedded path (`/tmp/fbhandson/api.fdb` with `FIREBIRD` unset, per the [debugging guide](debugging-firebird.md)) — both API styles work unchanged in-process: the embedded/networked duality of the [Discussion](#discussion).
+- Change `SQL` to return two columns and extend the XSQLDA to `XSQLDA_LENGTH(2)` — the amount of new bookkeeping in the ISC half versus zero change in the OO half *is* the argument for the OO API.
+
+### Debugging this in C++ (gdb)
+
+The Y-valve is where the two styles converge, and a debug `fbclient` makes that visible (functions below verified in the vendored tree):
+
+```gdb
+break isc_attach_database        # src/yvalve/why.cpp:1640 — the ISC entry point...
+break Dispatcher::attachDatabase # why.cpp:6492 — ...lands here, same as the OO call
+break isc_dsql_prepare           # why.cpp:2671 — ISC prepare, XSQLDA in hand
+break isc_dsql_fetch             # why.cpp:2545 — per-row fetch through the shim
+break JProvider::attachDatabase  # src/jrd/jrd.cpp:1585 — engine side (embedded runs only)
+```
+
+The first two breakpoints demonstrate this document's central claim in a single backtrace: `isc_attach_database` (why.cpp:1640) does nothing but parse its handle-based arguments and call `dispatcher->attachDatabase(...)` (why.cpp:1661) — **the ISC API is a compatibility shim implemented on top of the OO API**, so `iscStyle()` and `ooStyle()` meet at the same `Dispatcher::attachDatabase`, which then walks the provider list (why.cpp:6585) exactly as Figure 6 of the main paper draws it. Run the sample against a local file path with `FIREBIRD` pointing at a debug build and the last breakpoint fires too, showing the whole journey ISC shim → Y-valve → Engine provider in one process; over TCP the trail instead disappears into the remote provider's `op_attach` (see the [wire-protocol hands-on](firebird-wire-protocol.md#hands-on-samples-tests-and-debugging)). Recipe: [debugging guide](debugging-firebird.md).
+
 ## Further research
 
 **Firebird**

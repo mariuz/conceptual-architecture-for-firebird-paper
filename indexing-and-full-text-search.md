@@ -120,6 +120,68 @@ For real full-text needs, Firebird deployments reach outside the engine: an **ex
 
 **The pattern matches the whole series: one strong general mechanism vs many specialized ones.** Firebird's single, well-tuned B-tree mirrors its single storage engine and single procedural language — a coherent bet on depth over breadth. PostgreSQL's index-type marketplace mirrors its extension ecosystem. SQLite's "B-tree plus a couple of opt-in extensions (FTS5, R-tree)" mirrors its minimal-core-plus-loadable-modules design. The right choice is workload-shaped: transactional and reporting workloads are well served by Firebird's B-tree; search-, document-, geometry- or analytics-heavy workloads are where PostgreSQL's specialized indexes (or MySQL's/SQLite's targeted ones) earn their place.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/indexes.cpp`](samples/cpp/indexes.cpp)
+
+The [validated plans section](#index-variants-in-action-validated) turned into a reproducible program: it builds a 3,000-row `doc` table, creates the descending, expression, partial and one plain index, then prepares five queries and prints `IStatement::getPlan` for each. Four plans show the [variants](#index-variants) being chosen; the fifth is `CONTAINING` falling to `NATURAL` — and the sample adds a query the document's prose describes but the original session didn't print: an `OR` across two differently-indexed columns, proving the [bitmap/inversion combining](#combining-indexes-bitmapinversion) with no composite index anywhere.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/indexes        # default: inet://localhost//tmp/fbhandson/indexes.fdb
+```
+
+Verified output:
+
+```text
+3000 rows; indexes: descending, expression, partial, plain
+
+select id from doc where upper(title) = 'TITLE 5'
+PLAN ("PUBLIC"."DOC" INDEX ("PUBLIC"."DOC_UPPER_TITLE"))
+
+select id from doc where status = 'active'
+PLAN ("PUBLIC"."DOC" INDEX ("PUBLIC"."DOC_ACTIVE"))
+
+select first 1 id from doc order by id desc
+PLAN ("PUBLIC"."DOC" ORDER "PUBLIC"."DOC_ID_DESC")
+
+select id from doc where num = 42 or id = 7
+PLAN ("PUBLIC"."DOC" INDEX ("PUBLIC"."DOC_NUM", "PUBLIC"."DOC_ID_DESC"))
+
+select id from doc where title containing 'itle 12'
+PLAN ("PUBLIC"."DOC" NATURAL)
+
+CONTAINING is correct but unindexed: matched 111 rows by scanning all 3000
+done.
+```
+
+Note the fourth plan: two index names inside one `INDEX (...)` — the optimizer built a record-number bitmap from each B-tree and OR-ed them, and the descending index served a plain equality on the way (a descending index is still a B-tree; direction only matters for navigation).
+
+### JavaScript sample — [`samples/nodejs/indexes.js`](samples/nodejs/indexes.js)
+
+The same five plans through the wire protocol (`cd samples/nodejs && node indexes.js`) — with one driver excursion worth knowing: node-firebird's public API never requests plans, but its internal `Connection.prepare(tx, sql, plan, cb)` takes a `plan` flag that adds `isc_info_sql_get_plan` (item 22) to the prepare-info request and surfaces the result as `statement.plan`. The sample reaches one level down to use it, and the verified output is plan-for-plan identical to the C++ run — the plan is the server's answer, whichever client asks.
+
+### Things to try
+
+- Drop `doc_active` and re-run: the `status = 'active'` query falls back to... check whether the optimizer picks `doc_num` (it can't) or `NATURAL` — then recreate the partial index with `WHERE status = 'done'` and watch the `'active'` query *ignore* it: a partial index only serves predicates that imply its condition.
+- Change the expression query to `upper(title) LIKE 'TITLE 1%'` — a *prefix* pattern on the indexed expression — and see whether the expression index still serves it (`STARTING WITH` definitely does; `LIKE` with a literal prefix is rewritten).
+- Build the hand-made FTS fallback the document describes: a `word(word, doc_id)` table filled by a trigger, indexed on `word` — then compare `PLAN` and timing of `word = 'title'` against `title CONTAINING 'title'`.
+- Run `select id from doc where num = 42 and status = 'active'` — bitmap **AND** this time — and watch both indexes appear again.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the whole index life cycle is breakpointable:
+
+```gdb
+break Retrieval::getInversion             # src/jrd/optimizer/Retrieval.cpp:243 — the optimizer choosing/combining indexes
+break BTR_make_bounds                     # src/jrd/btr.cpp:2183 — predicate values -> B-tree search bounds
+break BTR_evaluate                        # src/jrd/btr.cpp:1548 — one B-tree scanned into a record-number bitmap
+break IndexTableScan::internalGetRecord   # src/jrd/recsrc/IndexTableScan.cpp:156 — ORDER navigation, leaf to leaf
+break BTR_insert                          # src/jrd/btr.cpp:1833 — a key going in (DML or CREATE INDEX)
+```
+
+Prepare the `OR` query from the sample and `Retrieval::getInversion` shows the [inversion](#combining-indexes-bitmapinversion) being assembled — its return value is the tree that the plan prints as `INDEX (A, B)`. At execution, `BTR_evaluate` fires once per participating index; the `bitmap` out-parameter is the sparse record-number bitmap the document describes, and stepping into the node loop shows prefix-compressed keys being expanded and the jump table consulted. For the `ORDER BY id DESC` query the breakpoint that fires instead is `IndexTableScan::internalGetRecord` — navigation, not bitmap building — which is exactly the `ORDER` vs `INDEX` distinction in the plans above. See the [debugging guide](debugging-firebird.md).
+
 ## Further research
 
 **Firebird**

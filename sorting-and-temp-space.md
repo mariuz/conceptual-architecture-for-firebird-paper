@@ -117,6 +117,66 @@ Three contrasts carry the story:
 
 The sort subsystem shows its lineage more openly than any other corner of the engine — `RUN_GROUP`, tape-merge vocabulary, a comment citing the VAX — and yet its architecture is exactly where a modern engine would land: comparisons reduced to `memcmp` by pre-transforming keys (the same idea as PostgreSQL's abbreviated keys or an LSM's key encoding), spill managed by a dedicated caching layer rather than the sort itself, and row width attacked *before* the sort rather than endured inside it. The one visible gap is top-N. For the operator's day-to-day: `PLAN SORT` vs `PLAN ORDER` tells you a sort exists; `TempCacheLimit` decides whether it stays silent in RAM; and when a temp partition mysteriously fills with nothing in `ls`, this document's `/proc` trick is the diagnosis.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/sorting.cpp`](samples/cpp/sorting.cpp)
+
+The [TempCacheLimit threshold](#tempspace-memory-first-then-unlinked-scratch-files) reproduced at a size kind to a small machine: 200,000 rows with a 400-byte ASCII key (~82 MB of sort data — the key *is* the wide column, so [refetch](#the-refetch-optimization-keeping-wide-rows-out-of-the-sort) can't shrink it), against a 20,000-row (~8 MB) variant of the same `ORDER BY`. While each query runs, a watcher thread samples both sides of the story: the server's `/proc/<pid>/fd` table (via `sudo`) for the **unlinked** `fb_sort_*` scratch files that `ls` can never show, and database-level `MON$MEMORY_USAGE` from a second attachment — one fresh transaction per poll, because MON$ snapshots are per-transaction. The server pid comes from `MON$ATTACHMENTS.MON$SERVER_PID`; run it on the server machine with passwordless sudo.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/sorting        # default: inet://localhost//tmp/fbhandson/sorting.fdb
+```
+
+Verified output:
+
+```text
+bulk: 200000 rows, 400-byte ASCII key -> ~82 MB of sort data
+server pid 215035, database memory allocated while idle: 28151808 bytes
+
+big sort (200k rows, ~82 MB)
+  PLAN SORT ("PUBLIC"."BULK" NATURAL)
+  top row id = 195722
+  peak fb_sort_* scratch: 1 file(s), 73400320 bytes
+  peak database MON$MEMORY_ALLOCATED: 96116736 bytes (+67964928 over idle)
+
+small sort (20k rows, ~8 MB)
+  PLAN SORT ("PUBLIC"."BULK" NATURAL)
+  top row id = 65950
+  peak fb_sort_* scratch: 0 file(s), 0 bytes
+  peak database MON$MEMORY_ALLOCATED: 47923200 bytes (+19771392 over idle)
+
+done.
+```
+
+The same four-number story as the [448 MB demonstration](#sorting-in-action-validated), at one-sixth scale: the big sort's allocated memory grows by **+68 MB** — the 64 MB `TempCacheLimit` plus block overhead — and *one* scratch descriptor absorbs the remaining **70 MB** of runs; the small sort stays under budget, and the scratch count is **zero** even though it, too, overflowed its 128 KB sort buffers — runs live in TempSpace's memory cache. Both queries print the same `PLAN SORT (...)`, which is the point: the plan tells you a sort exists, only the volume decides where it lives.
+
+### JavaScript sample — [`samples/nodejs/sorting.js`](samples/nodejs/sorting.js)
+
+The MON$ half of the same experiment through the wire protocol (`cd samples/nodejs && node sorting.js`; it reuses the C++ sample's `bulk` table, building it if missing). One connection sorts, a second polls `MON$MEMORY_USAGE` — node-firebird runs each `db.query` in its own transaction, so every poll is a fresh MON$ snapshot with no extra code. Verified peaks: `+67506176 over idle` for the big sort, `+19378176` for the small one — the same threshold signature, without the `/proc` half (a browser-less Node process could run remotely; the fd table only exists on the server box).
+
+### Things to try
+
+- Drop the `desc` and `first 1` and fetch everything: the numbers barely move — the sort is a pipeline breaker, so the *open* pays for the whole sort whether you fetch one row or all 200,000.
+- Change the query to `select first 1 pad from bulk order by id` after `create index bulk_id on bulk (id)`: the plan flips to `ORDER` (index navigation), and both the memory delta and the scratch file vanish — no `Sort` object is ever created.
+- Sort `select id, pad from bulk order by id` (key = 4-byte int, payload = 400-byte pad, total > `InlineSortThreshold`): watch whether refetch mode kicks in — the scratch volume should collapse to keys + DBKEYs.
+- Halve the workload (`where mod(id, 2) = 0`, ~41 MB): still under the 64 MB budget plus overhead? Find the row count where the first `fb_sort_*` file appears — that *is* `TempCacheLimit`, measured from outside.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the whole pipeline of Figure 1 is breakpointable:
+
+```gdb
+break SortedStream::internalOpen  # src/jrd/recsrc/SortedStream.cpp:60 — the pipeline break: put-all, sort, then get
+break Sort::put                   # src/jrd/sort.cpp:333  — one sort record in (key just diddled)
+break Sort::putRun                # src/jrd/sort.cpp:2008 — a full buffer quicksorted and flushed as a run
+break TempSpace::setupFile        # src/jrd/TempSpace.cpp:504 — TempCacheLimit exhausted: the spill moment
+break TempFile::create            # src/common/classes/TempFile.cpp:126 — fb_sort_* created (and unlinked)
+break Sort::get                   # src/jrd/sort.cpp:299  — records out in order (key un-diddled)
+```
+
+Run the sample's big sort and the breakpoints fire in exactly that order; the small sort never reaches `TempSpace::setupFile` — the threshold behavior as a breakpoint that does or doesn't hit. At `Sort::put`, the record at `*record_address` shows the diddled key bytes (compare a negative and positive integer key to see the sign-bit flip); at `Sort::putRun` the run being flushed goes to `m_space` — a `TempSpace` whose `head` chain is memory blocks until `setupFile`'s backtrace shows the budget check failing; and `TempFile`'s `doUnlink` handling (`TempFile.cpp:250`) is the two-line reason `ls /tmp` shows nothing while `/proc/<pid>/fd` shows hundreds of megabytes. See the [debugging guide](debugging-firebird.md).
+
 ## Further research
 
 * [`src/jrd/sort.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/sort.cpp) / [`sort.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/sort.h) — `put`/`sort`/`get`, `diddleKey`, `putRun`, the merge tree; the header comments are a history lesson.

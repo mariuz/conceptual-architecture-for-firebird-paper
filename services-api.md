@@ -455,6 +455,70 @@ The costs are real. The 1 KB output buffer is a genuine constraint that surprise
 
 For day-to-day work the practical takeaway is the smallest of the architectural facts: because the service and the command line are the same code, **anything you can reproduce with the CLI is a valid reproduction of a service problem**, and vice versa. That is a debugging shortcut you get for free from a design decision made for entirely different reasons.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/services.cpp`](samples/cpp/services.cpp)
+
+The [wire session of Figure 2](#over-the-wire) in code: `IProvider::attachServiceManager` with an `SPB_ATTACH` of credentials, an information request (`isc_info_svc_server_version`) that needs no action at all, then `isc_action_svc_backup` started with an SPB naming *server* paths — and the polling loop this document's [pipe section](#the-service-thread-and-the-1-kb-pipe) is about: repeated `IService::query(isc_info_svc_line)` calls draining the 1 KB `svc_stdout` ring buffer while `BURP_main` runs on its server thread. The sample creates its scratch database first, so it is self-contained and idempotent.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/services                 # backs up /tmp/fbhandson/services.fdb server-side
+```
+
+Verified output (middle trimmed):
+
+```text
+server version: LI-T6.0.0.2076 Firebird 6.0 fd83f03
+backup started (verbose) — draining the 1 KB ring buffer:
+  gbak:readied database /tmp/fbhandson/services.fdb for backup
+  gbak:creating file /tmp/fbhandson/services.fbk
+  gbak:starting transaction
+  ...
+  gbak:closing file, committing, and finishing. 3072 bytes written
+done: 74 gbak lines drained in 75 query() polls
+the file /tmp/fbhandson/services.fbk now exists on the SERVER, owned by the server's user
+```
+
+74 verbose lines took 75 round-trips — one `op_service_info` per line — and the resulting file proves the operational rule (`ls -l`: `-rw-r--r-- firebird firebird 3072 /tmp/fbhandson/services.fbk`): the client never touched the filesystem.
+
+### JavaScript sample — [`samples/nodejs/services.js`](samples/nodejs/services.js)
+
+node-firebird speaks the four service opcodes natively: `Firebird.attach({ manager: true })` sends `op_service_attach` instead of `op_attach` and returns a `ServiceManager` (`lib/wire/service.js`) whose `backup()` assembles the same SPB tags the C++ `IXpbBuilder` does. The idiomatic difference is what it does with the pipe: verbose output is exposed as a Node **`Readable` stream** whose `_read()` issues one `isc_info_svc_line` query per line — the ring-buffer polling loop re-expressed as stream backpressure, so a paused stream stalls the server-side gbak exactly as an unpolled C++ client does. Run: `cd samples/nodejs && node services.js`. Verified output:
+
+```text
+server version : LI-T6.0.0.2076 Firebird 6.0 fd83f03
+implementation : Firebird/Linux/ARM64
+backup done: 74 gbak lines streamed
+last line   : gbak:closing file, committing, and finishing. 3072 bytes written
+(/tmp/fbhandson/services_js.fbk was written on the SERVER, by the server's user)
+service detached. done.
+```
+
+Same 74 lines as the C++ run — `BURP_main` neither knows nor cares which client, or which language, is on the other end of the pipe.
+
+### Things to try
+
+- Drop `isc_spb_verbose` from the C++ start block: the backup completes in a handful of polls with almost no lines — the non-verbose escape hatch from [the pipe section](#the-service-thread-and-the-1-kb-pipe).
+- Insert a `sleep(30)` between two `query()` calls mid-backup and watch the backup *not* finish until you resume — the producer really does block on the full buffer (compare timestamps in `MON$ATTACHMENTS` or just the wall clock).
+- Point `bkPath` at an unwritable server directory (`/root/x.fbk`): the error comes back on `start()`, not on the first poll — the `svcStart` semaphore handshake at work.
+- In `services.js`, replace `backup` with `getStats({ database: DB, options: { hdrpages: true } })` — `main_gstat` through the same channel, matching the doc's `fbsvcmgr action_db_stats` transcript.
+
+### Debugging this in C++ (gdb)
+
+Server-side breakpoints (a [debug server](debugging-firebird.md), or run the sample against a *local* path with `FIREBIRD=<debug root>` — the embedded engine hosts the same `Service` class in-process). All verified in the vendored tree:
+
+```gdb
+break Service::start             # src/jrd/svc.cpp:1969 — SPB in hand, services[] lookup
+break Service::conv_switches     # svc.cpp:2571 — SPB tags become a gbak command line
+break BURP_main                  # src/burp/burp.cpp:143 — gbak proper, called with a UtilSvc*
+break Service::started           # svc.cpp:454 — releases the svcStart semaphore
+break Service::enqueue           # svc.cpp:2277 — producer side of the 1 KB ring buffer
+break Service::query             # svc.cpp:1557 — consumer side: your poll arrives
+```
+
+The backtrace at `BURP_main` is this document's thesis in one frame stack: `Service::start` → thread start → `BURP_main(UtilSvc*)` — the same entry point the `gbak` binary reaches through `StandaloneUtilityInterface`, distinguishable only by `isService()`. At `Service::conv_switches`, print `switches` before returning and you can read the reconstructed command line (`-b /tmp/... -v -user ...`, `SVC_TRMNTR`-delimited). Set `Service::enqueue` and `Service::query` together and alternate continues: the producer parks in `enqueue`'s full-buffer wait whenever more than 1 KB of gbak chatter is pending and your client hasn't polled — the blocking pipe of the [operational rules](#what-this-means-operationally), observed from both ends.
+
 ## Further research
 
 * [`src/jrd/svc.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/svc.cpp) — the `services[]` table, the `Service` constructor's authorization, `Service::start`, and the `svc_stdout` ring buffer with its producer-side blocking.

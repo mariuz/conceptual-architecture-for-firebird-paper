@@ -366,6 +366,56 @@ Tracing the 2001 scenario through 2026 code surfaces every big architectural shi
 * **The wire grew layers, not shape.** Opcodes and XDR would be recognizable to the paper's authors; [SRP auth, wire crypt, and zlib](firebird-wire-protocol.md) wrap them. XNET replaced the old IPC mapping and is now Windows-only.
 * **No log, still.** The commit path writes pages in precedence order and flips TIP bits — the [careful-write design](on-disk-structure.md) the paper could already rely on, still doing recovery's job without a WAL.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/request_lifecycle.cpp`](samples/cpp/request_lifecycle.cpp)
+
+This document is itself the deep trace, so the sample stays modest: it runs the document's exact scenario — one `CREATE TABLE` — and instruments the round trip from the client. Each API step is timed, and the attachment's own `MON$IO_STATS`/`MON$RECORD_STATS` counters are sampled around them, so three stages become visible as numbers: **prepare** returns statement type DDL (the parser chose `DsqlDdlStatement`, [Stage 5](#stage-5-dsql--from-sql-text-to-executable-form)); **execute** bumps the record-insert counter by the catalog rows `CreateRelationNode::execute` stores through `VIO_store` ([Stage 7](#stage-7-exe-and-the-ddl-path-into-met)) — and the new `RDB$RELATIONS` row is already visible *to the writing transaction*; **commit** bumps the page-write counter as `TRA_commit` → `DFW_perform_work` → `CCH_flush` → `PIO_write` drains the dirtied pages ([Stage 9](#stage-9-commit--deferred-work-and-the-write-to-disk)).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/request_lifecycle        # default: inet://localhost//tmp/fbhandson/request_lifecycle.fdb
+```
+
+Verified output:
+
+```text
+prepare    0.11 ms   statement type = DDL
+execute   89.27 ms   catalog record inserts: +20, page marks: +131
+         in this tx:  RDB$RELATIONS has TRACE_DEMO = 1
+commit    15.08 ms   page writes: +15  (fetches: +2223 over the whole trip)
+done.
+```
+
+Twenty catalog record inserts for one two-column table with a primary key — rows in `RDB$RELATIONS`, `RDB$RELATION_FIELDS`, `RDB$FIELDS`, `RDB$INDICES`, `RDB$RELATION_CONSTRAINTS`, … — all written by the engine's own internal BLR requests, which is Stage 7's claim measured rather than asserted.
+
+### JavaScript sample — [`samples/nodejs/request_lifecycle.js`](samples/nodejs/request_lifecycle.js)
+
+The same round trip where [Stage 2's](#stage-2-the-remote-module-client-side) client half is JavaScript rather than fbclient (`cd samples/nodejs && node request_lifecycle.js`). node-firebird has no separate prepare call, so the DDL travels as a single `op_execute`; the MON$ deltas match the C++ run (+20 record inserts, +16 page writes). The twin adds the visibility cross-check the C++ sample only does from inside: a *second* transaction on the same connection sees `TRACE_DEMO rows in RDB$RELATIONS = 0` until the DDL transaction commits — the catalog write is an ordinary [MVCC record version](transactions-and-concurrency.md) until `TRA_commit` flips the TIP bits.
+
+### Things to try
+
+- Add a column or a second index to the `CREATE TABLE` and watch the record-insert delta grow by exactly the extra catalog rows.
+- Time a *second* run of the same text right after the first (drop the table in between): prepare stays sub-millisecond — DDL text is cached like any other in the [statement cache](statement-cache.md).
+- Replace the DDL with `INSERT INTO trace_demo VALUES (1, 'x')` and compare: one record insert, no DFW, near-zero commit — the whole difference between the DDL and DML halves of this document.
+- Run the server-side trace facility alongside (`fbtracemgr` or an `fbsvcmgr action_trace_start` session) and match its `PREPARE_STATEMENT`/`EXECUTE_STATEMENT_FINISH`/`COMMIT` events against the sample's three timed steps.
+
+### Debugging this in C++ (gdb)
+
+The document's whole spine can be walked with one breakpoint per stage ([debug build](debugging-firebird.md)):
+
+```gdb
+break DSQL_prepare                    # src/dsql/dsql.cpp:261  — Stage 5, text in hand
+break Jrd::DsqlDdlRequest::execute    # src/dsql/DsqlRequests.cpp:959 — Stage 7 entry
+break Jrd::CreateRelationNode::execute  # src/dsql/DdlNodes.epp:9683 — the catalog writes
+break LCK_lock                        # src/jrd/lck.cpp:670   — Stage 8 (first hit: LCK_relation, key -1)
+break TRA_commit                      # src/jrd/tra.cpp:433   — Stage 9 begins
+break CCH_flush                       # src/jrd/cch.cpp:1192  — careful-write flush
+break PIO_write                       # src/jrd/os/posix/unix.cpp:806 — pwrite to the database file
+```
+
+Running the sample under these, the stop order *is* Figure 3. At `CreateRelationNode::execute`, `bt` shows the full stack of the middle stages — `DSQL_execute` → `DsqlDdlRequest::execute` → `executeDdl` — and stepping from there into the first `STORE` lands in GPRE-generated code calling `EXE_send` on an internal request: the engine querying itself. At `LCK_lock`, `p lock->lck_type` and `p *(SLONG*)lock->lck_key.lck_string` show the `LCK_relation` / key `-1` pair quoted in Stage 8. `PIO_write` fires once per page the commit flushes — matching, page for page, the `+15 page writes` the sample counts from MON$. The [debugging guide](debugging-firebird.md) covers attaching to the serving process.
+
 ## Further research
 
 * [`src/remote/client/interface.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/client/interface.cpp), [`src/remote/server/server.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/remote/server/server.cpp) — the two ends of the proxy; `process_packet` is the best single map of the protocol.

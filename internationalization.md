@@ -129,6 +129,68 @@ Charset/collation inventory (also verified live): **52 character sets**, **149 c
 
 **Every system has a signature Unicode trap, and they are worth memorizing.** MySQL's is the notorious `utf8` alias, which is really 3-byte `utf8mb3` and silently mangles 4-byte characters (emoji, some CJK) — you must use `utf8mb4`. Firebird's is the `NONE` charset read over a wider connection (the [#422](https://github.com/hgourvest/node-firebird/issues/422) transliteration/capacity mismatch) plus the 4-bytes-per-char `CHAR` padding. PostgreSQL's is that database encoding is effectively immutable after creation. SQLite's is that "case-insensitive" (`NOCASE`) only folds ASCII, so `É` ≠ `é` without ICU. The trap in each case flows directly from the design choice above — per-column flexibility, DB-wide fixity, or minimalism — so knowing the architecture tells you where the sharp edge is.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/intl.cpp`](samples/cpp/intl.cpp)
+
+One table exercises all [three concepts](#three-concepts-charset-collation-transliteration): two UTF8 columns differing only in **collation** (`UNICODE_CI_AI` vs `UCS_BASIC`), and a **per-column charset** override (`WIN1252`) beside them. The sample runs the document's Café/CAFE/cafe experiment, then attaches a *second* connection with `lc_ctype=NONE` and fetches the same `WIN1252` value over both connections **without metadata coercion** — hex-dumping what each receives, which is [Figure 2](#transliteration-and-the-connection-charset) measured on the wire.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/intl             # default: inet://localhost//tmp/fbhandson/intl.fdb
+```
+
+Verified output:
+
+```text
+rows matching 'cafe' with UNICODE_CI_AI : 3
+rows matching 'cafe' with UCS_BASIC     : 1
+UPPER('café èñ ß')                      : CAFÉ ÈÑ ß
+
+ORDER BY name_ci_ai: cafe  CAFE  Café
+ORDER BY name_bin  : CAFE  Café  cafe     (binary: uppercase codepoints first)
+
+SELECT name_win FROM t WHERE name_bin = 'Café' — same row, two connections:
+  lc_ctype=UTF8:   len= 5  43 61 66 C3 A9   "Café"
+  lc_ctype=NONE:   len= 4  43 61 66 E9   "Caf?"
+```
+
+The column stores the WIN1252 byte `E9`; the UTF8 connection receives the transliterated pair `C3 A9`, the NONE connection the raw stored byte — same row, different bytes, chosen by `isc_dpb_lc_ctype` alone. An implementation note in the sample matters for API users: `fb_sample.h`'s generic `query()` coerces output to `CS_NONE`, which *suppresses* transliteration (both connections would show `E9`), so the demo fetches with the statement's own output metadata instead.
+
+### JavaScript sample — [`samples/nodejs/intl.js`](samples/nodejs/intl.js)
+
+The twin (`cd samples/nodejs && node intl.js`) maps `encoding:` to the connection charset and lands in the same two worlds — plus a driver-side wrinkle. Verified (codepoints of the received JS strings in brackets):
+
+```text
+matches for 'cafe' via UNICODE_CI_AI : 3
+matches for 'cafe' via UCS_BASIC     : 1
+encoding UTF8 : name_win="Café" [43 61 66 e9]  name_bin="Café" [43 61 66 e9]
+encoding NONE : name_win="Café" [43 61 66 e9]  name_bin="CafÃ©" [43 61 66 c3 a9]
+```
+
+With `encoding: 'UTF8'` everything transliterates server-side and decodes to proper strings. With `encoding: 'NONE'` the server passes stored bytes through and node-firebird decodes them byte-per-byte (latin1): the `WIN1252` column *accidentally* looks right (`E9` ≈ latin1 `é`) while the UTF8 column becomes the classic mojibake `CafÃ©` — the same no-transliteration path that makes issue [#422](https://github.com/hgourvest/node-firebird/issues/422) bite on NONE-charset databases like `employee.fdb` (which is why [`common.js`](samples/nodejs/common.js) defaults to `encoding: 'NONE'` there).
+
+### Things to try
+
+- Add `COLLATE UNICODE_CI` (case- but not accent-insensitive) as a third column: `'cafe'` then matches 2 of the 3 rows — the missing middle step between the sample's 3 and 1.
+- Query `RDB$CHARACTER_SETS`/`RDB$COLLATIONS` (the catalog of Figure 1) and count them — the live server's 52 and 149.
+- Insert a value with a character WIN1252 cannot represent (e.g. `'€漢'`) into `name_win` over the UTF8 connection and watch transliteration fail with an `isc_transliteration_failed` error instead of silently corrupting.
+- In the JS sample, point `encoding: 'NONE'` at `employee.fdb` and read `EMPLOYEE.FIRST_NAME` — the Buffer/latin1 behaviour on a real NONE-charset database.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the INTL subsystem's three module families are three breakpoints:
+
+```gdb
+break INTL_compare          # src/jrd/intl.cpp:346 — every collation-aware comparison
+break INTL_convert_string   # jrd/intl.cpp:542 — transliteration between descriptors
+break INTL_convert_bytes    # jrd/intl.cpp:426 — the charset-pair byte conversion itself
+break Firebird::UnicodeUtil::Utf16Collation::compare
+                            # src/common/unicode_util.cpp:1945 — the ICU comparison
+```
+
+Run the sample's `WHERE name_ci_ai = 'cafe'` and `INTL_compare` fires with the two text descriptors; step into it to watch it resolve the column's `ttype` (collation id) and dispatch to `Utf16Collation::compare`, where ICU applies the `CI_AI` strength — the frame's arguments are UTF-16 buffers holding `Café` and `cafe`. Fetch `name_win` on the UTF8 connection and `INTL_convert_string` shows `from` with the WIN1252 charset id and `to` with UTF8 — Figure 2's arrow as a stack frame; on the NONE connection the breakpoint is never hit for that fetch, which *is* the passthrough rule. See the [debugging guide](debugging-firebird.md) for the embedded setup.
+
 ## Further research
 
 **Firebird**

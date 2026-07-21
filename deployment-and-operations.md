@@ -134,6 +134,82 @@ For containers, Firebird publishes an **official Docker image** ([`firebirdsql/f
 
 **Containers have converged the deployment story — except for SQLite, which never needed it.** Firebird, PostgreSQL and MySQL all ship official images following the same idiom (immutable image + mounted data volume + env-var bootstrap), so operationally they now look alike from the outside: a container, a volume, a port, some environment variables. SQLite stands apart by design — there is nothing to deploy, supervise, or expose; you ship a file and a library and the "database server" is your own process ([embedded comparison](embedded-architecture-comparison.md)). The whole series' recurring split — invest in server machinery, or deliberately do without it — is nowhere more visible than in what it takes to *run* each of these.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/deployment.cpp`](samples/cpp/deployment.cpp)
+
+Everything this document describes from the server's shell — [config files](#the-configuration-files), [`ServerMode`](#servermode-three-execution-models), the install tree — the engine also publishes back to any SQL client, and the sample reads that self-portrait three layers deep: **`MON$DATABASE`** for the physical facts of the attached database (file path, ODS, page size, sweep interval, forced writes), the **`RDB$CONFIG`** virtual table for the *effective* configuration — `firebird.conf` merged with any `databases.conf` overrides, with `RDB$CONFIG_IS_SET` distinguishing defaults from explicit settings — and the **`SYSTEM` context namespace** for engine version and session facts. Read-only, so it runs against the shared `employee` database.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/deployment        # default: inet://localhost/employee
+```
+
+Verified output:
+
+```text
+== MON$DATABASE: the database as deployed ==
+  database file          /opt/firebird/examples/empbuild/employee.fdb
+  ODS version            14.0
+  page size              8192
+  page buffers           2048
+  sweep interval         20000
+  forced writes          1
+  SQL dialect            3
+  crypt state            0
+
+== RDB$CONFIG: effective configuration (selected of 69 settings) ==
+RDB$CONFIG_NAME     RDB$CONFIG_VALUE            RDB$CONFIG_IS_SET
+------------------- --------------------------- -----------------
+DatabaseAccess      Full                        FALSE
+DefaultDbCachePages 2048                        FALSE
+MaxParallelWorkers  1                           FALSE
+SecurityDatabase    /opt/firebird/security6.fdb FALSE
+ServerMode          Super                       FALSE
+WireCrypt           <null>                      FALSE
+
+== settings explicitly set in config files ==
+RDB$CONFIG_NAME RDB$CONFIG_VALUE RDB$CONFIG_SOURCE
+--------------- ---------------- -----------------
+
+== SYSTEM context: this engine, this session ==
+  ENGINE_VERSION         6.0.0
+  DB_NAME                /opt/firebird/examples/empbuild/employee.fdb
+  NETWORK_PROTOCOL       TCPv4
+  WIRE_CRYPT_PLUGIN      ChaCha64
+  CLIENT_ADDRESS         127.0.0.1/48178
+
+done.
+```
+
+`ServerMode = Super` confirms [Figure 2's default](#servermode-three-execution-models) from inside a client, and the empty "explicitly set" table is itself informative: this server runs on stock defaults, every one of which `RDB$CONFIG` still reports with its effective value.
+
+### JavaScript sample — [`samples/nodejs/deployment.js`](samples/nodejs/deployment.js)
+
+The same three layers through node-firebird (`cd samples/nodejs && node deployment.js`). One line differs, and instructively so: `WIRE_CRYPT_PLUGIN` reports **`Arc4`** instead of fbclient's **`ChaCha64`** — the two clients negotiated different wire-encryption plugins with the same server (node-firebird implements only the older Arc4), a per-session deployment fact that `RDB$CONFIG`'s server-wide `WireCrypt` row cannot show.
+
+### Things to try
+
+- Run the C++ sample with an `xnet://` or `inet6://` URL (or embedded, with a direct path and `FIREBIRD=` set) and watch `NETWORK_PROTOCOL`, `CLIENT_ADDRESS` and `WIRE_CRYPT_PLUGIN` change while `RDB$CONFIG` stays identical — deployment facts vs session facts.
+- Point the sample at a scratch database created with `gfix -sweep 0` or different page size to see `MON$DATABASE` track the per-database knobs.
+- List the whole `RDB$CONFIG` (drop the `WHERE`) and diff it between two databases on the same server after giving one a `databases.conf` override — the merged-config architecture made visible.
+- Compare `SELECT RDB$GET_CONTEXT('SYSTEM','SESSION_TIMEZONE') FROM RDB$DATABASE` from both drivers — client-configured deployment state travelling in the attach DPB.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the deployment machinery behind each output section can be watched being assembled:
+
+```gdb
+break Config::Config             # src/common/config/config.cpp:147 — firebird.conf being parsed into defaults
+break ConfigFile::parse          # src/common/config/config_file.cpp:653 — each conf file tokenized
+break expandDatabaseName         # src/common/db_alias.cpp:488 — alias -> path via databases.conf
+break JProvider::attachDatabase  # src/jrd/jrd.cpp:1585 — the engine-side attach that uses all of the above
+break ConfigTable::getRecords    # src/jrd/ConfigTable.cpp:39 — RDB$CONFIG materialized on demand
+break Monitoring::putDatabase    # src/jrd/Monitoring.cpp:923 — the MON$DATABASE row being written
+```
+
+The second `Config::Config` constructor (`config.cpp:181`, taking a `base` Config) is the per-database override merge from the [aliases section](#aliases-and-per-database-configuration) — its backtrace runs through `expandDatabaseName`, showing that alias resolution and configuration layering are literally the same step. `ConfigTable::getRecords` demonstrates that `RDB$CONFIG` is a **virtual** table: no pages, just the in-memory `Config` object serialized per query — which is why the sample's snapshot always reflects the configuration *this* attachment got at attach time.
+
 ## Further research
 
 **Firebird**

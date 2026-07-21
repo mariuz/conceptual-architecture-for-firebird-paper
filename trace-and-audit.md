@@ -488,6 +488,69 @@ Firebird's distinguishing choice, stated plainly: it is the only one of the four
 
 ---
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/trace.cpp`](samples/cpp/trace.cpp)
+
+A complete user trace session with no `fbtracemgr` involved — the sample *is* the trace manager. Service connection A starts the session (`isc_action_svc_trace_start`, configuration text passed inline in `isc_spb_trc_cfg`) and then drains the session's [`TraceLog`](#the-log-and-what-happens-when-nobody-reads-it) line by line through `isc_info_svc_line`; a worker thread plays the *observed* side, attaching to the traced database and running one marker query; and a second service connection B issues `isc_action_svc_trace_stop`, which ends A's stream — one client process holding both ends of the observation channel plus the thing being observed. The configuration names exactly one database, so nothing else on the shared server appears in the stream.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/trace        # traces inet://localhost//tmp/fbhandson/trace.fdb
+```
+
+Verified output (trimmed; the full stream also carries ATTACH/COMMIT/DETACH events):
+
+```text
+[trace] Trace session ID 1 started
+[worker] marker query says: 60
+[trace] 2026-07-21T07:42:39.4700 (149001:0xe24b85951dc0) TRACE_INIT
+[trace] 	SESSION_1 hands-on
+[trace] 2026-07-21T07:42:39.4700 (149001:0xe24b85951dc0) ATTACH_DATABASE
+[trace] 	/tmp/fbhandson/trace.fdb (ATT_4, SYSDBA:NONE, UTF8, TCPv4:127.0.0.1/53678)
+[trace] 2026-07-21T07:42:39.4730 (149001:0xe24b85951dc0) EXECUTE_STATEMENT_FINISH
+[trace] 		(TRA_6, CONCURRENCY | WAIT | READ_WRITE)
+[trace] SELECT COUNT(*) FROM RDB$RELATIONS /* traced! */
+[trace] PLAN ("SYSTEM"."RDB$RELATIONS" NATURAL)
+[trace] 1 records fetched
+[trace]       0 ms, 68 fetch(es)
+[trace] Table                              Natural     Index    Update ...
+[trace] "SYSTEM"."RDB$RELATIONS"                60
+[trace] 2026-07-21T07:42:39.4740 (149001:0xe24b85951dc0) TRACE_FINI
+[stop ] Trace session ID 1 stopped
+done.
+```
+
+This is the [dispatch path](#the-dispatch-path-how-an-event-reaches-a-plugin) end to end: the worker's attachment saw the registry's change counter move, attached the `fbtrace` plugin, and every event site behind `needs()` began paying its cost — statement text, plan, and the per-table `Natural`/`Index` counters all formatted into the shared-memory ring the sample reads back over the wire.
+
+### JavaScript sample — [`samples/nodejs/trace.js`](samples/nodejs/trace.js)
+
+The same choreography in pure JavaScript (`cd samples/nodejs && node trace.js`): node-firebird's `ServiceManager.startTraceAsync()` sends the same SPB (its option is named `configfile` but carries the configuration *text* — it lands in `isc_spb_trc_cfg`) and returns the stream as a Node `Readable`; `stopTraceAsync({ traceid })` on a second service connection ends it. Verified: the same event sequence, with two instructive deltas in the captured records — the remote process is identified as `node:209076` instead of the binary path, and the marker statement runs in `(READ_COMMITTED | READ_CONSISTENCY | WAIT | READ_WRITE)` rather than the C++ sample's `CONCURRENCY` — the two drivers' default TPBs, read straight out of the trace stream.
+
+### Things to try
+
+- Misspell a config element (`log_statement_finish` → `log_statement_finnish`) and re-run: the session starts, the stream reports the parse error for that database, and the workload runs untraced — the [configuration-error posture](#trace-is-a-plugin-and-a-plugin-that-misbehaves-is-ejected) reproduced at will.
+- Drop the `database =` filter (use a bare `{...}` default section) and watch the security database's SRP queries appear in the stream, parameters included — the reason [`TRACE_ANY_ATTACHMENT`](#two-authorization-questions) exists.
+- Add `log_transactions = true` to the JS sample's config and compare transaction events between the drivers; then set `time_threshold = 100` and watch the marker query vanish from the stream while ATTACH/DETACH remain.
+- While the C++ sample runs, `ls -la /tmp/firebird/` (or your lock directory): `fb60_trace` and this session's `fb_trace.{GUID}` ring buffer appear and disappear with the session, exactly as in the [live demonstrations](#live-demonstrations).
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the whole session lifecycle from the samples is breakpointable — start with the service side, then the hot path:
+
+```gdb
+break TraceSvcJrd::startSession        # src/jrd/trace/TraceService.cpp:105 — service A's SPB becomes a session
+break ConfigStorage::addSession        # src/jrd/trace/TraceConfigStorage.cpp:704 — registered in fb60_trace
+break TraceManager::update_sessions    # src/jrd/trace/TraceManager.cpp:132 — an attachment reconciling: plugin attached/released
+break TraceManager::event_dsql_execute # TraceManager.cpp:391 — the marker query's event firing
+break TraceLog::write                  # src/jrd/trace/TraceLog.cpp:142 — the non-blocking ring-buffer write
+break TraceSvcJrd::stopSession         # TraceService.cpp:149 — service B ends it
+```
+
+`update_sessions` fires in the *worker's* attachment shortly after `addSession` bumps the change counter — the two breakpoints together are the shared-memory registry protocol of [Figure 1](#the-dispatch-path-how-an-event-reaches-a-plugin) happening live, across what would be separate processes under Classic. At `event_dsql_execute`, `trace_needs` and `trace_sessions` in the `TraceManager` show exactly which bits the session bought; stepping into `TraceLog::write` lands on the `FLAG_DONE`/`FLAG_FULL` early-outs quoted [above](#the-log-and-what-happens-when-nobody-reads-it) — the code that guarantees the sample's reader can stall without the engine noticing.
+
+---
+
 ## Further reading
 
 - [`doc/README.trace_services`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.trace_services) — the trace and audit services, session management, and the full configuration vocabulary.

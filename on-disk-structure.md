@@ -281,6 +281,85 @@ Common to all three comparisons:
 
 Honest trade-offs: careful-write MGA means **dead versions accumulate and must be swept** (Firebird's version of VACUUM pressure), and the **heap layout is not clustered on the primary key**, so PK range scans can do more random I/O than InnoDB's clustered index. The design optimises for cheap updates, cheap MVCC and operational simplicity over log-based replication and clustered locality — a coherent set of choices, not an accident.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/ods_header.cpp`](samples/cpp/ods_header.cpp)
+
+The document's claim is that the file *is* the database — so the sample reads the file. It creates a scratch database through the server, asks `MON$DATABASE` for the server's view of the header numbers, detaches, then opens `/tmp/fbhandson/ods.fdb` directly and decodes page 0 at the exact byte offsets `ods.h` pins with `static_assert`s: the [uniform page header](#the-big-picture-one-file-many-pages) (`pag_type` = 1), `hdr_page_size` at offset 16, the ODS version word at 18 (note the `ODS_FIREBIRD_FLAG` high bit), the [four TIP markers](#mvcc-on-disk-the-transaction-inventory) as 64-bit values at offsets 40–64, and the database GUID. It finishes with a page-type census — byte 0 of every page in the file — reproducing the [page-type table](#the-page-types) from live bytes. Run it on the machine the server runs on (it reads the file the server wrote).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/ods_header        # default: inet://localhost//tmp/fbhandson/ods.fdb
+```
+
+Verified output (every value cross-checked against `gstat -h`, including the GUID):
+
+```text
+-- server's view (MON$DATABASE) --
+MON$PAGE_SIZE MON$ODS_MAJOR MON$ODS_MINOR MON$OLDEST_TRANSACTION MON$OLDEST_ACTIVE MON$OLDEST_SNAPSHOT MON$NEXT_TRANSACTION
+8192          14            0             4                      5                 5                   5
+
+-- header page, parsed from /tmp/fbhandson/ods.fdb (offsets per ods.h) --
+pag_type      @0   = 1 (pag_header)
+hdr_page_size @16  = 8192
+hdr_ods_version @18 = 0x800e -> ODS 14 (FIREBIRD flag 0x8000 set), minor @20 = 0
+hdr_flags     @22  = 0x12 (force_write SQL_dialect_3)
+hdr_PAGES     @28  = 3   <- pointer page of RDB$PAGES (catalog bootstrap anchor)
+hdr_next_transaction   @40 = 5
+hdr_oldest_transaction @48 = 4 (OIT)
+hdr_oldest_active      @56 = 5 (OAT)
+hdr_oldest_snapshot    @64 = 5 (OST)
+hdr_guid      @84  = {51592637-C077-4903-8754-42BE2595A5DB}
+
+-- page-type census: 294 pages of 8192 bytes --
+  type  1  pag_header                 1
+  type  2  pag_pages (PIP)            1
+  type  3  pag_transactions (TIP)     1
+  type  4  pag_pointer               40
+  type  5  pag_data                  97
+  type  6  pag_root                  40
+  type  7  pag_index (b-tree)       106
+  type  9  pag_ids (generators)       1
+  type 10  pag_scns                   1
+done.
+```
+
+The census is the catalog bootstrap made visible: 40 pointer pages and 40 index roots — one pair per on-disk system relation, allocated by `DPM_create_relation` at creation (see [catalog bootstrap](catalog-bootstrap.md); the remaining system relations are virtual `MON$`/`SEC$`-style tables with no pages) — and exactly one TIP, one PIP, one generator page and one SCN page, matching the [page-type table](#the-page-types) row for row.
+
+### JavaScript sample — [`samples/nodejs/ods_header.js`](samples/nodejs/ods_header.js)
+
+The same parse is arguably *more* natural in Node — `Buffer.readUInt16LE(18)`, `readBigUInt64LE(48)` — with no C structs anywhere (`cd samples/nodejs && node ods_header.js`). Two instructive deltas in its verified output: node-firebird creates its scratch database with a **32 KB** page size (the driver's own creation default, unlike `fb_sample.h`'s 8 KB), and the census shows ten pages of **type 0** — pages preallocated by file extension but not yet formatted, a page state the C++ run's smaller file didn't happen to exhibit:
+
+```text
+hdr_page_size @16  = 32768
+...
+-- page-type census: 234 pages of 32768 bytes --
+  type  0  ?                         10
+  type  1  pag_header                 1
+  ...
+```
+
+### Things to try
+
+- Point both samples at a copy of `employee.fdb` (`gbak` it, or use any restored copy) and compare the census: user data changes the data/index page mix, not the fixed skeleton.
+- Update a few rows in the scratch database, then re-run: watch `hdr_next_transaction` advance while the OIT lags — the OIT–OAT gap this document and the [tuning document](monitoring-and-tuning.md) discuss.
+- Extend the parser by one field: `hdr_attachment_id` at offset 72 (compare with `gstat -h`'s "Next attachment ID"), or decode `hdr_db_impl` at 80 (the CPU/OS/CC bytes behind gstat's "Implementation" line).
+- Break the file on purpose (on a throwaway copy): flip the page-size word and watch `gstat`/attach reject it with "bad database format"-class errors.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the read path of this document is a handful of breakpoints:
+
+```gdb
+break PAG_header_init      # src/jrd/pag.cpp:1077 — attach reads+validates page 0 (ODS check)
+break PAG_init             # src/jrd/pag.cpp:1173 — seeds relation 0's pages from hdr_PAGES
+break CCH_fetch            # src/jrd/cch.cpp:778  — every page read; watch page_type arg
+break DPM_store            # src/jrd/dpm.epp:2349 — a record landing on a data page
+break VIO_chase_record_version  # src/jrd/vio.cpp:1137 — the back-version chain walk
+```
+
+`PAG_header_init` fires once per attach: step through it and you watch the engine do exactly what the samples do — read 152 bytes and check `hdr_ods_version` — before anything else touches the file. At `CCH_fetch` the `page_type` argument names which of the ten page types the caller expects (the same constants as the census), and in `DPM_store` the `rpb` (record parameter block) carries the record header fields — `rpb_transaction_nr`, `rpb_b_page`/`rpb_b_line` — that this document's [data-page section](#inside-a-data-page-records-and-version-deltas) describes on disk; `VIO_chase_record_version`'s loop over those back pointers is the MVCC visibility walk itself. See the [debugging guide](debugging-firebird.md) for attaching to the embedded engine so the breakpoints land in your own process.
+
 ## Further research
 
 **Firebird**

@@ -341,6 +341,79 @@ Firebird's distinguishing choice, stated plainly: **it is the only one of the fo
 
 ---
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/memory_pools.cpp`](samples/cpp/memory_pools.cpp)
+
+The [live demonstrations](#live-demonstrations) as one program: the six-group summary with the redirection signature, one connection's own database → attachment → transaction chain, and a transaction pool growing and dying in real time. The growth phase is an uncommitted 3000-row `UPDATE` watched from a *second* attachment — necessarily, because a `MON$` snapshot is frozen per transaction, so a pool cannot watch itself change.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/memory_pools        # default: inet://localhost//tmp/fbhandson/memory_pools.fdb
+```
+
+Verified output:
+
+```text
+-- per-level summary (note used > 0 with allocated = 0: parent redirection)
+MON$STAT_GROUP COUNT SUM      SUM      COUNT
+-------------- ----- -------- -------- -----
+0              1     22569840 28086272 1
+1              4     285824   0        0
+2              2     110464   0        0
+3              1     20976    0        0
+5              1     34800    65536    1
+
+-- worker's pool chain (before the update)
+  database pool:           used=22683488   allocated=28413952
+  worker attachment pool:  used=71216      allocated=0
+  worker transaction pool: used=13520      allocated=0
+
+-- after an uncommitted 3000-row UPDATE in that transaction
+  worker attachment pool:  used=78464      allocated=0
+  worker transaction pool: used=20768      allocated=0
+
+-- after rollback (transaction pool destroyed with its undo log)
+  worker attachment pool:  used=57696      allocated=0
+```
+
+Three of this document's claims, measured. Every group-1/2/3 pool shows `allocated = 0` — [parent redirection](#parent-redirection) live — while the one `cmp_statement` pool that crossed the threshold mapped exactly **65 536** bytes, one `DEFAULT_ALLOCATION` extent. The rollback line is the [bulk-free design](#the-pool-is-the-lifetime) *and* the [nested statistics](#six-levels-of-attribution) in a single subtraction: the attachment's `used` fell from 78 464 to 57 696 — by **20 768 bytes, exactly the dead transaction pool's total** — because `increment_usage()` had counted every transaction-pool byte in the attachment group too. And a negative result echoing [where sort memory does not appear](#where-sort-memory-does-not-appear): 3000 old record versions grew the transaction pool by only ~7 KB, because undo *bookkeeping* lives in the pool while the undo record *data* rides in `TempSpace`-backed buffers accounted elsewhere.
+
+### JavaScript sample — [`samples/nodejs/memory_pools.js`](samples/nodejs/memory_pools.js)
+
+The same walk from node-firebird (`cd samples/nodejs && node memory_pools.js`), which computes the roll-up arithmetic itself:
+
+```text
+-- after rollback (whole transaction pool freed at once)
+  worker attachment pool:  used=57904      allocated=0
+  attachment used fell by 20848; the dead transaction pool held 20848 — the nested roll-up, live
+```
+
+Exact to the byte, on an independent run with its own database.
+
+### Things to try
+
+- Prepare (without executing) twenty distinct statements on one connection and re-run the group summary: group 5 (`cmp_statement`) pools multiply, and each that grows past ~48 KB maps its own 64 KB extent — `PARENT_REDIRECT_THRESHOLD` found empirically.
+- Replace the 3000-row UPDATE with `UPDATE` + `SAVEPOINT` + another `UPDATE` of the same rows: the transaction pool grows more per row, since each savepoint level keeps its own undo.
+- Run the [threading sample](threading-and-synchronization.md)'s twelve attachments first, then the group summary here: group 1 grows to thirteen pools — every one at `allocated = 0`.
+- Watch the database pool's `used`/`allocated` gap (~4–20 % in the runs above): allocator overhead plus extents kept in the free lists and the 1 MB extent cache.
+
+### Debugging this in C++ (gdb)
+
+Under an embedded run ([debugging guide](debugging-firebird.md)) the allocator itself is steppable:
+
+```gdb
+break MemoryPool::createPool      # common/classes/alloc.cpp:2127 — every pool's birth; caller = which object
+break Database::createPool        # jrd/Database.cpp:159 — the engine wrapper adding the stats group
+break MemPool::allocateInternal2  # common/classes/alloc.cpp:2171 — the size-class dispatch + redirection branch
+break MemPool::~MemPool           # common/classes/alloc.cpp:2014 — bulk release of hunks, no object walk
+break MemoryPool::deletePool      # common/classes/alloc.cpp:2777 — finalizers first, then the pool
+```
+
+`MemoryPool::createPool`'s backtraces reproduce the hierarchy empirically — hits from `TRA_start`, `DsqlStatement`/`Statement` machinery and attachment setup are the pool-per-object claim as call stacks. In `allocateInternal2`, watch the `parent_redirect && flagRedirect && length < PARENT_REDIRECT_THRESHOLD` branch: for a transaction-pool allocation it forwards to the parent — set a condition `length > 49152` to catch the first allocation that forces a child to map its own extent instead. Breaking on `~MemPool` during the sample's rollback shows the whole undo log vanishing in a loop over `bigHunks`/extents with not one record visited — the destruction path that makes rollback cleanup O(extents), not O(objects).
+
+---
+
 ## Further reading
 
 - [`src/common/classes/alloc.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/common/classes/alloc.h) — `MemoryPool`, `MemoryStats`, `ContextPoolHolder`, `PermanentStorage` / `AutoStorage` and the `FB_NEW*` macros.

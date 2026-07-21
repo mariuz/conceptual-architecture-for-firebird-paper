@@ -141,6 +141,77 @@ The average record is **~15 bytes** even though row 2 holds ~3.9 KB of text — 
 
 **Streaming is the shared necessity, solved four ways.** Nobody wants a gigabyte value fully in memory, so each engine offers incremental access: Firebird's segment API and wire opcodes, PostgreSQL's large-object `lo_read`/`lo_write`, SQLite's incremental BLOB I/O (`sqlite3_blob_open`). MySQL is the laggard here — its core protocol transfers whole values, so streaming is an application concern. This mirrors a theme from the [client-APIs document](client-apis-and-drivers.md): Firebird's protocol and API were designed around chunked large-object transfer from the start, part of the same design that produced its separate-storage model.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/blobs.cpp`](samples/cpp/blobs.cpp)
+
+The [segmented access model](#segmented-and-stream-access) exercised directly through `IBlob`: the sample creates a text blob with three explicit `putSegment()` calls, stores it via a parameterized `INSERT` (the message buffer receives only the 8-byte `ISC_QUAD` blob id — the record-holds-a-pointer model of the [first section](#blobs-live-outside-the-record)), reads it back with a `getSegment()` loop that returns the *same three segments with their boundaries intact*, and then asks the blob to describe itself with `getInfo()` (segment count, longest segment, total length, segmented-vs-stream type — the client-visible face of `struct blh`). It closes with the catalog view of [subtype and charset](#subtypes-charsets-and-filters) for a `TEXT` vs `BINARY` column and a [`BLOB_APPEND`](#manipulating-blobs-blob_append-and-rdbblob_util) round trip.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/blobs        # default: inet://localhost//tmp/fbhandson/blobs.fdb
+```
+
+Verified output:
+
+```text
+wrote 3 segments into a new text blob
+  getSegment #1: 13 bytes  "first segment"
+  getSegment #2: 22 bytes  "second, longer segment"
+  getSegment #3:  5 bytes  "third"
+blob info: 3 segments, longest 22, total 40 bytes, type 0 (0=segmented)
+
+-- column subtypes (RDB$FIELDS) --
+FIELD SUBTYPE CHARSET
+----- ------- -------
+DATA  0       <null>
+NOTE  1       UTF8
+
+-- BLOB_APPEND result --
+ID OCTETS CHARS CONTENT
+-- ------ ----- -----------------
+2  17     17    part1-part2-part3
+done.
+```
+
+The blob-info line is the segmented model in one line: the engine remembered not just 40 bytes but *three segments, the longest 22* — exactly the `blh_count`/`blh_max_segment` bookkeeping this document describes on disk.
+
+### JavaScript sample — [`samples/nodejs/blobs.js`](samples/nodejs/blobs.js)
+
+node-firebird's blob story is streaming-shaped at both ends (`cd samples/nodejs && node blobs.js`): a string or `Buffer` *parameter* is automatically turned into `op_create_blob2` plus 1 KB segment batches, and a blob *column* comes back as a **function** that yields an `EventEmitter` of data chunks — the driver's `op_open_blob`/`op_get_segment` loop surfacing in the API. Verified output for a 4,950-byte text and a 256-byte binary blob:
+
+```text
+wrote: 4950-byte text blob, 256-byte binary blob
+note (segment stream): 5 chunk(s) [1022, 1020, 1020, 1020, 868] = 4950 bytes
+data (segment stream): 1 chunk(s) [256] = 256 bytes
+binary round-trip intact: true
+BLOB_APPEND: 17 bytes -> "part1-part2-part3"
+done.
+```
+
+The five ~1 KB chunks are the driver's own write-side segmentation coming back to it. One honest limitation: node-firebird 2.x exposes `maxInlineBlobSize` for the [FB5 inline-blob wire optimization](#segmented-and-stream-access) (`op_inline_blob`), but enabling it against this Firebird 6 server hangs the query — a driver/protocol-19 issue, so the sample sticks to the classic segment stream.
+
+### Things to try
+
+- Grow the C++ text blob (e.g. 64 putSegment calls of 4 KB) and watch `getInfo` report the level change indirectly: re-run `gstat -r` on the table and see blob pages appear, then compare `Average record length` — it stays ~15 bytes no matter how big the blobs get.
+- Open the text blob with a BPB requesting charset conversion (`isc_bpb_target_type`/`isc_bpb_target_interpretation`) and watch UTF8 text arrive transliterated — the [filter/charset machinery](#subtypes-charsets-and-filters) in action.
+- In the JS sample, set `blobChunkSize: 4096` in the attach options and watch the read-side chunk sizes change to match — the segments you write are the segments you read.
+- Replace `BLOB_APPEND` with plain `note || 'suffix'` concatenation in a loop and compare timings as the blob grows — the recopying cost `BLOB_APPEND` exists to avoid.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the blob path is compact and very watchable:
+
+```gdb
+break blb::create2          # src/jrd/blb.cpp:257  — a blob being created (BPB parsed here)
+break blb::open2            # src/jrd/blb.cpp:1328 — open for reading; blob id -> blh lookup
+break blb::BLB_put_segment  # src/jrd/blb.cpp:1589 — one segment in; watch blb_level promotion
+break blb::BLB_get_segment  # src/jrd/blb.cpp:662  — one segment out
+break blb::move             # src/jrd/blb.cpp:1003 — temp blob materialized into a record field
+```
+
+`BLB_put_segment` fires once per `putSegment()` from the C++ sample (three times) and once per 1 KB chunk from the JS one; inside, the `blb` object's `blb_level`, `blb_count` and `blb_max_segment` members are the live form of the on-disk `blh` header, and stepping through a large write shows the [level promotion](#multi-level-page-addressing) happen when the page list overflows. `blb::move` is where a `BLOB_APPEND` temp blob gets **materialized** — the backtrace runs from the INSERT's `VIO_store` down into blob copy, showing why temp blob ids are transient. See the [debugging guide](debugging-firebird.md) for running the engine embedded under gdb.
+
 ## Further research
 
 **Firebird**

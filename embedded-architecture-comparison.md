@@ -167,6 +167,59 @@ The comparison points to a clean decision rule rather than a winner:
 
 The deciding question is almost always the concurrency one: *will more than one process ever need to write this database at the same time, or might it need to become a networked service?* If yes, Firebird embedded's architecture is built for it; if no, SQLite's is built for staying out of your way.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/embedded_demo.cpp`](samples/cpp/embedded_demo.cpp)
+
+Three demonstrations in one program (complementing [`samples/client_test.cpp`](samples/client_test.cpp), the longhand embedded walk-through). First, [Figure 2](#firebird-embedded-a-full-engine-in-your-process) made visible: the program prints its own `/proc/self/maps` before and after the local-path attach, catching the Y-valve loading `libEngine14.so` — the full server — into the process on demand. Second, real work with no server anywhere: it creates `/tmp/fbhandson/embedded_demo.fdb`, runs DDL and DML, and shows `NETWORK_PROTOCOL` is NULL while `MON$SERVER_PID` equals its own pid. Third, [the continuum](#the-firebird-continuum-embedded-and-server-are-the-same-engine) measured: the identical `attach()` call timed against a local path (in-process function calls) and against `inet://localhost/employee` (socket plus SRP handshake per attach).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/embedded_demo    # [local-path] [remote-db] to override
+```
+
+Verified output:
+
+```text
+before attach: libfbclient mapped=yes, libEngine14 mapped=no
+after  attach: libfbclient mapped=yes, libEngine14 mapped=yes
+
+rows=3  max(name)=sprocket  NETWORK_PROTOCOL=<null: in-process>
+engine pid=199286, my pid=199286 — the 'server' is this process
+
+attach+detach avg over 5 runs:
+    embedded  /tmp/fbhandson/embedded_demo.fdb          6.28 ms
+    remote    inet://localhost/employee                34.54 ms
+done.
+```
+
+One honest footnote to the multi-process story in Figure 2: whether two *processes* may hold the same file open concurrently is governed by `ServerMode` even in embedded — with the default (`Super`) the second embedded attach fails with SQLSTATE 08001 *"Database already opened with engine instance, incompatible with current"*; the shared-lock-table coexistence described by `README.user.embedded` requires `ServerMode = Classic`/`SuperClassic` in the `firebird.conf` the embedded engine reads (settable per application via the `FIREBIRD` environment variable). The concurrency that needs no configuration is *within* the process: many attachments and writing transactions, full MVCC.
+
+### JavaScript sample — [`samples/nodejs/embedded-demo.js`](samples/nodejs/embedded-demo.js)
+
+The twin (`cd samples/nodejs && node embedded-demo.js`) can only do the remote half, and says so: measured `48.73 ms` average attach+detach over the wire, and *no embedded number at all*. The gap is architectural — embedded mode is native engine code (`libEngine14.so`) loaded through the native client's Y-valve, and a driver that reimplements the wire protocol in pure JavaScript has no native code to load. A local path in its options would still be opened by a *server* process, not by node. This is the SQLite comparison inverted: SQLite bindings for node embed trivially (the engine is just C code in the process) but can never become a network client; node-firebird is the mirror image.
+
+### Things to try
+
+- Run `./build/embedded_demo` while `/opt/firebird/bin/isql /tmp/fbhandson/embedded_demo.fdb` sits attached in another shell — observe the 08001 exclusive-open error from the footnote above; then point both at a `FIREBIRD` root whose `firebird.conf` says `ServerMode = Classic` and watch them coexist.
+- `ltrace -e 'dlopen*' ./build/embedded_demo 2>&1 | grep -i engine` (or `strace -e trace=openat`) to see exactly when `libEngine14.so` and the databases.conf/firebird.conf of the embedded root are pulled in.
+- Raise the timing loop count and swap the remote target between `inet://localhost/...` and `inet://<lan-host>/...` — the embedded/remote gap widens with real network latency; the embedded number is the floor no server deployment can reach.
+- Copy `embedded_demo.fdb` and serve the copy from the server (`inet://localhost//tmp/fbhandson/<copy>.fdb`, once owned by the server user) — same file format, both providers, the Figure 3 continuum in practice.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the whole "server in your process" claim can be single-stepped, because for once *everything* is in one debuggee:
+
+```gdb
+break ModuleLoader::loadModule       # src/common/os/posix/mod_loader.cpp:130 — the dlopen of libEngine14.so (part 1 of the sample)
+break JProvider::internalAttach      # src/jrd/jrd.cpp:1591 — the Engine provider accepting the local-path attach
+break PIO_open                       # src/jrd/os/posix/unix.cpp:653 — the engine opening the .fdb with plain open(2), in your process
+break lockDatabaseFile               # src/jrd/os/posix/unix.cpp:969 — the OS lock behind the exclusive-open footnote
+break LockManager::LockManager       # src/lock/lock.cpp:168 — creating/attaching the shared lock table of Figure 2
+```
+
+Run the sample under gdb with `FIREBIRD=<debug root>` (breakpoints stay pending until `loadModule` brings the engine in — watching them flip from pending to resolved *is* demonstration 1). At `PIO_open` the backtrace runs from `main` through the Y-valve into JRD with no socket anywhere — the same stack that, for the remote attach, would end at a `send()` in the Remote provider. `lockDatabaseFile`'s `share` argument shows the `ServerMode` decision reaching the file system, and `LockManager`'s constructor argument names the shared-memory section two Classic-mode processes would rendezvous on.
+
 ## Further research
 
 **SQLite**

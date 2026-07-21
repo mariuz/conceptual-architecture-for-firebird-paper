@@ -171,6 +171,76 @@ Every optimizer decision above is legible: equality on a unique key → that ind
 
 **Plans are the shared diagnostic language.** Every system exposes its chosen plan (`PLAN`, `EXPLAIN`, `EXPLAIN QUERY PLAN`), and reading it is reading the physical operator tree. Firebird's textual `PLAN` is terse but complete — `SORT (JOIN (...))` is a full description of the record-source tree — and the seven plans above show the whole decision space in one screen.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/plans.cpp`](samples/cpp/plans.cpp)
+
+The sample watches the optimizer decide, without ever executing a query: it builds a 20-department / 2,000-employee scratch schema, then *prepares* statements and prints both plan forms from `IStatement::getPlan(detailed)` — the terse legacy `PLAN (...)` string and the detailed form, which is a line-per-operator print of the [record-source tree](#the-execution-engine-a-volcano-iterator-tree). The centrepiece is the same `SELECT ... WHERE dept_id = 5` prepared **before and after `CREATE INDEX`**: identical text, different plan — a `Full Scan` becomes `Access By ID → Bitmap → Index Range Scan`, the [access-path selection](#access-path-selection) section happening live. It then shows the unique-key short-circuit, `SORT` over a nested-loop join, and the [FB5 hash join](#join-order-and-join-methods) for an indexless equi-join.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/plans                    # default: inet://localhost//tmp/fbhandson/plans.fdb
+```
+
+Verified output (trimmed to the plan flip and the hash join):
+
+```text
+== SELECT name FROM emp WHERE dept_id = 5
+legacy:  PLAN ("PUBLIC"."EMP" NATURAL)
+detailed:
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."EMP" Full Scan
+
+-- CREATE INDEX emp_dept ON emp (dept_id) --
+
+== SELECT name FROM emp WHERE dept_id = 5
+legacy:  PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."EMP_DEPT"))
+detailed:
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."EMP" Access By ID
+            -> Bitmap
+                -> Index "PUBLIC"."EMP_DEPT" Range Scan (full match)
+
+== SELECT COUNT(*) FROM emp a JOIN emp b ON a.salary = b.salary
+legacy:  PLAN HASH ("A" NATURAL, "B" NATURAL)
+detailed:
+Select Expression
+    -> Aggregate
+        -> Filter
+            -> Hash Join (inner) (keys: 1, total key length: 4)
+                -> Table "PUBLIC"."EMP" as "A" Full Scan
+                -> Record Buffer (record length: 25)
+                    -> Table "PUBLIC"."EMP" as "B" Full Scan
+```
+
+### JavaScript sample — [`samples/nodejs/plans.js`](samples/nodejs/plans.js)
+
+node-firebird never requests plan info items from the wire, so there is no driver-level `getPlan` — the twin instead uses the honest SQL-level route new in Firebird 6: the **`RDB$SQL.EXPLAIN`** package procedure, which prepares the given statement server-side and returns the detailed plan as *rows* (one per operator, with a `LEVEL` column giving tree depth — the sample indents by it). Run with `cd samples/nodejs && node plans.js`; it replays the same index-flip experiment and prints the identical `Full Scan` → `Bitmap → Index Range Scan` transition and the `Hash Join` tree, confirming that the plan text is produced by the engine, not the client library.
+
+### Things to try
+
+- Add `ROWS 10` or an `ORDER BY id` to the `dept_id = 5` query and re-prepare: watch `FirstRowsStream` appear, or the plan switch to `ORDER` (index-order walk) instead of `SORT`.
+- Delete most rows so `dept_id = 5` matches nearly everything, run `SET STATISTICS INDEX emp_dept`, and see whether the optimizer abandons the index — selectivity, not the index's existence, drives the choice.
+- Force the bad plan with an explicit `PLAN (emp NATURAL)` clause on the indexed query and compare timings — the hint mechanism the [comparison table](#comparison-postgresql-mysql-sqlite) mentions.
+- In the JS sample, EXPLAIN a `LEFT JOIN` and a `UNION` to meet `Full Outer Join`/`Union` operators the C++ cases never produce.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the optimizer's decision points map to breakpoints one-to-one:
+
+```gdb
+break Jrd::Optimizer::compile        # src/jrd/optimizer/Optimizer.cpp:721 — entry: RSE in, record source out
+break Jrd::Retrieval::getInversion   # src/jrd/optimizer/Retrieval.cpp:243 — index vs NATURAL for one stream
+break Jrd::InnerJoin::estimateCost   # src/jrd/optimizer/InnerJoin.cpp:173 — cardinality × selectivity arithmetic
+break Jrd::InnerJoin::findBestOrder  # src/jrd/optimizer/InnerJoin.cpp:354 — the join-order search
+break Jrd::FullTableScan::internalGetRecord  # src/jrd/recsrc/FullTableScan.cpp:135 — executor, one row per hit
+break Jrd::HashJoin::internalGetRecord       # src/jrd/recsrc/HashJoin.cpp:401 — probe phase of the FB5 hash join
+```
+
+Preparing the sample's `dept_id = 5` query stops first in `Optimizer::compile`; stepping into `Retrieval::getInversion` before and after the `CREATE INDEX` shows the inversion-candidate list empty, then holding `EMP_DEPT` with its selectivity — the exact moment the plan flip is decided (the cost constants from [the table above](#the-cost-based-optimizer) appear as literals in the surrounding code). The two `internalGetRecord` breakpoints belong to the *execution* half: they fire only when a cursor is actually opened and pulled, once per row, and the backtrace shows the parent operators of Figure 2 pulling from below (`Aggregate` → `HashJoin` → `FullTableScan`). The [debugging guide](debugging-firebird.md) explains attaching to an embedded engine or a debug server.
+
 ## Further research
 
 **Firebird**

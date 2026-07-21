@@ -396,6 +396,68 @@ The costs are equally structural, and the code is honest about them. Deadlock de
 
 Read against the [page-cache coherency document](page-cache-coherency.md), which shows the highest-volume client, and the [transactions document](transactions-and-concurrency.md), which shows the most user-visible one, this completes the picture: a 1980s VMS-lineage distributed lock manager, still load-bearing, still the reason several independent processes can write one Firebird database at once.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/lock_manager.cpp`](samples/cpp/lock_manager.cpp)
+
+The [validated section's](#the-protocol-in-action-validated) measurements, reproducible in one run. `SET TRANSACTION ... RESERVING t1 FOR PROTECTED WRITE` (executed through `IAttachment::execute`, which returns the new `ITransaction`) takes a real `LCK_relation` lock at `LCK_EX`, so the three probes exercise `enqueue`/`grant_or_que`/`wait_for_request` directly rather than the MVCC record path; a second act builds a genuine wait-for cycle through `LCK_tra` locks and clocks the periodic scanner. One correctness detail the sample had to learn the hard way: the deadlock victim's *statement* fails, but its *transaction* stays alive holding its locks — the victim must roll back before the survivor can proceed (the first version of this sample deadlocked its own client threads by rolling back too late).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/lock_manager        # default: inet://localhost//tmp/fbhandson/lock_manager.fdb
+```
+
+Verified output:
+
+```text
+holder: t1 reserved FOR PROTECTED WRITE (LCK_relation at LCK_EX)
+NO WAIT:         failed after 0.000 s: lock conflict on no wait transaction
+LOCK TIMEOUT 3:  failed after 3.000 s: lock time-out on wait transaction
+holder: committed (2 s later) -> lock released
+WAIT:            granted after 2.001 s
+building deadlock: A updates row 1, B updates row 2, then cross...
+deadlock: A failed after 10.0 s: deadlock
+deadlock: B's update proceeded after 10.0 s (A was the victim)
+the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the scan.
+```
+
+Each line is a row of the [`lck_wait` table](#enqueue-the-request-path) with a stopwatch on it: 0.000 s is `grant_or_que` failing without entering `wait_for_request`; 3.000 s is `lock_timeout = current_time + (-lck_wait)` expiring; 2.001 s is a wait ending the instant the holder's release grants the pending request; and 10.0 s — for a cycle complete after 0.3 s — is `lhb_scan_interval`, the cost of periodic detection measured from client code.
+
+### JavaScript sample — [`samples/nodejs/lock_manager.js`](samples/nodejs/lock_manager.js)
+
+node-firebird cannot express `RESERVING` — its table-reservation TPB code is commented out as a TODO — so the twin reaches the same three `lck_wait` modes through **row** conflicts instead: waiting on a locked record is waiting on the blocker's `LCK_tra` lock (the [thirty-six-series table](#the-thirty-six-series-what-the-engine-actually-locks)'s point about MVCC conflicts becoming lock waits). The driver's transaction options map straight onto TPB items (`{wait: false}` → `isc_tpb_nowait`, `{waitTimeout: 3}` → `isc_tpb_lock_timeout`). Run `cd samples/nodejs && node lock_manager.js`:
+
+```text
+NO WAIT:         failed after 0.001 s: Deadlock, Update conflicts with concurrent update, ...
+LOCK TIMEOUT 3:  failed after 3.001 s: Deadlock, Update conflicts with concurrent update, ...
+holder: committed (2 s later) -> lock released
+WAIT:            granted after 2.002 s
+```
+
+Identical timings, different error text — the record-conflict path reports the `isc_deadlock`/`isc_update_conflict` chain naming the concurrent transaction, where the reservation path reported the bare `isc_lock_conflict`/`isc_lock_timeout`. Same arbitration, two client-visible dialects.
+
+### Things to try
+
+- While the C++ holder has `t1` reserved, run `fb_lock_print -d /tmp/fbhandson/lock_manager.fdb -o -r` *(or `-f` on the `fb_lock_*` file)*: the reservation appears as an `LCK_relation`-series request at state 6 (EX), and the LOCK TIMEOUT probe shows up as `Pending` for exactly three seconds.
+- Change `FOR PROTECTED WRITE` to `FOR SHARED WRITE` in both the holder and the probes: SW is compatible with SW in the [matrix](#the-compatibility-matrix), so every probe is granted instantly.
+- Ask an admin to set `DeadlockTimeout = 3` in `firebird.conf` (server restart required) and rerun: the deadlock is found in ~3 s — the scan interval, not the cycle, dominates.
+- In the JS sample, switch the probe isolation from `[15, 17]` (rec_version) to SNAPSHOT (`[2]`): the WAIT probe now *fails* after 2 s with an update conflict — the wait outcome is the lock manager's, but what happens after the grant belongs to the [isolation level](transactions-and-concurrency.md#locking-waiting-and-conflicts).
+
+### Debugging this in C++ (gdb)
+
+With a [debug build](debugging-firebird.md) (embedded, so the lock manager runs in your process), the whole protocol from this document is six breakpoints in `src/lock/lock.cpp`:
+
+```gdb
+break LockManager::enqueue           # lock.cpp:452  — every claim enters here
+break LockManager::grant_or_que      # lock.cpp:2208 — the compatibility[][] lookup
+break LockManager::wait_for_request  # lock.cpp:3745 — an ungranted claim parks
+break LockManager::post_blockage     # lock.cpp:2644 — choosing whom to knock on
+break LockManager::blocking_action   # lock.cpp:1361 — the AST actually delivered
+break LockManager::deadlock_walk     # lock.cpp:1906 — the periodic cycle hunt
+```
+
+Run the C++ sample's first act: the NO WAIT probe hits `enqueue` → `grant_or_que` and returns without ever reaching `wait_for_request` — the 0.000 s measured above, visible as a missing stack frame. At `grant_or_que`, `request->lrq_requested` and `lock->lbl_state` are the two indices into the compatibility matrix (print `compatibility[request->lrq_requested][lock->lbl_state]`). During the deadlock act, `deadlock_walk` fires only when a waiter's scan deadline expires — timestamp the hit and compare with when the cross updates were issued to see the detection latency with your own eyes. Note that `LCK_tra` locks carry no AST (`!block->lrq_ast_routine` in `post_blockage`), so `blocking_action` stays silent during the deadlock — exactly the [validated section's](#the-protocol-in-action-validated) `Blocks: 0`.
+
 ## Further research
 
 * [`src/lock/lock.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/lock/lock.cpp) — the manager itself; read `enqueue` → `grant_or_que` → `wait_for_request` in order, then `post_blockage` → `signal_owner` → `blocking_action` for the notification half.

@@ -393,6 +393,73 @@ Firebird's distinguishing choice, stated plainly: **it is the only one of the fo
 
 ---
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/metadata_cache.cpp`](samples/cpp/metadata_cache.cpp)
+
+The [visibility rule](#the-visibility-rule-and-what-it-deliberately-is-not) exercised from two programmatic attachments, A and B — the same four demonstrations as the [live section](#live-demonstrations), but reproducible in one run. Demo 1 is the `traNumber == currentTrans` half of the disjunction (A selects its own uncommitted column; B gets `Column unknown`); demo 2 is the `COMMITTED` half short-circuiting B's open SNAPSHOT (records are snapshot-isolated, metadata is not); demo 3 provokes the [`newVersion` collision](#the-newversion-conflict-in-the-engines-own-words); demo 4 counts `RDB$FORMATS` rows and reads a shape-1 record through the current format — the [on-disk half](#formats-the-on-disk-half-of-the-same-idea).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/metadata_cache        # default: inet://localhost//tmp/fbhandson/mdc.fdb
+```
+
+Verified output:
+
+```text
+== 1. uncommitted ALTER: visible to creator only ==
+A (same tx)  : select e from t -> <null>
+B            : select e from t -> ERROR: Dynamic SQL Error -SQL error code = -206 -Column unknown -"E" -At line 1, column 8
+
+== 2. committed ALTER: seen even inside B's open SNAPSHOT tx ==
+B (snapshot) : select count(*) from t -> 1
+B (same  tx) : select d from t -> <null>
+   (records are snapshot-isolated; metadata is read-committed —
+    the new statement was prepared against the chain's current head)
+
+== 3. two uncommitted DDLs on one object ==
+B: ALTER failed:
+unsuccessful metadata update
+-ALTER TABLE "PUBLIC"."T" failed
+-newVersion: table 128 is used by transaction 10
+
+== 4. RDB$FORMATS after the committed DDL ==
+formats stored for T: 3 (T has lived through that many shapes)
+A E      D
+- ------ ------
+1 <null> <null>
+done.
+```
+
+Demo 3's message is, verbatim, `ElementBase::newVersionBusy`'s `raiseFmt` — family `table`, `MetaId` 128, and the transaction number holding the uncommitted head of the chain.
+
+### JavaScript sample — [`samples/nodejs/metadata_cache.js`](samples/nodejs/metadata_cache.js)
+
+The same two-attachment script over the wire protocol (`cd samples/nodejs && node metadata_cache.js`), using node-firebird's explicit transactions for the uncommitted DDL and `ISOLATION.SNAPSHOT` for demo 2. Verified output matches the C++ run line for line — same `-206 Column unknown`, same `newVersion: table 128 is used by transaction 10`, same three formats — which is itself the point: the visibility rule lives in the server's cache, and every client sees the same one.
+
+### Things to try
+
+- In demo 2, move the `SELECT d FROM t` *before* A's second ALTER commits, keep the statement handle, and re-execute it after the commit: an already-prepared statement keeps running against the version it was compiled with — resolution is at *prepare* time, which is the precise wording the document insists on.
+- Roll back A's DDL in demo 1 instead of committing: B never saw E, and now A's next transaction doesn't either — the version stamped with A's transaction number vanished cleanly.
+- Run demo 3 against a *procedure* instead of a table (`create procedure p ... ; alter procedure p ...`): the error names the `procedure` family — same `CacheElement`, different typedef from `Resources.h`.
+- Keep a SNAPSHOT transaction open in a third connection while dropping the table in A: the DROP succeeds (tombstone version), and the old definition survives until the [OAT barrier](#reclamation-hazard-pointers-and-the-oat-barrier) passes it.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the cache's three moments — read, collide, invalidate — each have a function:
+
+```gdb
+break ElementBase::newVersionBusy       # src/jrd/CacheVector.cpp:102 — demo 3's error being raised
+break ElementBase::blockingAst          # src/jrd/CacheVector.cpp:122 — cross-process invalidation arriving
+break TransactionNumber::oldestActive   # src/jrd/CacheVector.cpp:49  — the OAT barrier consulted
+break HazardObject::retire              # src/jrd/HazardPtr.h:44      — a dead version handed to libcds
+break Jrd::ListEntry<Jrd::jrd_rel>::getEntry   # CacheVector.h:209 — the visibility walk (template: use rbreak getEntry to catch every family)
+```
+
+Run the sample's demo 3 under the debugger and `newVersionBusy`'s backtrace climbs from the DDL statement through `CacheElement::newVersion` (`CacheVector.h:946`) — the `OCCUPIED` branch surfacing as the user-visible error, with `traNum` in scope holding the very number the message prints. `getEntry` is the hottest of these (it runs for every name resolution), so make it conditional or watch it briefly: the walk over `listEntry->next` with `f & COMMITTED` checks in the loop *is* the code excerpt this document opens with. `blockingAst` only fires under Classic or from a second process — attach two Classic processes to see `LCK_read_data` pull the DDL's transaction number out of the lock word. See the [debugging guide](debugging-firebird.md).
+
+---
+
 ## Further reading
 
 - [`src/jrd/CacheVector.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/CacheVector.h) — `ListEntry`, `CacheElement`, `CacheVector`, the `CacheFlag` set and the visibility rule in `getEntry()`.

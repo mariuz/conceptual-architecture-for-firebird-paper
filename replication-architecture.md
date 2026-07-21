@@ -255,6 +255,62 @@ _Figure 6: SQLite has no native replication — external tools add it at the fil
 
 **SQLite's absence is a design statement, not a gap.** A serverless, single-writer engine has no process to run a replication protocol and no shared log to stream, so replication is necessarily something you wrap around it — and the ecosystem obliged with three distinct answers (WAL shipping, Raft consensus, changesets/CRDTs). This mirrors the [embedded comparison's](embedded-architecture-comparison.md) conclusion: SQLite pushes cross-node concerns outside the engine on purpose, where Firebird (even embedded) brings the full machinery with it.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/replication.cpp`](samples/cpp/replication.cpp)
+
+The client-visible half of the [walk-through](#setting-up-firebird-replication-validated-walk-through) — everything that needs no `replication.conf` and no restart. On a scratch database it walks the publication through its states with plain DDL and reads the system tables that record each step: `ALTER DATABASE ENABLE PUBLICATION` flips `RDB$PUBLICATIONS.RDB$ACTIVE_FLAG`, `INCLUDE TABLE` adds a row to `RDB$PUBLICATION_TABLES` (schema-qualified — the Firebird 6 `RDB$TABLE_SCHEMA_NAME` column from the [evolution section](#firebird-evolution-3--4--5--6--future)), and `INCLUDE ALL` additionally sets `RDB$AUTO_ENABLE` so future tables join by themselves. `MON$DATABASE.MON$REPLICA_MODE` shows the other end of the relationship: this database is a publishing primary, not a replica.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/replication        # default: inet://localhost//tmp/fbhandson/replication.fdb
+```
+
+Verified output (trimmed to the state changes):
+
+```text
+-- initial state (publication exists but is inactive)
+RDB$DEFAULT   ACTIVE_FLAG 0   AUTO_ENABLE 0    published: (none)
+-- after ENABLE PUBLICATION
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: (none)
+-- after INCLUDE TABLE REPL_ORDERS
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: PUBLIC.REPL_ORDERS
+-- after INCLUDE ALL (auto-enable: future tables join automatically)
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 1    published: PUBLIC.REPL_ORDERS, PUBLIC.REPL_SCRATCH
+
+MON$REPLICA_MODE
+----------------
+0
+```
+
+Note what it demonstrates about the model: there is exactly **one** publication per database (`RDB$DEFAULT` — unlike PostgreSQL's named `CREATE PUBLICATION` sets), it pre-exists in every database waiting to be enabled, and membership is per-table metadata. What the sample deliberately cannot show is a segment being produced: with no `journal_directory` configured for this database, the Publisher has nowhere to write — the transport half genuinely lives in server-side configuration, as the walk-through above describes.
+
+### JavaScript sample — [`samples/nodejs/replication.js`](samples/nodejs/replication.js)
+
+The same state walk through node-firebird (`cd samples/nodejs && node replication.js`), output as compact lines per state. Verified: identical progression ending in `MON$REPLICA_MODE = 0 (0 = not a replica: this is a publishing primary)`. Both samples reset the publication on entry (`EXCLUDE ALL FROM PUBLICATION` + `DISABLE PUBLICATION`), so they double as a demonstration that the whole publication lifecycle is reversible from a client.
+
+### Things to try
+
+- Create a new table *after* `INCLUDE ALL` and re-read `RDB$PUBLICATION_TABLES` — `RDB$AUTO_ENABLE` means it appears without any further DDL.
+- Try `ALTER DATABASE INCLUDE TABLE REPL_SCRATCH TO PUBLICATION` alone: the DDL succeeds even though the table has no key — then check `firebird.log` after configuring a journal; the key requirement is enforced by the replication machinery, not the DDL.
+- Read `RDB$PUBLICATIONS` on the `employee` database: the inactive `RDB$DEFAULT` row is there too — every Firebird 4+ database carries the publication machinery, enabled or not.
+- If you can edit `replication.conf` on your own server (not the shared demo one), add a `journal_directory` for the scratch database and watch `<db>_{GUID}.journal-000000001` appear after the first committed change to `REPL_ORDERS`.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the pipeline of [Figure 2](#firebird-replication-architecture) is breakpointable stage by stage:
+
+```gdb
+break AlterDatabaseNode::execute     # src/dsql/DdlNodes.epp:17626 — the PUBLICATION DDL itself
+break REPL_store                     # src/jrd/replication/Publisher.cpp:506 — an INSERT entering the publisher
+break REPL_modify                    # Publisher.cpp:540 — UPDATE: old + new record versions captured
+break REPL_trans_commit              # Publisher.cpp:433 — commit-order preservation happens here
+break ChangeLog::switchActiveSegment # src/jrd/replication/ChangeLog.cpp:792 — journal segment rollover
+break Applier::process               # src/jrd/replication/Applier.cpp:327 — replica side: applying a segment
+```
+
+`REPL_store`/`REPL_modify` sit directly in the engine's record-writing path (`VIO`), which is the cleanest possible proof that Firebird replication is **logical**: what is captured is the record image (`rpb`), not the page. With only a publication enabled and no journal configured, these functions return early — single-step from `REPL_store` to watch the "is this table published?" check consult the same `RDB$PUBLICATION_TABLES` state the samples print. `REPL_trans_commit` is where the commit-order guarantee from the [architecture section](#firebird-replication-architecture) is enforced, and `Applier::process` (reached only on a replica) is the mirror image: segment operations re-executed as ordinary engine calls.
+
 ## Further research
 
 **Firebird**

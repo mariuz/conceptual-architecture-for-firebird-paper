@@ -221,6 +221,65 @@ The precedence graph is a small piece of code — one queue pair per buffer, one
 
 The honest cost is the one visible in the live demo: unlike a WAL replay, which leaves *no trace* of an interrupted operation, careful writes can leave **orphan pages** — correctly-ordered partial work that a crash caught before its final linking write. This is not corruption (nothing points at bad data; nothing is missing that anything expects), but it is accumulated debt that only sweep/GC and `gbak` clear, mirroring the same "delta-chain accumulation needs a periodic broom" pattern the [garbage-collection document](garbage-collection-and-sweep.md#gc-internals-in-action-validated) found in record versions. Careful writes and MGA are, in this sense, one design philosophy applied twice: never block on cleanup at write time, guarantee correctness through ordering and visibility rules instead, and sweep the leftovers later when it's cheap to do so.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/careful_writes.cpp`](samples/cpp/careful_writes.cpp)
+
+A miniature of the [live crash test](#crash-safety-live) you can run yourself. The trick that makes it a *real* engine crash from 130 lines of client code: it attaches by plain local path with `FIREBIRD=/opt/firebird`, so the **embedded engine runs inside the process being killed**. The parent forks a writer child that commits one marker row, then bulk-inserts 500 000 rows in a transaction it never commits; the parent watches the `.fdb` grow (proof the engine is flushing freshly allocated data pages of *uncommitted* work), `kill -9`s the engine mid-flight, re-attaches, and counts.
+
+```sh
+cmake -B build samples && cmake --build build
+FIREBIRD=/opt/firebird ./build/careful_writes    # default: /tmp/fbhandson/careful_writes.fdb
+```
+
+Verified output:
+
+```text
+[writer 200798] marker row committed (forced writes on)
+file grew 1048576 -> 3284992 bytes; SIGKILL to engine pid 200798
+re-attach + both counts took 111 ms
+committed marker rows : 1   <- survived the crash
+uncommitted rows      : 0   <- rolled back by visibility, not replay
+```
+
+The engine died with ~2 MB of the uncommitted transaction's pages already on disk, yet re-attach took 111 ms with no recovery phase — the [precedence graph](#the-precedence-block-a-graph-over-dirty-buffers) never let an inconsistent ordering reach the file, and the "rollback" of the dead transaction is just the [MGA visibility rule](transactions-and-concurrency.md#the-multi-generational-foundation) declining to show its record versions. `gstat -h` on the survivor confirms `Attributes: force write`.
+
+### JavaScript sample — [`samples/nodejs/careful_writes.js`](samples/nodejs/careful_writes.js)
+
+node-firebird speaks the wire protocol to a remote server, so it *cannot* crash the engine — an honest limitation worth stating. What a client can show is the reader-side half of the same guarantee: the sample spawns a writer process that commits a marker and then inserts uncommitted rows until the parent `SIGKILL`s it mid-transaction; the server treats the severed connection as an abrupt rollback (`cd samples/nodejs && node careful_writes.js`):
+
+```text
+WRITER: 4000 uncommitted rows
+SIGKILL to writer pid 201306 (mid-transaction)
+committed marker rows : 1   <- durable
+uncommitted rows      : 0   <- gone with the killed writer
+```
+
+Same outcome, different failure domain: the C++ sample kills the engine under the transaction; the JS sample kills the client over it. That both converge on "committed survives, uncommitted vanishes, nobody replays anything" is the point — crash and rollback are the same operation in MGA.
+
+### Things to try
+
+- Rerun the C++ sample and then `gfix -v -full -user SYSDBA /tmp/fbhandson/careful_writes.fdb` (embedded, so run it with `FIREBIRD=/opt/firebird` while no server has the file): like the [live test](#crash-safety-live), you may see orphan-page warnings — allocated-but-never-linked pages, the designed leftover — and zero corruption errors.
+- Turn forced writes off first (`gfix -write async`) and rerun several times: the guarantee now depends on the OS honoring write ordering to the platter, which a process `kill -9` cannot break (the pages are in the OS cache) but a power cut could.
+- Raise the growth threshold from 2 MB to 20 MB so the kill lands deeper into the bulk insert — the counts do not change.
+- In the JS sample, change the kill trigger from `4000` to `40000` rows: more work lost, same clean outcome.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md) the graph itself is watchable — and because the C++ sample runs the engine embedded, the breakpoints land in the *writer child* of the sample:
+
+```gdb
+set follow-fork-mode child
+break CCH_precedence      # cch.cpp:1825 — an edge being requested (low page, high page)
+break check_precedence    # cch.cpp:3177 — dedup + cycle check, then edge creation
+break related             # cch.cpp:4585 — the bounded DFS asking "already ordered?"
+break write_buffer        # cch.cpp:4714 — watch it drain bdb_higher before write_page
+break clear_precedence    # cch.cpp:3323 — an edge dying once its high page is on disk
+break TRA_header_write    # tra.cpp:736  — the amortized header-page catch-up
+```
+
+Stopped in `write_buffer`, print `bdb->bdb_page` and walk `bdb->bdb_higher.que_forward` — each `Precedence` there names a `pre_hi` buffer that must reach disk first; step and watch the recursion write it. Stopped in `check_precedence` during the bulk insert, the backtrace runs from `store()`/`DPM_store` in the DPM layer down through `CCH_precedence` — the ["what gets ordered, concretely"](#what-gets-ordered-concretely) table, one row at a time, as live call stacks.
+
 ## Further research
 
 * [`src/jrd/cch.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/cch.cpp) — `CCH_precedence`/`CCH_tra_precedence`, `check_precedence`, `related`, `write_buffer`, `clear_precedence`; read them together, in that order.

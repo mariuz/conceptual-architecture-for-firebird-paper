@@ -139,6 +139,60 @@ Garbage collection is where Firebird's no-undo MVCC design completes itself. Bec
 
 The design also explains a Firebird operational habit: **commit or roll back promptly, and let sweep run**. Nothing catastrophic happens if you don't — chains stay short since FB5, counters are 64-bit, sweep fires itself — but the OST/OIT gap is the single best health indicator a Firebird DBA has (`gstat -h`, one glance), which is precisely why the [monitoring document](monitoring-and-tuning.md) and every Firebird ops checklist start there.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/gc_sweep.cpp`](samples/cpp/gc_sweep.cpp)
+
+The whole record-version lifecycle, observed from client code through `MON$RECORD_STATS` — whose database-level counters are literally this document's `vio.cpp` events: `MON$RECORD_IMGC` counts [`VIO_intermediate_gc`](#three-collectors) collections, `MON$RECORD_PURGES`/`MON$RECORD_EXPUNGES` count `purge()`/`expunge()`, and `MON$BACKVERSION_READS` counts the chain walks readers had to do. The sample pins a SNAPSHOT, commits twelve updates under it, releases the snapshot, scans, then deletes — and finally rolls back a `no_auto_undo` transaction to freeze the OIT (watched via `MON$DATABASE`'s four header counters).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/gc_sweep        # default: inet://localhost//tmp/fbhandson/gc_sweep.fdb
+```
+
+Verified output:
+
+```text
+pinned SNAPSHOT reads val = 0
+before updates:                    upd=47   imgc=0   purges=0   expunges=0   backreads=0
+after 12 updates (snapshot open):  upd=59   imgc=10  purges=0   expunges=0   backreads=32
+pinned SNAPSHOT still reads val = 0
+snapshot released; new reader sees val = 12
+after release + scan + 1.5s:       upd=59   imgc=10  purges=1   expunges=0   backreads=35
+after DELETE + scan + 1.5s:        upd=59   imgc=10  purges=1   expunges=1   backreads=37
+header counters before rollback:   OIT=27 OAT=28 OST=28 Next=28 (sweep interval 20000)
+after no_auto_undo rollback:       OIT=28 OAT=30 OST=30 Next=30 (sweep interval 20000)
+run 'gfix -sweep' (or wait for OAT-OIT > interval) to move the OIT past the stump.
+```
+
+Every number is a claim from the sections above made live: `imgc=10` after twelve updates under a pinned snapshot is intermediate GC collecting exactly the ten committed intermediates (head + the snapshot's version survive — the same 12→2 collapse as the [validated experiment](#gc-internals-in-action-validated)); the post-release scan yields one `purge` (chain trimmed, record lives); the committed delete yields one `expunge` (record removed); and the rollback pins the OIT while OAT/OST/Next move on. (The `upd=47` baseline is DDL — MON$ database-level counters aggregate everything, including system-table updates.)
+
+### JavaScript sample — [`samples/nodejs/gc_sweep.js`](samples/nodejs/gc_sweep.js)
+
+The same experiment through node-firebird (`cd samples/nodejs && node gc_sweep.js`). Two instructive deltas in a real run made *after* the C++ one: the database-level counters are cumulative for the life of the loaded database, so the previous run's rolled-back stump is still visible — `OIT=28` stays pinned while `Next` has advanced to 59 — and the post-release cleanup was booked as `imgc=10→11` rather than a `purge`, showing that *which* collector disposes of a chain depends on which code path trips over it first, not on the garbage itself.
+
+### Things to try
+
+- Set the updates loop to 100: `imgc` grows to ~98 but `max versions` stays 2 (check with `fbsvcmgr localhost:service_mgr -user SYSDBA -password masterkey action_db_stats dbname /tmp/fbhandson/gc_sweep.fdb sts_record_versions`).
+- Run `/opt/firebird/bin/gfix -sweep -user SYSDBA -password masterkey inet://localhost//tmp/fbhandson/gc_sweep.fdb` after the sample and re-query `MON$DATABASE`: the OIT jumps past the stump — sweep's TIP rewrite, live.
+- Replace the pinned transaction's TPB with `isc_tpb_read_committed, isc_tpb_rec_version` and watch `imgc` stay near zero: a READ COMMITTED reader pins no snapshot, so the chain is simply collected below the OST instead.
+- Attach with `isc_dpb_no_garbage_collect` (gbak's `-g` flag) and confirm the scanning attachment stops feeding the collectors.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the three collectors and sweep are all breakpoints in one file:
+
+```gdb
+break vio.cpp:5583       # garbage_collect — every version disposal funnels through here
+break vio.cpp:6977       # purge   — chain trim, record survives
+break vio.cpp:5499       # expunge — committed delete removed entirely
+break VIO_intermediate_gc        # vio.cpp:2595 — FB5 mid-chain collection by an updater
+break notify_garbage_collector   # vio.cpp:6484 — reader posting a page to the GC thread
+break TRA_sweep                  # tra.cpp:1802 — the deep clean
+```
+
+Run the C++ sample against the embedded engine and the first four fire in *your* thread (cooperative/intermediate GC — the reader/writer pays); to catch the background half instead, `break Database::garbage_collector` (`vio.cpp:5699`) and watch the dedicated thread wake on `dbb_gc_sem`, pull pages from the `GarbageCollector` map, and call the same `garbage_collect`. At any of these stops, `rpb->rpb_transaction_nr` versus `transaction->tra_oldest_active` in the backtrace is the [oldest-snapshot barrier](#when-is-a-version-garbage-the-oldest-snapshot-barrier) being evaluated, and the `staying` stack in `garbage_collect` holds precisely the versions some snapshot still needs.
+
 ## Further research
 
 * [`src/jrd/vio.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/vio.cpp) — the whole lifecycle in one file: `garbage_collect`, `purge`, `expunge`, `VIO_intermediate_gc`, `notify_garbage_collector`, the `garbage_collector` thread, and the `LCK_record_gc` helpers.

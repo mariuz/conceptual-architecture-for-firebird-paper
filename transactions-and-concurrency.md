@@ -143,6 +143,54 @@ t2's update **blocks** while t1 holds the row (WAIT mode); when t1 commits, t2's
 
 **Conflict handling is a shared, and shared-frustration, story.** Every MVCC system must tell a transaction "you conflicted; retry" — Firebird's −904/−913 (SQLSTATE 40001), PostgreSQL's serialization_failure (also 40001), InnoDB's deadlock rollback, SQLite's `SQLITE_BUSY`. Well-written applications treat 40001 as "retry the transaction", and the same wait-policy knobs (WAIT/NOWAIT/timeout) appear, differently spelled, in all four. `SKIP LOCKED` — now in Firebird 5, PostgreSQL and MySQL — has become the standard escape hatch for queue workloads that must *not* wait.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/transactions_demo.cpp`](samples/cpp/transactions_demo.cpp)
+
+Two attachments play this document's whole argument in forty lines of logic: a SNAPSHOT transaction keeps reading `100` while another attachment commits `999` underneath it, a READ COMMITTED transaction sees the new value at once, and a NO WAIT update of a concurrently-modified row comes back with the classic `isc_update_conflict` chain instead of blocking. The TPBs are built explicitly (`isc_tpb_concurrency`, `isc_tpb_read_committed, isc_tpb_rec_version`, `isc_tpb_nowait`) so the [isolation-level → TPB mapping](#firebirds-isolation-levels) above is visible in code.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/transactions_demo        # default: inet://localhost//tmp/fbhandson/tx.fdb
+```
+
+Verified output:
+
+```text
+A (SNAPSHOT)       sees amount = 100
+B                  committed amount = 999
+A (same SNAPSHOT)  sees amount = 100   <- still the start-of-tx version
+A (READ COMMITTED) sees amount = 999   <- the committed version
+A conflicting update failed as designed:
+    deadlock
+-update conflicts with concurrent update
+-concurrent transaction number is 9
+done.
+```
+
+### JavaScript sample — [`samples/nodejs/transactions.js`](samples/nodejs/transactions.js)
+
+The same scenario through node-firebird's pure-JavaScript wire-protocol driver (`cd samples/nodejs && npm install && node transactions.js`). One behavioural difference is itself instructive: node-firebird's default TPB is **WAIT**, so the conflicting update *blocks* until the holder commits and only then raises the conflict — the sample commits the blocker after 300 ms to let the error surface, exactly the WAIT-policy behaviour described [above](#locking-waiting-and-conflicts).
+
+### Things to try
+
+- Change `isc_tpb_nowait` to `isc_tpb_wait` in step 3 of the C++ sample and watch the update block until `holdB` commits — then fail anyway (SNAPSHOT cannot see the new version).
+- Replace `isc_tpb_concurrency` with `isc_tpb_read_committed, isc_tpb_rec_version` in `loserA`: after the blocker commits, the update now *succeeds* — READ COMMITTED is allowed to chase the newest version.
+- Run the C++ and JS samples simultaneously against the same database for a three-way race.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), every concept in this document is a breakpoint:
+
+```gdb
+break TRA_start          # src/jrd/tra.cpp:1666 — watch the TPB being parsed
+break TRA_commit         # tra.cpp:433 — TIP state change + commit-order CN assignment
+break VIO_modify         # src/jrd/vio.cpp:3282 — the update creating a new version
+break ERR_post if 0 == strcmp("isc_update_conflict", "x")   # see below
+```
+
+More usefully, break on the conflict itself: `vio.cpp` raises `isc_update_conflict` from its update path (`vio.cpp:4089`), so `break vio.cpp:4089` fires exactly when the demo's step 3 loses the race — the backtrace at that point *is* this document's "Locking, waiting and conflicts" section: `VIO_modify` → record-version walk → error post, with the winning transaction's number in `rpb->rpb_transaction_nr`. The [debugging guide](debugging-firebird.md) shows how to run this against an embedded engine so the breakpoint lands in the same process as the sample.
+
 ## Further research
 
 **Firebird**

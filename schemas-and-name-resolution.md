@@ -468,6 +468,78 @@ Firebird's distinguishing choice, stated plainly: **it is the only one of the fo
 
 ---
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/schemas.cpp`](samples/cpp/schemas.cpp)
+
+Replays the [live demonstrations](#live-demonstrations) as one idempotent program: it lists `RDB$SCHEMAS`, reads the default path from the context variable, creates the two same-named `CUSTOMERS` tables, and then watches a single unqualified `SELECT` change meaning as `SET SEARCH_PATH` changes — including the [`SYSTEM` auto-append](#the-search-path-and-the-entry-you-cannot-remove) and the [stored-code refusal](#two-resolution-regimes): a procedure created while `APP` leads the path keeps binding `APP.CUSTOMERS` after the session flips to `PUBLIC`, with `RDB$DEPENDENCIES` recording the resolution.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/schemas          # default: inet://localhost//tmp/fbhandson/schemas.fdb
+```
+
+Verified output:
+
+```text
+schemas in RDB$SCHEMAS      : APP  PUBLIC  SYSTEM
+default search path         : "PUBLIC", "SYSTEM"
+
+SELECT ORIGIN FROM CUSTOMERS, as the path changes:
+  path PUBLIC,SYSTEM        -> from PUBLIC
+  path APP,PUBLIC           -> from APP
+
+SET SEARCH_PATH TO APP      -> "APP", "SYSTEM"   (SYSTEM auto-appended)
+
+procedure created with path APP,PUBLIC (lands in APP, binds APP.CUSTOMERS)
+  after SET SEARCH_PATH TO PUBLIC:
+    direct SELECT ... FROM CUSTOMERS -> from PUBLIC
+    SELECT SRC FROM APP.WHICH_ONE    -> from APP   <- unmoved
+    RDB$DEPENDENCIES records         -> APP.CUSTOMERS
+
+plan for unqualified SELECT :
+PLAN ("PUBLIC"."CUSTOMERS" NATURAL)
+```
+
+The final `getPlan()` line is the [plans-and-errors observation](#plans-and-errors) from client code: the optimizer reports the *resolved* qualified name, so the plan itself documents which schema won.
+
+### JavaScript sample — [`samples/nodejs/schemas.js`](samples/nodejs/schemas.js)
+
+The twin (`cd samples/nodejs && node schemas.js`) needs no special driver support — resolution is entirely server-side — but it demonstrates one architectural point the C++ sample cannot: node-firebird wraps every `query()` in its own short transaction, and `SET SEARCH_PATH` *still* carries over to the next call, proving the search path is **attachment** state, not transaction state (`att_schema_search_path` lives on the [`Attachment`](extern/firebird/src/jrd/Attachment.h#L597), as described above). Verified:
+
+```text
+search path (default)  : "PUBLIC", "SYSTEM"
+unqualified CUSTOMERS  : from PUBLIC
+after SET ... APP,PUBLIC: from APP
+SET ... TO APP shows   : "APP", "SYSTEM"  (SYSTEM auto-appended)
+
+path now PUBLIC; direct: from PUBLIC
+APP.WHICH_ONE returns  : from APP  <- still its own schema
+dependency recorded    : APP.CUSTOMERS
+```
+
+### Things to try
+
+- Add the [shadowing experiment](#shadowing-and-the-hazard-search-paths-always-carry): `CREATE TABLE PUBLIC."RDB$DATABASE" (X INT)` and watch an unqualified `SELECT ... FROM RDB$DATABASE` on a fresh connection find yours; then `SET SEARCH_PATH TO SYSTEM, PUBLIC` to defuse it.
+- Set the path to a schema that does not exist (`SET SEARCH_PATH TO GHOST`) and try an unqualified `CREATE TABLE` — the `isc_dyn_cannot_infer_schema` failure mode [named above](#creating-a-name-versus-referencing-one).
+- In either sample, create `APP.WHICH_TWO` explicitly in `PUBLIC` while `APP` leads the path (the document's [sharper test](#the-rule-is-the-objects-own-schema--not-the-creation-time-path)) and check `RDB$DEPENDENCIES`.
+- Attach with `isc_dpb_search_path` in the DPB (add `dpb->insertString(&status, isc_dpb_search_path, "APP")` to the C++ sample) and confirm the session starts with your path instead of the default.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the three resolution regimes of Figure 1 are four breakpoints:
+
+```gdb
+break MET_qualify_existing_name     # src/jrd/met.epp:5227 — the walk over the path, per object type
+break Attachment::qualifyNewName    # src/jrd/Attachment.cpp:937 — CREATE choosing its schema
+break Attachment::qualifyExistingName   # Attachment.cpp:957 — reference resolution entry point
+break SetSearchPathNode::execute    # src/dsql/StmtNodes.cpp:10953 — SET SEARCH_PATH (SYSTEM append)
+```
+
+Run the sample's unqualified `SELECT` and `MET_qualify_existing_name` fires with `name.schema` empty and the session's `schemaSearchPath` as the loop bound — step the outer `for` to watch `PUBLIC` tried before `SYSTEM`, first match filling in `name.schema`. Call `APP.WHICH_ONE` and the same breakpoint fires *from the BLR parse path* with a **one-entry** synthetic path (`CompilerScratch::qualifyExistingName`, `src/jrd/exe.h:533`) — the caller's path is nowhere in the backtrace, which is this document's central claim made visible in a debugger. In `SetSearchPathNode::execute`, watch the `hasSystem` check append `SYSTEM` to the new path before it is stored on the attachment. See the [debugging guide](debugging-firebird.md) for the embedded-attach recipe.
+
+---
+
 ## Further reading
 
 - [`doc/sql.extensions/README.schemas.md`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.schemas.md) — the feature documentation: syntax, search path, and the rules for each object type.

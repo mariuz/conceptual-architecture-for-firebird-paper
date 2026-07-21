@@ -213,6 +213,71 @@ _Figure 4: Where each system places its security mechanisms — note only Firebi
 
 **Authorization has converged, with Firebird's system privileges a notable refinement.** All three server databases have SQL `GRANT`/roles; PostgreSQL adds row-level security, MySQL added roles in 8.0, and Firebird 4 broke the monolithic SYSDBA into individually grantable **system privileges** — letting you build least-privilege operator roles (backup-only, monitor-only) without handing over the keys to the kingdom. SQLite, true to its serverless design, has no authorization layer at all: access control is the file system's job (see the [embedded comparison](embedded-architecture-comparison.md)).
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/security.cpp`](samples/cpp/security.cpp)
+
+Three of the [four layers](#the-four-layers), observed and exercised from client code against a scratch database. The sample reads its *own* attachment's `MON$ATTACHMENTS` row (layers 1+2 as the server recorded them), lists `SEC$USERS` (the virtual view over `security6.fdb`), then builds the least-privilege scenario of the [authorization section](#firebird-authorization): a temporary user plus a role carrying the `MONITOR_ANY_ATTACHMENT` [system privilege](#firebird-authorization), connecting as that user first *without* and then *with* the role (`isc_dpb_sql_role_name` in the DPB). It ends with a deliberately failed login and drops everything it created.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/security                 # uses inet://localhost//tmp/fbhandson/security.fdb
+```
+
+Verified output:
+
+```text
+admin attachment:      user=SYSDBA auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=NONE
+
+SEC$USERS (the security database, through the virtual view):
+    USER             PLUGIN   ADMIN
+    HANDSON_USER     Srp      FALSE
+    SYSDBA           Srp      TRUE
+
+admin sees 1 user attachments in MON$ATTACHMENTS
+user, no role:         user=HANDSON_USER auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=NONE
+  -> sees 1 attachment(s): only its own
+user + role:           user=HANDSON_USER auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=HANDSON_MONITOR
+  -> sees 2 attachments: MONITOR_ANY_ATTACHMENT at work
+
+failed login (wrong password) produces:
+    Your user name and password are not defined. Ask your database administrator to set up a Firebird login.
+
+temporary user and role dropped. done.
+```
+
+The same user sees 1 attachment without the role and 2 with it — one grantable system privilege visibly changing what `MON$` exposes. Two engine behaviours surfaced while writing this: **user management is deferred work executed at commit** — `GRANT ... TO USER` fails with "record not found for user" if the `CREATE USER` hasn't been fully committed first, and a `DROP USER` of a missing user reports its error at `COMMIT`, not at execute; and on this Firebird 6 snapshot, continuing to use a transaction after a `COMMIT RETAINING` that performed `CREATE USER` **crashed the server** (guardian restart, `terminated abnormally (-1)` in `firebird.log`) — reproduced twice, so the sample gives every user-management batch its own transaction and a full commit.
+
+### JavaScript sample — [`samples/nodejs/security.js`](samples/nodejs/security.js)
+
+The read-only observations through the pure-JS driver (`cd samples/nodejs && node security.js`), and the client-dependence of layer 2 is the point. Verified output (first line):
+
+```text
+who am I : user=SYSDBA auth=Srp256 wirecrypt=Arc4 protocol=TCPv4
+```
+
+Same server, same user, same `Srp256` authentication — but **`Arc4`** wire encryption where fbclient negotiated `ChaCha64`: the cipher is chosen by the *client's* plugin preference order, exactly the negotiation described in the [wire-protocol document](firebird-wire-protocol.md#wire-encryption-from-the-session-key-to-the-cipher). The failed login arrives as one flattened message with `gdscode 335544472` (`isc_login`) — the same error chain the C++ status vector carries structured.
+
+### Things to try
+
+- Grant `HANDSON_MONITOR` more bits — `set system privileges to MONITOR_ANY_ATTACHMENT, USE_GSTAT_UTILITY` — and re-run the doc's `fbsvcmgr ... action_db_stats` as `HANDSON_USER`: the [services-api document's layer-2 rejection](services-api.md#authorization-two-independent-layers) turns into success.
+- In `security.js`, pass `pluginName: Firebird.AUTH_PLUGIN_SRP` and watch `MON$AUTH_METHOD` change to `Srp` — a SHA-1 proof accepted because the server's `AuthClient`/`AuthServer` lists still allow it (the downgrade caveat of the wire document).
+- Query `MON$ATTACHMENTS` as `HANDSON_USER` *while* `security.js` runs as SYSDBA: still invisible without the role — the filter is server-side (`Monitoring.cpp`), not driver-side.
+- Change the C++ sample to `USING PLUGIN Legacy_UserManager` and watch it fail: the shipped `UserManager = Srp` is the only store `CREATE USER` may write to.
+
+### Debugging this in C++ (gdb)
+
+Server-side breakpoints on the functions this document names (verified in the vendored tree; use a [debug server](debugging-firebird.md) — authentication never happens in embedded mode, so the SRP breakpoints only make sense attached to a real server):
+
+```gdb
+break SrpServer::authenticate    # src/auth/SecureRemotePassword/server/SrpServer.cpp:262 — salt/verifier lookup, both SRP phases
+break Mapping::mapUser           # src/jrd/Mapping.cpp:1454 — auth block → effective user + trusted role
+break Attachment::locksmith      # src/jrd/Attachment.cpp:265 — every system-privilege test
+break Monitoring.cpp:486         # the MONITOR_ANY_ATTACHMENT check behind the sample's 1-vs-2 rows
+```
+
+`SrpServer::authenticate` fires twice per login — once for the challenge (it fetches the salt and verifier and generates `B`), once for the proof check — and on the wrong-password run the second visit is where the chain ends: the proofs differ, the plugin reports failure, and the remote server raises `isc_login` (`src/remote/server/server.cpp:845`), which is precisely the message both samples printed. `Attachment::locksmith` with `sp = MONITOR_ANY_ATTACHMENT` is the sample's punchline in one frame: called from the monitoring snapshot code at `Monitoring.cpp:486`, it returns `false` for the role-less attachment (so `enumerate()` is filtered to the user's own sessions) and `true` once the role is active — step from there and you watch the second attachment appear in the snapshot.
+
 ## Further research
 
 **Firebird**

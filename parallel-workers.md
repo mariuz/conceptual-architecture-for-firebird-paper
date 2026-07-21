@@ -288,6 +288,67 @@ Firebird's distinguishing choice, stated plainly: **it is the only one of the fo
 
 ---
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/parallel_workers.cpp`](samples/cpp/parallel_workers.cpp)
+
+The live server here runs with both knobs at their default of 1 and must not be reconfigured, and [both are *global* config](#two-knobs-both-defaulting-to-off) (`Config::getMaxParallelWorkers()` reads only the process's own `firebird.conf` — `CONFIG_GET_GLOBAL_INT`, [`config.h:621`](extern/firebird/src/common/config/config.h#L621)), so no DPB can raise them from the client side. The sample turns both facts into demonstrations. Phase A attaches to the server with `isc_dpb_parallel_workers = 4` and receives the engine's answer in the status vector: the `isc_bad_par_workers` **warning** from the clamp logic at [`jrd.cpp:7382`](extern/firebird/src/jrd/jrd.cpp#L7382) — the ceiling is a ceiling. Phase B gets its workers the only way possible without touching the server: it builds a private `$FIREBIRD` root (symlinks to the stock install plus a `firebird.conf` saying `ParallelWorkers = 4` / `MaxParallelWorkers = 8`) and attaches **embedded**, so the engine in its own process reads its own knobs. It then creates a 200,000-row table of *incompressible* 180-byte rows — incompressible because records are RLE-compressed on page, and [`IndexCreateTask::getMaxWorkers()`](extern/firebird/src/jrd/idx.cpp#L813) goes parallel only if the relation spans more than one pointer page (a first version with `lpad('', 180, 'x')` filler compressed down to a single pointer page and ran stubbornly serial) — and polls `MON$ATTACHMENTS` from a second attachment while `CREATE INDEX` runs.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/parallel_workers    # ~30 s: builds a 40 MB scratch table
+```
+
+Verified output:
+
+```text
+[A] server attach, isc_dpb_parallel_workers = 4
+    warning isc_bad_par_workers: wrong parallel workers value 4, valid range are from 1 to 1
+    server config: ParallelWorkers = 1, MaxParallelWorkers = 1 -> request clamped, 0 extra workers
+
+[B] embedded attach, FIREBIRD=/tmp/fbhandson/fbroot-parallel
+    engine config: ParallelWorkers = 4, MaxParallelWorkers = 8
+    parade table: 200000 rows of 180 incompressible bytes, 4 pointer pages
+    create index: 10432 ms; max '<Worker>' attachments seen: 3
+    MON$ATTACHMENTS at the widest moment:
+        Cache Writer  (system_flag 1)
+        Garbage Collector  (system_flag 1)
+        SYSDBA  (system_flag 0)
+        SYSDBA  (system_flag 0)
+        <Worker>  (system_flag 1)
+        <Worker>  (system_flag 1)
+        <Worker>  (system_flag 1)
+    after build: workers stay pooled (idle timeout 60 s): 3
+done.
+```
+
+Three `<Worker>` attachments plus the user's own is four — [the counting convention](#two-knobs-both-defaulting-to-off), reproduced. The workers still being there *after* the build is [`WORKER_IDLE_TIMEOUT`](extern/firebird/src/jrd/WorkerAttachment.cpp#L49) at work: they are pooled attachments, not per-task threads. (On this one-core machine the 10.4 s parallel build proves engagement, not speed — same caveat as the [live demonstrations](#live-demonstrations) above.)
+
+### JavaScript sample — [`samples/nodejs/parallel-workers.js`](samples/nodejs/parallel-workers.js)
+
+The twin (`cd samples/nodejs && node parallel-workers.js`) runs the same poll-during-`CREATE INDEX` technique against the live server and reports the honest zero: `'<Worker>' attachments seen in 63 polls: 0`. It first reads both knobs from `RDB$CONFIG` and its own grant from `MON$ATTACHMENTS.MON$PARALLEL_WORKERS` (= 1), so the zero is *predicted* before it is measured. A pure-JS driver has no embedded escape hatch — phase B of the C++ sample is exactly the door that is closed to it (see the [embedded comparison](embedded-architecture-comparison.md)) — which makes the pair a clean statement of who controls parallelism: the server process's config, never the client.
+
+### Things to try
+
+- In the C++ sample's private root, set `ParallelWorkers = 8` and watch `getMaxWorkers()` cap the width at the pointer-page count instead (the output already prints both numbers).
+- Set `MaxParallelWorkers = 2` with `ParallelWorkers = 4`: the pool refuses the third worker — the ["fails rather than waits"](#two-pools-not-one) branch — and the build runs narrower with no error reaching SQL.
+- Change the filler back to `lpad('', 180, 'x')` and watch RLE compression collapse the table to one pointer page and the build go serial — worker count is decided by *physical* layout, not row count.
+- Re-run the C++ sample within 60 seconds: phase B's workers are still pooled, so the second build reuses them and no new attachments appear.
+
+### Debugging this in C++ (gdb)
+
+Phase B of the sample is the rare parallel subsystem you can debug whole: engine, coordinator, workers and monitoring all live in one process. With a [debug build](debugging-firebird.md) and `FIREBIRD` pointing at the sample's private root:
+
+```gdb
+break IndexCreateTask::getMaxWorkers        # src/jrd/idx.cpp:813 — the task proposing its width (watch m_countPP)
+break Coordinator::runSync                  # src/common/Task.cpp:215 — the generic half taking over
+break Coordinator::getThread                # src/common/Task.cpp:296 — a thread borrowed from m_idleThreads
+break WorkerAttachment::getAttachment       # src/jrd/WorkerAttachment.cpp:276 — an attachment borrowed from the pool
+break WorkerStableAttachment::create        # src/jrd/WorkerAttachment.cpp:82 — a brand-new worker (ATT_worker, '<Worker>')
+```
+
+The firing order *is* the document's architecture: the task proposes (`getMaxWorkers` returning `MIN(4, m_countPP)`), the coordinator disposes (`runSync` pairing threads with workers), and only then does the attachment pool produce the `<Worker>` attachments the sample sees in `MON$ATTACHMENTS` — `WorkerStableAttachment::create` on first use, `m_idleAtts.pop()` inside `getAttachment` on reuse. At `WorkerStableAttachment::create`, `finish` the frame and inspect `attachment->att_flags & ATT_worker`; at `getMaxWorkers`, `print m_countPP` shows the pointer-page count that the RLE-compression experiment above manipulates.
+
 ## Further reading
 
 - [`doc/README.parallel_features`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.parallel_features) — the authoritative feature description: settings, precedence, ServerMode differences and worked examples.

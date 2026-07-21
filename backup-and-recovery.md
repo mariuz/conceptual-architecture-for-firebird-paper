@@ -130,6 +130,76 @@ A layered strategy, using the tools verified above:
 
 **Firebird's gbak restore is quietly a maintenance tool.** Because a logical restore rebuilds every page and index from scratch, the gbak backup/restore cycle simultaneously backs up, defragments, reclaims dead-version space, and migrates ODS versions — a single operation doing what several separate ones do elsewhere (`pg_dump` + `REINDEX` + `VACUUM FULL`). It is slower than a physical copy, which is exactly why `nbackup` exists alongside it for large databases.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/backup.cpp`](samples/cpp/backup.cpp)
+
+A complete gbak backup + restore round trip with **no gbak binary on the client**: the sample drives the [logical-backup path](#gbak-logical-backup) through the Services API — the same route `gbak -se` and `fbsvcmgr` take. It creates a scratch database with three rows, attaches to `service_mgr`, starts `isc_action_svc_backup` with `isc_spb_verbose` and streams gbak's log line by line via `isc_info_svc_line`, then starts `isc_action_svc_restore` (`isc_spb_res_replace`) the same way, and finally attaches to the restored database to prove the rows survived. The backup runs while the source attachment is still open — the "online, snapshot-consistent" property in action.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/backup        # default: inet://localhost//tmp/fbhandson/backup.fdb
+```
+
+Verified output (privilege lines trimmed):
+
+```text
+source ready: BR_ITEMS with 3 rows
+
+== backup: /tmp/fbhandson/backup.fdb -> /tmp/fbhandson/backup.fbk ==
+  gbak> gbak:readied database /tmp/fbhandson/backup.fdb for backup
+  gbak> gbak:creating file /tmp/fbhandson/backup.fbk
+  gbak> gbak:starting transaction
+  gbak> gbak:use up to 1 parallel workers
+  ...
+  gbak> gbak:    writing table "PUBLIC"."BR_ITEMS"
+  gbak> gbak:    writing data for table "PUBLIC"."BR_ITEMS"
+  gbak> gbak:3 records written
+  ...
+  gbak> gbak:closing file, committing, and finishing. 3072 bytes written
+
+== restore: /tmp/fbhandson/backup.fbk -> /tmp/fbhandson/backup_restored.fdb ==
+  gbak> gbak:opened file /tmp/fbhandson/backup.fbk
+  gbak> gbak:transportable backup -- data in XDR format
+  gbak> gbak:created database /tmp/fbhandson/backup_restored.fdb, page_size 8192 bytes
+  gbak> gbak:restoring data for table "PUBLIC"."BR_ITEMS"
+  gbak> gbak:   3 records restored
+  ...
+  gbak> gbak:    activating and creating deferred index "PUBLIC"."RDB$PRIMARY1"
+  gbak> gbak:adjusting the ONLINE and FORCED WRITES flags
+
+restored database says: 3 rows, max name = gamma
+done.
+```
+
+The restore log is the [rebuilding property](#gbak-logical-backup) made visible: fresh database, data loaded, *then* indexes built ("activating and creating deferred index").
+
+### JavaScript sample — [`samples/nodejs/backup.js`](samples/nodejs/backup.js)
+
+The same round trip through node-firebird, which implements the Services API wire protocol (`op_service_attach`/`op_service_start`/`op_service_info`) in pure JavaScript: `Firebird.attach({ manager: true })` returns a `ServiceManager` whose `backupAsync`/`restoreAsync` build the same SPB blocks and hand back a Node `Readable` stream of gbak's verbose lines (`cd samples/nodejs && node backup.js`). Verified: identical gbak log, ending in `restored database says: 3 rows, max name = gamma`. One wire-level delta worth noticing: the driver's restore always sends a page-size tag (default 4096), so the sample passes `pagesize: 8192` explicitly — a reminder that a gbak restore *re-decides* physical parameters rather than copying them.
+
+### Things to try
+
+- Add `start->insertTag(&st, isc_spb_bkp_metadata_only)` (C++) or `metadataonly: true` (JS) and compare the `.fbk` sizes and the restore log — structure without data, the `-SKIP_DATA` idea from the [gbak section](#gbak-logical-backup).
+- Insert 100k rows before backing up, then time backup vs restore: the restore's index-rebuild phase dominates, which is why it doubles as defragmentation.
+- Do the physical counterpart at the console: `nbackup -b 0` then `-b 1` on the scratch database and compare file sizes with the ~2.5 MB / ~131 KB result [above](#nbackup-physical-incremental-backup) (remember `nbackup -r`'s target must not exist).
+- Pull the backup *to the client* instead: replace the server-side `.fbk` path with `stdout` handling (`isc_spb_bkp_file = "stdout"` + `isc_info_svc_to_eof`) — the mechanism behind remote backups without server file access.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the whole service-driven backup is steppable in one process, because for Super the service *runs inside the server* (and under the embedded engine, inside your own process):
+
+```gdb
+break Service::start            # src/jrd/svc.cpp:1969 — the SPB action block arriving from the client
+break gbak                      # src/burp/burp.cpp:558 — gbak's entry point when run as a service thread
+break BACKUP_backup             # src/burp/backup.epp:213 — the logical dump (per-table data walk)
+break RESTORE_restore           # src/burp/restore.epp:339 — the rebuild: create DB, load, then indexes
+break BackupManager::beginBackup  # src/jrd/nbak.cpp:240 — nbackup's stall: writes diverted to the delta
+break CCH_flush                 # src/jrd/cch.cpp:1192 — careful-write ordering (crash-recovery basis)
+```
+
+`Service::start` shows the exact bytes the samples built (`isc_action_svc_backup`, dbname, bkp_file, verbose) being parsed and a thread spawned around `gbak()` — backtraces from `BACKUP_backup` reveal gbak is just another client running inside the server, reading through a snapshot transaction. `BackupManager::beginBackup` is the `ALTER DATABASE BEGIN BACKUP` stall from the [nbackup section](#nbackup-physical-incremental-backup) (watch `backup_state` change), and `check_precedence` (`src/jrd/cch.cpp:3177`), reached from `CCH_flush`, is the page-ordering machinery that makes ["recovery" a no-op](#crash-recovery-consistency-without-a-log): the reason there is no log to replay is decided here, one page-write dependency at a time.
+
 ## Further research
 
 **Firebird**

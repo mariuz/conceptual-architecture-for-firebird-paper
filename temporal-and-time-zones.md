@@ -131,6 +131,72 @@ Every operation worked: named-region storage, DST-correct `AT` conversion (New Y
 
 **The pattern is the series' recurring one, applied to time.** The two full server engines invest in a complete temporal type system with a bundled zone database; SQLite pushes it to functions and the application. Firebird's specific bet — store the named zone, skip the `INTERVAL` type — reflects a design that values *fidelity of the recorded value* (which zone, resolved through bundled IANA data) over the *algebra of durations*. For scheduling, calendaring and audit data where "which zone" matters, it is a notably strong native model.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/temporal.cpp`](samples/cpp/temporal.cpp)
+
+The sample makes [Figure 1's storage claim](#how-with-time-zone-is-stored) physically visible: it fetches `TIMESTAMP '2026-07-18 12:00:00 America/New_York'` **raw** (no VARCHAR coercion), prints the on-wire `ISC_TIMESTAMP_TZ` struct — UTC instant plus 2-byte zone id — and then hands the same bytes to `IUtil::decodeTimeStampTz`, which resolves the id back to the *named* zone. A second literal written as a bare offset shows the other id encoding. It then runs the [DST conversion](#dst-equality-and-edge-cases) and [session-zone](#the-session-time-zone) demos.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/temporal         # default: inet://localhost//tmp/fbhandson/temporal.fdb
+```
+
+Verified output:
+
+```text
+named-zone literal:
+  on the wire : UTC days=61239 time=576000000  zone id=65361
+  decoded     : 2026-07-18 12:00:00 America/New_York
+offset literal:
+  on the wire : UTC days=61239 time=612000000  zone id=1139
+  decoded     : 2026-07-18 12:00:00 -05:00
+
+NY 12:00 in UTC, winter: 2026-01-18 17:00:00.0000 Etc/UTC
+NY 12:00 in UTC, summer: 2026-07-18 16:00:00.0000 Etc/UTC
+10:00 -02:00 = 09:00 -03:00 ? EQUAL
+
+session zone: Etc/UTC   CURRENT_TIMESTAMP: 2026-07-21 07:35:13.2920 Etc/UTC
+session zone: Asia/Tokyo     CURRENT_TIMESTAMP: 2026-07-21 16:35:13.2920 Asia/Tokyo
+```
+
+Every number matches the storage model: noon EDT is stored as `576000000` tenth-milliseconds = **16:00 UTC**, the same wall time at `-05:00` as **17:00 UTC**; zone id `65361` is a region code counting down from 65535, `1139 = −300 + 1439` is the encoded −05:00 offset; and the two `AT TIME ZONE 'Etc/UTC'` rows differ by the DST hour (EST 17:00Z vs EDT 16:00Z).
+
+### JavaScript sample — [`samples/nodejs/temporal.js`](samples/nodejs/temporal.js)
+
+The twin (`cd samples/nodejs && node temporal.js`) demonstrates the driver-side half of the story: a JS `Date` is a bare UTC instant — exactly the thing `WITH TIME ZONE` is *more* than — so node-firebird returns correct instants and silently drops the zone:
+
+```text
+raw fetch          : 2026-07-18T16:00:00.000Z  <- correct instant (12:00 EDT = 16:00Z), zone name lost
+zone, server-side  : America/New_York
+TIME WITH TIME ZONE: 1970-01-01T12:00:00.000Z  <- 12:00Z instant, date pinned to epoch, zone gone
+session zone after : Asia/Tokyo
+CURRENT_TIMESTAMP  : 2026-07-21 16:35:59.3560 Asia/Tokyo
+```
+
+The zone survives only server-side — `EXTRACT(TIMEZONE_NAME FROM …)` or a `CAST` to VARCHAR — and a zoneless `TIMESTAMP` is materialized into a `Date` using the *Node process's* `TZ`, not the session zone: two different "local" notions in one program. `SET TIME ZONE` persists across the driver's per-query transactions because it is attachment-level, matching the [session-zone rules above](#the-session-time-zone).
+
+### Things to try
+
+- Change the C++ named-zone literal to `2026-11-01 01:30:00 America/New_York` — the doubled DST-overlap hour — and check which of the two possible UTC instants the wire struct holds (the docs promise the *first*, pre-transition occurrence).
+- Print `EXTRACT(TIMEZONE_HOUR FROM ...)` for a *region* literal in January vs July: the displacement itself is DST-dependent.
+- Run the C++ sample with `FIREBIRD` pointing at a root whose `tzdata/` is missing and watch region resolution fail — the dependence on the bundled IANA data in the [install layout](deployment-and-operations.md#the-firebird-install-layout).
+- In the JS sample, set `TZ=Asia/Tokyo node temporal.js` — the zoneless `TIMESTAMP` fetch shifts while the `WITH TIME ZONE` fetch does not: driver-local vs server-stored interpretation.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md):
+
+```gdb
+break TimeZoneUtil::parse               # src/common/TimeZoneUtil.cpp:456 — zone string in a literal -> id
+break TimeZoneUtil::parseRegion         # TimeZoneUtil.cpp:505 — the region-name lookup specifically
+break TimeZoneUtil::localTimeStampToUtc # TimeZoneUtil.cpp:689 — wall time -> stored UTC instant
+break TimeZoneUtil::decodeTimeStamp     # TimeZoneUtil.cpp:758 — stored UTC + id -> local pieces (ICU)
+break SetTimeZoneNode::execute          # src/dsql/StmtNodes.cpp:10980 — SET TIME ZONE changing the session
+```
+
+`parse` returns exactly the 2-byte ids the sample prints (`65361`, `1139`) — step out and watch the caller stamp it into the descriptor. `decodeTimeStamp` is where a region id meets ICU and the DST rules: when the `AT TIME ZONE 'Etc/UTC'` queries run, the backtrace passes through the CVT datetime-to-text path from the [types sample](sql-dialect-and-types.md#debugging-this-in-c-gdb), and its local variables hold the displacement chosen for that date — the winter/summer hour this document's DST section describes. `SetTimeZoneNode::execute` shows the session attribute being updated on the attachment. See the [debugging guide](debugging-firebird.md) for attaching to an embedded engine.
+
 ## Further research
 
 **Firebird**

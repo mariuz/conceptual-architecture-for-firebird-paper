@@ -296,6 +296,55 @@ Firebird's distinguishing choice, stated plainly: **it is the only one of the fo
 
 ---
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/stmt_cache.cpp`](samples/cpp/stmt_cache.cpp)
+
+Since [the cache is invisible](#what-moncompiled_statements-is-not), the sample does what this document's own demonstrations do: it infers hits and misses from prepare timings, using a statement that is heavy to *compile* (a six-way self-join — a large join-order search) and never executed — every loop is `prepare` + `free` only. Four runs turn three claims from [the key section](#the-key-what-makes-two-statements-the-same) and [the invalidation section](#invalidation-is-a-sledgehammer) into numbers: identical text hits; text differing **only in trailing whitespace** misses exactly as hard as text differing in a literal (the key is the text *verbatim* — run 2 is the "no normalization" claim, proved); and identical text re-prepared after an unrelated `RECREATE TABLE` commit misses every time (the sledgehammer purge — run 4 times only the prepares, not the DDL).
+
+```sh
+cmake -B build samples && cmake --build build
+./build/stmt_cache               # default: inet://localhost//tmp/fbhandson/stmt_cache.fdb
+```
+
+Verified output:
+
+```text
+1. identical text            100 prepares:    7.2 ms  (0.07 ms/prepare) - hits
+2. + i trailing spaces       100 prepares:  172.6 ms  (1.73 ms/prepare) - misses
+3. distinct literal          100 prepares:  172.2 ms  (1.72 ms/prepare) - misses
+4. identical text after DDL  100 prepares:  185.3 ms  (1.85 ms/prepare) - misses
+```
+
+A cache hit costs 0.07 ms; a compile costs ~1.7 ms — 20×. Runs 2 and 3 being indistinguishable is the equivalence result: a trailing space and a changed literal are equally "a different statement". Run 4 matching them is the purge: the text is byte-identical to run 1, and only the interleaved DDL commit separates 0.07 from 1.85 ms.
+
+### JavaScript sample — [`samples/nodejs/stmt_cache.js`](samples/nodejs/stmt_cache.js)
+
+The same experiment where the driver forces a limitation worth knowing: node-firebird cannot prepare without executing (each `query()` is allocate + prepare + execute + drop), so every timing includes execution — which is why the sample's join is nearly free to run. Verified (`cd samples/nodejs && node stmt_cache.js`): identical text 2.42 ms/query, whitespace-varied 4.28 ms/query — the ~1.9 ms delta is the same compile cost the C++ run isolated. The DDL-interleaved run reports 35 ms/query, but that figure includes the `RECREATE TABLE` itself; the honest comparison is runs 1 vs 2.
+
+### Things to try
+
+- Change run 2 to vary *case* instead of whitespace (`Select` / `sElect`…) — same misses, same reason.
+- Reconnect between runs 1 and 2: the cache is per-**database**, not per-attachment, so a second attachment's first prepare of the warm text already hits. (Two roles sharing one entry pay `verifyAccess()` once each — invisible to timing at this scale, but the mechanism is [above](#the-second-key-sharing-across-users-without-sharing-privileges).)
+- Set `MaxStatementCacheSize = 0` for the scratch database in `databases.conf` (on your own server, not the shared demo one) and watch run 1 slow to run-3 speed — `isActive()` is just `maxCacheSize > 0`.
+- Replace the `RECREATE TABLE` in run 4 with `COMMENT ON TABLE unrelated IS 'x'` — still DDL, still a full purge?
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), every function this document quotes is a breakpoint:
+
+```gdb
+break Jrd::DsqlStatementCache::buildStatementKey   # src/dsql/DsqlStatementCache.cpp:256 — watch the key assembled byte by byte
+break Jrd::DsqlStatementCache::getStatement        # DsqlStatementCache.cpp:72  — hit or miss decided here
+break Jrd::DsqlStatementCache::putStatement        # DsqlStatementCache.cpp:116 — a miss being inserted
+break Jrd::DsqlStatementCache::shrink              # DsqlStatementCache.cpp:314 — LRU eviction when over the 2 MB budget
+break Jrd::DsqlStatementCache::purgeAllAttachments # DsqlStatementCache.cpp:242 — the DDL sledgehammer
+```
+
+Running the sample under these breakpoints narrates the output: run 1 stops in `getStatement` a hundred times and `putStatement` never; run 2 alternates `getStatement` (miss) and `putStatement` on every iteration — print the key with `p key->c_str()` in `buildStatementKey` and the trailing spaces are right there in the bytes, along with the flags byte, charset id and search-path entries before and after the text. Run 4 additionally lands in `purgeAllAttachments` once per `RECREATE TABLE` commit, called from `DFW_perform_work` (`src/jrd/dfw.epp:1458`); the backtrace at that stop *is* Figure 1's bottom edge, and stepping into it shows the `LCK_dsql_statement_cache` doorbell being rung for the other attachments. The [debugging guide](debugging-firebird.md) covers attaching to the engine that serves the sample.
+
+---
+
 ## Further reading
 
 - [`src/dsql/DsqlStatementCache.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/DsqlStatementCache.h) / [`.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/DsqlStatementCache.cpp) — the whole subsystem in about 500 lines: both key builders, the two lists, `shrink()` and `purgeAllAttachments()`.

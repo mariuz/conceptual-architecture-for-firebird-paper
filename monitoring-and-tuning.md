@@ -160,6 +160,65 @@ All four expose internal state and offer tuning knobs, but the *shape* of the mo
 
 **The tuning knobs rhyme, because the engines face the same physics.** Every server's single biggest lever is the page/buffer cache (`DefaultDbCachePages` ≈ `shared_buffers` ≈ `innodb_buffer_pool_size` ≈ `PRAGMA cache_size`), every MVCC engine has a dead-version cleanup process to keep healthy (Firebird sweep, PostgreSQL autovacuum, InnoDB purge — see the [on-disk structure comparison](on-disk-structure.md#comparison-postgresql-mysqlinnodb-sqlite)), and every cost-based optimizer depends on fresh statistics. Firebird's distinctive additions are the OIT/OAT transaction-gap health signal that falls out of its multi-generational architecture, and the Firebird 5 arrival of hash joins, a compiled-statement cache and parallel maintenance — features the others had earlier, now closing the gap.
 
+## Hands-on: samples, tests and debugging
+
+### C++ sample — [`samples/cpp/monitoring.cpp`](samples/cpp/monitoring.cpp)
+
+Walks [Figure 2's hierarchy](#firebird-monitoring-the-mon-tables) from a single attachment — `MON$DATABASE` (the OIT/OAT/NEXT markers), then `MON$ATTACHMENTS → MON$TRANSACTIONS → MON$STATEMENTS` joined down to itself, then its own counters through the **`MON$STAT_ID`** join to `MON$RECORD_STATS`/`MON$IO_STATS` — and then puts the tables' defining property on display: it runs a 10 000-row full-scan workload *inside the same transaction* and shows the counters not moving, because the first MON$ select froze a **stable snapshot**; only a new transaction sees the workload.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/monitoring        # default: inet://localhost//tmp/fbhandson/monitoring.fdb
+```
+
+Verified output (trimmed):
+
+```text
+== MON$ATTACHMENTS -> MON$TRANSACTIONS -> MON$STATEMENTS (me) ==
+MON$ATTACHMENT_ID MON$USER  MON$TRANSACTION_ID MON$STATE SQL_HEAD
+3                 SYSDBA    4                  1         SELECT MON$OLDEST_TRANSACTION, MON$OLDES
+
+== my counters (snapshot 1) ==
+MON$RECORD_SEQ_READS MON$RECORD_IDX_READS MON$RECORD_INSERTS MON$PAGE_FETCHES
+40428                1435                 13654              131838
+
+... running workload: SELECT COUNT(*) full scan + indexed lookup ...
+count = 10000, point = 4242
+
+== same transaction, re-queried: STILL snapshot 1 ==
+40428                1435                 13654              131838
+
+== new transaction: fresh snapshot, workload now visible ==
+50560                1472                 13654              142673
+```
+
+Read the deltas like the [tuning workflow](#tuning-workflow-validated-walk-through) would: `SEQ_READS` +10 132 is the `COUNT(*)` full scan (10 000 rows plus system-table traffic), `IDX_READS` +37 includes the `ID = 4242` PK lookup, and inserts stayed flat. There is even a self-referential detail in the hierarchy row: the "running statement" it shows is the MON$ query that *created the snapshot* — the snapshot contains its own cause.
+
+### JavaScript sample — [`samples/nodejs/monitoring.js`](samples/nodejs/monitoring.js)
+
+The same walk through node-firebird (`cd samples/nodejs && node monitoring.js`), with one driver-behaviour lesson built in: outside an explicit `transaction()`, each node-firebird `query()` auto-commits its own transaction, so every MON$ read would get a *fresh* snapshot and the "stale counters" effect would never appear. The sample therefore does the whole demonstration inside one explicit SNAPSHOT transaction — verified output shows the identical freeze-then-refresh pattern (`seq=40428` twice, then `seq=50560`).
+
+### Things to try
+
+- Open a second connection running `SELECT COUNT(*) FROM MON_WORK` in a loop and re-run the sample: the hierarchy query (drop the `WHERE ... = CURRENT_CONNECTION`) now shows two attachments, and their statements' `MON$SQL_TEXT` side by side.
+- Kill a runaway statement the MON$ way: from the second connection, `DELETE FROM MON$STATEMENTS WHERE MON$ATTACHMENT_ID = <id>` and watch the victim's query fail with `isc_cancelled`.
+- Join `MON$TABLE_STATS` (FB4+) instead of the attachment-level stats to see the same workload broken down per table — `MON_WORK` vs the `RDB$` system tables.
+- Start a transaction, leave it open, and watch `MON$DATABASE`'s OIT–OAT gap grow from another connection — the health signal from the [MON$ section](#firebird-monitoring-the-mon-tables) reproduced at will.
+
+### Debugging this in C++ (gdb)
+
+With a [debug build of the engine](debugging-firebird.md), the snapshot machinery of `src/jrd/Monitoring.cpp` maps exactly onto what the sample observes:
+
+```gdb
+break MonitoringTableScan::retrieveRecord  # src/jrd/Monitoring.cpp:120 — a MON$ table being read
+break MonitoringSnapshot::create           # Monitoring.cpp:431 — fires ONCE per transaction: the snapshot
+break Monitoring::dumpAttachment           # Monitoring.cpp:1678 — an attachment serializing its state
+break Monitoring::putAttachment            # Monitoring.cpp:1056 — the MON$ATTACHMENTS row being built
+break Monitoring::putStatement             # Monitoring.cpp:1248 — MON$STATEMENTS incl. the running plan
+```
+
+The proof of the snapshot property is that `MonitoringSnapshot::create` fires on the sample's *first* MON$ query and never again until the next transaction — subsequent `retrieveRecord` calls serve rows from the saved snapshot (`tdbb->getTransaction()->tra_mon_snapshot`). Stepping into `create` shows the cross-attachment choreography: the requesting attachment signals every other attachment to dump its state into per-attachment shared memory (`dumpAttachment`), then reads all dumps back and materializes them as records — which is why MON$ data is coherent, and why querying it is not free.
+
 ## Further research
 
 **Firebird**

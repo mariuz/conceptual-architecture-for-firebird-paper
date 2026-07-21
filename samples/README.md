@@ -1,11 +1,40 @@
 # Samples
 
-Runnable C++ examples that exercise the architecture described in the
-[paper](../README.md), using the modern object-oriented client API
-(`firebird/Interface.h`) that is the supported interface in Firebird 3
-and later, including the Firebird 6 development branch.
+Runnable C++ and JavaScript examples that exercise the architecture
+described in the [paper](../README.md). The C++ programs use the modern
+object-oriented client API (`firebird/Interface.h`) that is the supported
+interface in Firebird 3 and later, including the Firebird 6 development
+branch; the JavaScript programs use [node-firebird](https://github.com/hgourvest/node-firebird),
+a pure-JS implementation of the wire protocol.
 
-## Contents
+## Per-document hands-on samples
+
+Every subsystem companion document ends with a **"Hands-on: samples, tests
+and debugging"** section built on a pair of samples here:
+
+- **`cpp/<topic>.cpp`** — one focused OO-API program per document
+  (`cpp/transactions_demo.cpp` for the transactions document,
+  `cpp/lock_manager.cpp` for the lock manager, and so on), all sharing the
+  boilerplate in [`cpp/fb_sample.h`](cpp/fb_sample.h) (RAII attachment,
+  TPB builder, fetch-everything-as-text queries). The CMake build below
+  compiles each to a binary of the same name, always with `-g` so the gdb
+  walk-throughs in the documents work out of the box.
+- **`nodejs/<topic>.js`** — the JavaScript twin, sharing
+  [`nodejs/common.js`](nodejs/common.js) (promisified attach/query/
+  transaction, raw-TPB isolation constants). Where the driver cannot reach
+  a feature the document says so honestly — and those deltas (type-mapping
+  gaps, Arc4-vs-ChaCha wire crypt, WAIT-vs-NO WAIT defaults) are themselves
+  part of what the samples teach.
+
+Each document's Hands-on section shows its pair's *verified* output, a
+"things to try" list, and gdb breakpoints into the engine functions the
+document discusses — see the [debugging guide](../debugging-firebird.md)
+for the setup they assume. The samples default to the demo server
+(`inet://localhost/employee`, SYSDBA/masterkey) or to scratch databases
+under `/tmp/fbhandson/` (create it once: `mkdir -p /tmp/fbhandson && chmod
+777 /tmp/fbhandson` — the server writes there as its own user).
+
+## Original walk-through samples
 
 - **`client_test.cpp`** — a complete client round-trip through the
   top-level architecture of Figure 1: the call chain goes from the client
@@ -133,3 +162,18 @@ fbclient's default plugin order, negotiates **ChaCha64**). `srp-handshake.js`
 prints every SRP intermediate value and every deviation from the SRP RFCs;
 its full annotated walk-through is
 [../firebird-wire-protocol.md](../firebird-wire-protocol.md).
+
+The per-document twins run the same way once the driver is installed:
+
+```sh
+cd samples/nodejs
+node transactions.js        # or any other <topic>.js
+```
+
+## Debugging
+
+All C++ samples are built with `-g`; the engine side needs a symbolled
+engine, which the vendored submodule builds in minutes. The
+[debugging guide](../debugging-firebird.md) covers both, the
+embedded-engine gdb workflow the documents' breakpoint lists assume, and
+the engine's built-in instrumentation that often beats a debugger.

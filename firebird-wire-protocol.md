@@ -330,6 +330,72 @@ Other languages, for reference:
 - [Jaybird](https://github.com/FirebirdSQL/jaybird) — the Firebird JDBC driver (Java); another from-scratch wire-protocol implementation, with extensive protocol notes in its source.
 - [`firebird-driver`](https://pypi.org/project/firebird-driver/) ([`FirebirdSQL/python3-driver`](https://github.com/FirebirdSQL/python3-driver)) — the official Python driver, a `ctypes` wrapper over `fbclient`.
 
+## Hands-on: samples, tests and debugging
+
+This document's samples are the four programs of the [Worked examples](#worked-examples) above; every output shown there was re-verified against the live Firebird 6 server. This section adds the build/run recipes, a syscall-level view of the handshake, and where to set breakpoints in the client library's send path.
+
+### C++ sample — [`samples/protocol_client.cpp`](samples/protocol_client.cpp)
+
+`fbclient` runs the entire [connection lifecycle](#the-connection-lifecycle) — `op_connect` with the version list, `op_cond_accept`, the `Srp256` exchange, `op_crypt` — and the sample then asks the attachment, via `isc_info_*` items, what was actually negotiated: the protocol, the wire-crypt plugin and the authenticated user.
+
+```sh
+cmake -B build samples && cmake --build build
+./build/protocol_client            # default: inet://localhost/employee
+```
+
+Verified output (re-run for this section):
+
+```text
+attached to inet://localhost/employee
+engine version : 6.0.0
+protocol       : TCPv4
+wire crypt     : ChaCha64
+authenticated  : SYSDBA
+detached. bye
+```
+
+### JavaScript samples — [`samples/nodejs/query.js`](samples/nodejs/query.js) and [`samples/nodejs/srp-handshake.js`](samples/nodejs/srp-handshake.js)
+
+`query.js` (`cd samples/nodejs && node query.js`) is the same report through node-firebird — re-verified, and still negotiating **Arc4** where fbclient picks ChaCha64, the two-clients-one-server contrast discussed [above](#wire-encryption-from-the-session-key-to-the-cipher). `srp-handshake.js` (`node srp-handshake.js`) is the from-scratch implementation: on re-run it again negotiated protocol 20 and plugin `Srp256` and attached over Arc4, but every SRP value differed from the transcript in [Worked examples](#worked-examples) — `a` and `b` are random per session, so `A`, `B`, `u`, `S`, `K` and the proof `M` are session-specific (this run's `K` did *not* start with `00`; the captured one did, which is exactly the 1-in-256 edge case of [deviation 2](#how-firebirds-srp-differs-from-the-papers)).
+
+### Things to try
+
+- In `srp-handshake.js`, offer only `Srp` instead of `Srp256,Srp` in `CNCT_plugin_list` — the server accepts and the proof drops to SHA-1: the downgrade the in-tree README [warns about](#what-srp256-improves), performed by hand.
+- Change the scramble computation to the RFC 5054 form (`PAD(A) | PAD(B)`): authentication keeps working *except* when `A` or `B` happens to have a leading zero byte — run it in a loop and watch [deviation 1](#how-firebirds-srp-differs-from-the-papers) surface as a sporadic failure, the exact bug class independent drivers hit.
+- Announce `CNCT_client_crypt = DISABLED` and watch the default-configured server reply with `isc_wirecrypt_incompatible` instead of accepting.
+- Run `query.js` with `FB_HOST`/`FB_PORT` pointed at a Firebird 3 or 4 server (if you have one) and see the negotiated protocol drop from 20 to 13/16 with no client change — the version-list negotiation doing its job.
+
+### Debugging this in C++ (gdb)
+
+Before gdb, `strace` shows the protocol at the syscall boundary. Real (trimmed) trace of `protocol_client`:
+
+```text
+$ strace -f -e trace=network ./build/protocol_client
+socket(AF_INET, SOCK_STREAM|SOCK_CLOEXEC, IPPROTO_TCP) = 3
+setsockopt(3, SOL_TCP, TCP_NODELAY, [1], 4) = 0
+connect(3, {sa_family=AF_INET, sin_port=htons(3050), sin_addr=inet_addr("127.0.0.1")}, 16) = 0
+sendto(3, "\0\0\0\1\0\0\0\0\0\0\0\3\0\0\0$\0\0\0\10employee\0\0\0\v\0\0\1P\t\6SY"..., 592, 0, NULL, 0) = 592
+recvfrom(3, "\0\0\0b\377\377\200\24\0\0\0\1\0\0\0\5\0\0\1D@\0F208B299C665C265DD"..., 8192, ...) = 364
+sendto(3, "\0\0\0\\\0\0\0@F2FC13832051A0AE588A67F4CC9F4092"..., 116, 0, NULL, 0) = 116
+sendto(3, "\0\0\0`\0\0\0\10ChaCha64\0\0\0\tSymmetric\0\0\0", 32, 0, NULL, 0) = 32
+recvfrom(3, "\313Q\217&\205\27\300!\272)\354\254C\212\vq\")Pt\322\2\7\221\322lhG\370\202\3625", 8192, ...) = 32
+```
+
+The first `sendto` begins `\0\0\0\1` — `op_connect`, opcode 1 in XDR big-endian — and carries `employee` and the login in clear; the first `recvfrom` begins `\0\0\0b` (98, `op_cond_accept`) followed by `\377\377\200\24` = protocol version `0x8014` = 20, with the SRP salt readable as hex text; the `ChaCha64`/`Symmetric` packet is `op_crypt` (the last cleartext packet), and everything after it is ciphertext.
+
+With a [debug build](debugging-firebird.md) you can then debug the *client* half of REMOTE — these functions live in `libfbclient`, so gdb the sample itself with `LD_LIBRARY_PATH` pointing at the debug build's `lib/` (several are `static`, so break by file:line):
+
+```gdb
+break INET_connect             # src/remote/inet.cpp:864 — transport connect, before any packet
+break interface.cpp:7874       # analyze() — the protocol/plugin negotiation driver
+break interface.cpp:7814       # authenticateStep0() — builds the CNCT block: login, plugin list, first SRP step
+break SrpClient.cpp:76         # SrpClient::authenticate — each SRP phase; :152 computes the client proof M
+break interface.cpp:9781       # send_packet() — every outgoing packet
+break protocol.cpp:254         # xdr_protocol() — the XDR (de)serialization of each packet
+```
+
+`send_packet` is the choke point: every operation in the [opcode table](#packet-model-opcodes-and-xdr) passes through it, and `p packet->p_operation` names the opcode about to leave the process — set it and step through a whole `protocol_client` session watching `op_connect`, `op_cont_auth`, `op_crypt`, `op_attach`, `op_transaction`, then `op_allocate_statement` / `op_prepare_statement` / `op_execute` / `op_fetch` for each `MON$` query (the attachment-level `openCursor` is prepare-then-execute in `interface.cpp:3978`), and finally `op_detach` — exactly the lifecycle order of the sequence diagram above. At `SrpClient.cpp:152` the backtrace runs from `IProvider::attachDatabase` down through `analyze()` into the plugin, and `sessionKey` holds the 20 SHA-1 bytes that `op_crypt` will turn into the cipher key. See the [debugging guide](debugging-firebird.md) for the debug-build recipe.
+
 ## Further research: papers, RFCs and videos
 
 **SRP and the cryptography**
