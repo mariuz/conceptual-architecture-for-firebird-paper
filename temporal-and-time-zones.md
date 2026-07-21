@@ -162,6 +162,17 @@ session zone: Asia/Tokyo     CURRENT_TIMESTAMP: 2026-07-21 16:35:13.2920 Asia/To
 
 Every number matches the storage model: noon EDT is stored as `576000000` tenth-milliseconds = **16:00 UTC**, the same wall time at `-05:00` as **17:00 UTC**; zone id `65361` is a region code counting down from 65535, `1139 = −300 + 1439` is the encoded −05:00 offset; and the two `AT TIME ZONE 'Etc/UTC'` rows differ by the DST hour (EST 17:00Z vs EDT 16:00Z).
 
+### fb-cpp sample — [`samples/fb-cpp/temporal.cpp`](samples/fb-cpp/temporal.cpp)
+
+The same storage-model tour through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. Where the OO-API sample had to fetch the raw message buffer, `memcpy` an `ISC_TIMESTAMP_TZ` out of it and call `IUtil::decodeTimeStampTz` by hand, fb-cpp offers both faces of the type as typed getters on the same column: `getOpaqueTimestampTz()` returns the wire struct — UTC instant plus 2-byte zone id — and `getTimestampTz()` returns a decoded pair of `std::chrono` UTC timestamp and zone *name* as a `std::string`. The DST-boundary, instant-equality and `SET TIME ZONE` demonstrations are pure SQL and port unchanged.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_temporal
+```
+
+Verified: the wire numbers are identical to the OO-API run — `days=61239 time=576000000 zone id=65361` for the named zone, `time=612000000 zone id=1139` for the offset — but the decoded line renders differently: fb-cpp reports the *UTC* instant plus the zone (`2026-07-18 16:00 UTC, zone "America/New_York"`) where `IUtil` re-derived the local wall time (`12:00:00 America/New_York`); same bytes, two honest presentations. The DST pair (`17:00` winter vs `16:00` summer), the `EQUAL` verdict, and the Tokyo session-zone shift all match.
+
 ### JavaScript sample — [`samples/nodejs/temporal.js`](samples/nodejs/temporal.js)
 
 The twin (`cd samples/nodejs && node temporal.js`) demonstrates the driver-side half of the story: a JS `Date` is a bare UTC instant — exactly the thing `WITH TIME ZONE` is *more* than — so node-firebird returns correct instants and silently drops the zone:

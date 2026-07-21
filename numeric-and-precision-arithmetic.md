@@ -145,6 +145,17 @@ INT128 max+1: arithmetic exception, numeric overflow, or string truncation
 
 `0x075bcd15` = 123456789: the message really carries an ordinary little-endian `int64` plus `scale=-4` in the metadata — `NUMERIC` *is* an integer with a decimal-point annotation.
 
+### fb-cpp sample — [`samples/fb-cpp/numerics.cpp`](samples/fb-cpp/numerics.cpp)
+
+The same four experiments through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API, with each result arriving as its native C++ type: the binary residue as a `double`, the `DECFLOAT(34)` result as a real 34-digit `BoostDecFloat34` compared against zero in C++ rather than by string, and `INT128` as a Boost.Multiprecision integer. The scaled-integer claim needs no raw buffer walk here — `getScaledInt64()` returns the `{value, scale}` pair straight from the wire, matching the `Descriptor`'s `SQL_INT64` / scale −4 — and both failure modes surface as typed `DatabaseException`s with `getErrorCode()` instead of a status vector to format.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_numerics
+```
+
+Verified: the `DECFLOAT(34)` residue compares equal to zero in C++ (`== 0 in C++? yes`) while the `double` residue prints `5.5511151231257827e-17`; `getScaledInt64()` returns `value=123456789 scale=-4`; `INT128` max+1 throws `gds 335544321` (`arithmetic exception, numeric overflow, or string truncation`), the default-traps division throws `gds 335545139` (`Decimal float divide by zero`), and with traps cleared the same query returns `Infinity`.
+
 ### JavaScript sample — [`samples/nodejs/numerics.js`](samples/nodejs/numerics.js)
 
 The twin (`cd samples/nodejs && node numerics.js`) adds a trap the C++ sample cannot show: **JavaScript itself only has IEEE binary doubles**, so node-firebird's decoding of scaled `NUMERIC` into a JS `Number` re-introduces the rounding problem the type exists to avoid. Verified:

@@ -176,6 +176,17 @@ done.
 
 The blob-info line is the segmented model in one line: the engine remembered not just 40 bytes but *three segments, the longest 22* — exactly the `blh_count`/`blh_max_segment` bookkeeping this document describes on disk.
 
+### fb-cpp sample — [`samples/fb-cpp/blobs.cpp`](samples/fb-cpp/blobs.cpp)
+
+The same scenario through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — and here the wrapper's own abstraction is the subject: `fbcpp::Blob` is a RAII object with `writeSegment`/`readSegment` over `std::span` (the segmented model, boundaries kept), the blob id travels through `Statement::setBlobId`/`getBlobId` as a typed value instead of an `ISC_QUAD` in a message buffer, and the raw BPB becomes a `BlobOptions` builder — `setType(BlobType::STREAM)` instead of hand-packed `isc_bpb_type` bytes, which lets the sample add a stream twin of the same 40 bytes and call `seek()` where a segmented blob would refuse it. One thing fb-cpp does *not* surface is the `blh_count`/`blh_max_segment` bookkeeping, so the sample drops to `getHandle()->getInfo()` — the escape hatch to the underlying OO-API object that every wrapper class provides.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_blobs
+```
+
+Verified: `readSegment` returns the same three segments with boundaries intact (13, 22, 5 bytes), `Blob::getLength() = 40 bytes`, and the raw `getInfo` via `getHandle()` reports `3 segments, longest 22, type 0 (0=segmented)`; the catalog and `BLOB_APPEND` checks match the OO-API run (`NOTE 1 UTF8`, `17 17 part1-part2-part3`). The stream twin shows the contrast: one `readSegment` call returns all 40 bytes in one chunk — `"first segmentsecond, longer segmentthird"`, no boundaries — and after `seek(FROM_BEGIN, 35)` the read comes back as exactly the 5-byte `"third"` tail. One trap found the hard way: the *open* must also say `BlobOptions().setType(BlobType::STREAM)` — the stored type does not carry over, so a default open serves the same blob in segmented mode, where the first read chunks at 22 bytes and a `seek()` succeeds but the next read returns garbage past the logical remainder (reproduced against the raw OO API too, so it is engine behavior, not the wrapper).
+
 ### JavaScript sample — [`samples/nodejs/blobs.js`](samples/nodejs/blobs.js)
 
 node-firebird's blob story is streaming-shaped at both ends (`cd samples/nodejs && node blobs.js`): a string or `Buffer` *parameter* is automatically turned into `op_create_blob2` plus 1 KB segment batches, and a blob *column* comes back as a **function** that yields an `EventEmitter` of data chunks — the driver's `op_open_blob`/`op_get_segment` loop surfacing in the API. Verified output for a 4,950-byte text and a 256-byte binary blob:

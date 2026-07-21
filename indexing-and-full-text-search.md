@@ -157,6 +157,17 @@ done.
 
 Note the fourth plan: two index names inside one `INDEX (...)` — the optimizer built a record-number bitmap from each B-tree and OR-ed them, and the descending index served a plain equality on the way (a descending index is still a B-tree; direction only matters for navigation).
 
+### fb-cpp sample — [`samples/fb-cpp/indexes.cpp`](samples/fb-cpp/indexes.cpp)
+
+The same five plans through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is *when* the plan is asked for: the OO-API sample calls `IStatement::getPlan(status, false)` after the prepare, while fb-cpp requests it at prepare time — `StatementOptions().setPrefetchLegacyPlan(true)` — and hands it back as a `std::string` from `getLegacyPlan()`; a `getPlan()` sibling returns the structured "explain" form that this document's isql sessions show with `SET EXPLAIN`. The `CONTAINING` row count comes back through `getInt64(0)` as a `std::optional`.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_indexes
+```
+
+Verified: plan-for-plan identical to the OO-API run — `DOC_UPPER_TITLE` and `DOC_ACTIVE` as `INDEX`, `DOC_ID_DESC` as `ORDER`, the two-index bitmap OR `INDEX ("PUBLIC"."DOC_NUM", "PUBLIC"."DOC_ID_DESC")`, `NATURAL` for `CONTAINING` — and the same closing count, "matched 111 rows by scanning all 3000".
+
 ### JavaScript sample — [`samples/nodejs/indexes.js`](samples/nodejs/indexes.js)
 
 The same five plans through the wire protocol (`cd samples/nodejs && node indexes.js`) — with one driver excursion worth knowing: node-firebird's public API never requests plans, but its internal `Connection.prepare(tx, sql, plan, cb)` takes a `plan` flag that adds `isc_info_sql_get_plan` (item 22) to the prepare-info request and surfaces the result as `statement.plan`. The sample reaches one level down to use it, and the verified output is plan-for-plan identical to the C++ run — the plan is the server's answer, whichever client asks.

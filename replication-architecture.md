@@ -285,6 +285,17 @@ MON$REPLICA_MODE
 
 Note what it demonstrates about the model: there is exactly **one** publication per database (`RDB$DEFAULT` — unlike PostgreSQL's named `CREATE PUBLICATION` sets), it pre-exists in every database waiting to be enabled, and membership is per-table metadata. What the sample deliberately cannot show is a segment being produced: with no `journal_directory` configured for this database, the Publisher has nowhere to write — the transport half genuinely lives in server-side configuration, as the walk-through above describes.
 
+### fb-cpp sample — [`samples/fb-cpp/replication.cpp`](samples/fb-cpp/replication.cpp)
+
+The same publication state walk through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. There is no replication-specific API on either side — the instructive diff is how little client code the walk needs once the plumbing is absorbed: each DDL step is a one-line `Statement{att, tra, sql}.execute(tra)`, the `RDB$PUBLICATIONS` / `RDB$PUBLICATION_TABLES` read-backs are `execute()` + `fetchNext()` loops, and every column arrives as `std::optional<std::string>` (`value_or("<null>")` making the nullable system columns explicit) instead of hand-decoded fetch buffers. The idempotent reset also shows typed error handling as control flow: each `DROP` / `DISABLE` is wrapped in `try { ... } catch (const DatabaseException&) {}`.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_replication
+```
+
+Verified: the same four-state progression — `RDB$DEFAULT` with `ACTIVE_FLAG 0 / AUTO_ENABLE 0` and nothing published, through `ACTIVE_FLAG 1`, then `PUBLIC.REPL_ORDERS`, then both tables with `AUTO_ENABLE 1` — ending in `MON$REPLICA_MODE = 0`. One rendering delta worth noticing: `getString()` returns the `CHAR(63)` system columns blank-padded to their full declared length (the OO-API sample trims them by hand), so the raw output shows `RDB$DEFAULT` and the table names trailed by spaces — a reminder that these identifier columns really are fixed-length `CHAR`, not `VARCHAR`.
+
 ### JavaScript sample — [`samples/nodejs/replication.js`](samples/nodejs/replication.js)
 
 The same state walk through node-firebird (`cd samples/nodejs && node replication.js`), output as compact lines per state. Verified: identical progression ending in `MON$REPLICA_MODE = 0 (0 = not a replica: this is a publishing primary)`. Both samples reset the publication on entry (`EXCLUDE ALL FROM PUBLICATION` + `DISABLE PUBLICATION`), so they double as a demonstration that the whole publication lifecycle is reversible from a client.

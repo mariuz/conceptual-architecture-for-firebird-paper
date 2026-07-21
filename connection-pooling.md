@@ -170,6 +170,17 @@ done.
 
 Three external calls, one outbound connection (`active=1`, never 3); after the **full** commit it is reset via `ALTER SESSION RESET` and parked (`idle=1`); `CLEAR ALL` evicts it. One subtlety found while writing the sample: with `COMMIT RETAINING` the transaction context survives, so the pooled connection stays `active` — only a real commit boundary releases it to the idle list.
 
+### fb-cpp sample — [`samples/fb-cpp/pooling.cpp`](samples/fb-cpp/pooling.cpp)
+
+Both directions of pooling through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The first half replays the outbound EDS experiment (the context variables come back as `std::optional<std::string>` via `getString(i).value_or("?")`); the second half is what the OO-API sample cannot show: fb-cpp ships an *inbound*, client-side pool — `AttachmentPool`, configured with the `AttachmentPoolOptions` builder (`setMaxSize(2)`, `setAcquireTimeout(300 ms)`, `setSessionResetOnRelease(true)` — the same `ALTER SESSION RESET` EDS runs before parking) and handing out `PooledAttachment` RAII leases — the driver-level pooling this document names as Firebird's inbound story, here in C++ rather than in a driver.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_pooling
+```
+
+Verified: the outbound half matches the OO-API run line for line (`inside the block: idle=0 active=1` for 3 calls, `idle=1` after commit, `idle=0` after `CLEAR ALL`); the inbound half shows `took 2 of max 2: total=2 available=0 inUse=2`, a third `tryAcquire()` timing out after exactly 300 ms with the pool exhausted, and — after one lease is released — the third ask served with `CURRENT_CONNECTION = 6`.
+
 ### JavaScript sample — [`samples/nodejs/pooling.js`](samples/nodejs/pooling.js)
 
 Both [directions of pooling](#two-directions-of-pooling) in one run (`cd samples/nodejs && node pooling.js`). The **outbound** half replays the same SQL through node-firebird with the same counts. The **inbound** half is what the C++ sample cannot show: node-firebird's *client-side* pool (`Firebird.pool(2, …)`) — the driver-level pooling this document names as Firebird's inbound story. With both slots taken, a third `get()` queues (`waiting=1`) and is served only when a connection is released:

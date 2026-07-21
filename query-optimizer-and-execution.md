@@ -215,6 +215,17 @@ Select Expression
                     -> Table "PUBLIC"."EMP" as "B" Full Scan
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/plans.cpp`](samples/fb-cpp/plans.cpp)
+
+The same experiment through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is where the plan comes from: `IStatement::getPlan(detailed)` becomes the typed pair `Statement::getLegacyPlan()` / `Statement::getPlan()`, and the `StatementOptions` builder — `setPrefetchLegacyPlan(true)`, `setPrefetchPlan(true)`, mapping to `PREPARE_PREFETCH_LEGACY_PLAN` / `PREPARE_PREFETCH_DETAILED_PLAN` — asks the server to ship both plan forms along with the prepare round trip, so no separate info request is ever sent.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_plans
+```
+
+Verified: plan for plan identical to the OO-API run — the flip from `PLAN ("PUBLIC"."EMP" NATURAL)` / `Full Scan` to `Access By ID -> Bitmap -> Index "PUBLIC"."EMP_DEPT" Range Scan (full match)` after `CREATE INDEX`, the `Unique Scan` on `RDB$PRIMARY2` for `id = 42`, `PLAN SORT (JOIN ...)` over the nested loop, and `PLAN HASH ("A" NATURAL, "B" NATURAL)` with `Hash Join (inner) (keys: 1, total key length: 4)` — confirming the plan text is the engine's, whichever client stack requests it.
+
 ### JavaScript sample — [`samples/nodejs/plans.js`](samples/nodejs/plans.js)
 
 node-firebird never requests plan info items from the wire, so there is no driver-level `getPlan` — the twin instead uses the honest SQL-level route new in Firebird 6: the **`RDB$SQL.EXPLAIN`** package procedure, which prepares the given statement server-side and returns the detailed plan as *rows* (one per operator, with a `LEVEL` column giving tree depth — the sample indents by it). Run with `cd samples/nodejs && node plans.js`; it replays the same index-flip experiment and prints the identical `Full Scan` → `Bitmap → Index Range Scan` transition and the `Hash Join` tree, confirming that the plan text is produced by the engine, not the client library.

@@ -174,6 +174,17 @@ done.
 
 The restore log is the [rebuilding property](#gbak-logical-backup) made visible: fresh database, data loaded, *then* indexes built ("activating and creating deferred index").
 
+### fb-cpp sample — [`samples/fb-cpp/backup.cpp`](samples/fb-cpp/backup.cpp)
+
+The same round trip through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API, which has a class purpose-built for this task: `BackupManager`. The whole Services choreography of the OO-API version — the SPB_ATTACH and SPB_START blocks, `isc_action_svc_backup`/`isc_action_svc_restore`, the `isc_info_svc_line` drain loop — collapses into two option objects (`BackupOptions().setDatabase(...).setBackupFile(...)`, `RestoreOptions().setReplace(true)`) plus a `setVerboseOutput` callback that receives gbak's log one `std::string_view` line at a time; one `BackupManager` holds the one `service_mgr` attachment.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_backup
+```
+
+Verified: the same gbak log as the OO-API run — backup ends with `gbak:3 records written` and `closing file, committing, and finishing. 3072 bytes written`; the restore shows `backup version is 12`, `3 records restored`, indexes deferred until `activating and creating deferred index "PUBLIC"."RDB$PRIMARY1"` — and the final check prints `restored database says: 3 rows, max name = gamma`.
+
 ### JavaScript sample — [`samples/nodejs/backup.js`](samples/nodejs/backup.js)
 
 The same round trip through node-firebird, which implements the Services API wire protocol (`op_service_attach`/`op_service_start`/`op_service_info`) in pure JavaScript: `Firebird.attach({ manager: true })` returns a `ServiceManager` whose `backupAsync`/`restoreAsync` build the same SPB blocks and hand back a Node `Readable` stream of gbak's verbose lines (`cd samples/nodejs && node backup.js`). Verified: identical gbak log, ending in `restored database says: 3 rows, max name = gamma`. One wire-level delta worth noticing: the driver's restore always sends a page-size tag (default 4096), so the sample passes `pagesize: 8192` explicitly — a reminder that a gbak restore *re-decides* physical parameters rather than copying them.

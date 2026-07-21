@@ -482,6 +482,17 @@ the file /tmp/fbhandson/services.fbk now exists on the SERVER, owned by the serv
 
 74 verbose lines took 75 round-trips — one `op_service_info` per line — and the resulting file proves the operational rule (`ls -l`: `-rw-r--r-- firebird firebird 3072 /tmp/fbhandson/services.fbk`): the client never touched the filesystem.
 
+### fb-cpp sample — [`samples/fb-cpp/services.cpp`](samples/fb-cpp/services.cpp)
+
+The same session through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API, which models service *actions* as objects: `ServiceManagerOptions` replaces the hand-built `SPB_ATTACH`, `BackupOptions().setDatabase(...).setBackupFile(...)` replaces the `isc_action_svc_backup` start tags, and the ring-buffer polling loop disappears inside `BackupManager::backup()` — each drained gbak line surfaces through a `std::function` callback passed to `setVerboseOutput`. The boundary of the wrapper is itself instructive: fb-cpp wraps actions (backup, restore, properties, repair), not raw info queries, so the `isc_info_svc_server_version` request drops down to the underlying `IService` via the `getHandle()` escape hatch. Every path in the options is still a *server* path.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_services
+```
+
+Verified: same server version `LI-T6.0.0.2076 Firebird 6.0 fd83f03`, and the same 74 gbak lines — `gbak:readied database ... for backup` through `gbak:closing file, committing, and finishing. 3072 bytes written` — now arriving as callback invocations instead of hand-run `query()` polls, with `/tmp/fbhandson/services_fbcpp.fbk` written on the server.
+
 ### JavaScript sample — [`samples/nodejs/services.js`](samples/nodejs/services.js)
 
 node-firebird speaks the four service opcodes natively: `Firebird.attach({ manager: true })` sends `op_service_attach` instead of `op_attach` and returns a `ServiceManager` (`lib/wire/service.js`) whose `backup()` assembles the same SPB tags the C++ `IXpbBuilder` does. The idiomatic difference is what it does with the pipe: verbose output is exposed as a Node **`Readable` stream** whose `_read()` issues one `isc_info_svc_line` query per line — the ring-buffer polling loop re-expressed as stream backpressure, so a paused stream stalls the server-side gbak exactly as an unpolled C++ client does. Run: `cd samples/nodejs && node services.js`. Verified output:

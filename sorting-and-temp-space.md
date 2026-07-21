@@ -151,6 +151,17 @@ done.
 
 The same four-number story as the [448 MB demonstration](#sorting-in-action-validated), at one-sixth scale: the big sort's allocated memory grows by **+68 MB** — the 64 MB `TempCacheLimit` plus block overhead — and *one* scratch descriptor absorbs the remaining **70 MB** of runs; the small sort stays under budget, and the scratch count is **zero** even though it, too, overflowed its 128 KB sort buffers — runs live in TempSpace's memory cache. Both queries print the same `PLAN SORT (...)`, which is the point: the plan tells you a sort exists, only the volume decides where it lives.
 
+### fb-cpp sample — [`samples/fb-cpp/sorting.cpp`](samples/fb-cpp/sorting.cpp)
+
+The same two-eyed experiment through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The `/proc/<pid>/fd` half is untouched — no wrapper can abstract the server's fd table, so the scratch-file watcher is the same `popen` over `find`/`stat` — but the MON$ half is where the wrapper shows: each poll opens a fresh RAII `Transaction` (new transaction, new MON$ snapshot), `MON$MEMORY_ALLOCATED` comes back as `std::optional<int64_t>` from `getInt64` instead of a string fed to `atol`, and the plans arrive prefetched via `StatementOptions().setPrefetchLegacyPlan(true)` rather than a separate info call.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_sorting
+```
+
+Verified: the same threshold signature — the big sort peaks at 1 unlinked `fb_sort_*` file of exactly 73400320 bytes (70 MB of runs) with MON$ growth of +68358144 over a 26255360-byte idle; the small sort shows 0 scratch files and +20099072 of memory growth; both print the identical `PLAN SORT ("PUBLIC"."BULK" NATURAL)`.
+
 ### JavaScript sample — [`samples/nodejs/sorting.js`](samples/nodejs/sorting.js)
 
 The MON$ half of the same experiment through the wire protocol (`cd samples/nodejs && node sorting.js`; it reuses the C++ sample's `bulk` table, building it if missing). One connection sorts, a second polls `MON$MEMORY_USAGE` — node-firebird runs each `db.query` in its own transaction, so every poll is a fresh MON$ snapshot with no extra code. Verified peaks: `+67506176 over idle` for the big sort, `+19378176` for the small one — the same threshold signature, without the `/proc` half (a browser-less Node process could run remotely; the fd table only exists on the server box).

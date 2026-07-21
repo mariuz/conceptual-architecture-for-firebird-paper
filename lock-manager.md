@@ -423,6 +423,17 @@ the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the s
 
 Each line is a row of the [`lck_wait` table](#enqueue-the-request-path) with a stopwatch on it: 0.000 s is `grant_or_que` failing without entering `wait_for_request`; 3.000 s is `lock_timeout = current_time + (-lck_wait)` expiring; 2.001 s is a wait ending the instant the holder's release grants the pending request; and 10.0 s — for a cycle complete after 0.3 s — is `lhb_scan_interval`, the cost of periodic detection measured from client code.
 
+### fb-cpp sample — [`samples/fb-cpp/lock_manager.cpp`](samples/fb-cpp/lock_manager.cpp)
+
+The same three probes and the same deadlock through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is the reservation idiom: the OO-API sample reaches `SET TRANSACTION ... RESERVING` through the raw `IAttachment::execute` trick (execute with no current transaction hands back the new `ITransaction`); fb-cpp has that exact idiom as a first-class constructor — `Transaction{attachment, "SET TRANSACTION ..."}` — so each probe reads as an object construction that either succeeds (granted) or throws a typed `DatabaseException` (NO WAIT, LOCK TIMEOUT). The deadlock act runs on default-constructed transactions — empty TPB, engine-default SNAPSHOT WAIT — exactly as in the OO-API version.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_lock_manager
+```
+
+Verified: NO WAIT failed after 0.001 s (`lock conflict on no wait transaction`), `LOCK TIMEOUT 3` after 3.000 s, WAIT granted after 2.001 s — the instant the holder committed — and the cross-update cycle again sat until the scan: A failed after 10.0 s with `deadlock`, and B's update proceeded once the victim rolled back.
+
 ### JavaScript sample — [`samples/nodejs/lock_manager.js`](samples/nodejs/lock_manager.js)
 
 node-firebird cannot express `RESERVING` — its table-reservation TPB code is commented out as a TODO — so the twin reaches the same three `lck_wait` modes through **row** conflicts instead: waiting on a locked record is waiting on the blocker's `LCK_tra` lock (the [thirty-six-series table](#the-thirty-six-series-what-the-engine-actually-locks)'s point about MVCC conflicts becoming lock waits). The driver's transaction options map straight onto TPB items (`{wait: false}` → `isc_tpb_nowait`, `{waitTimeout: 3}` → `isc_tpb_lock_timeout`). Run `cd samples/nodejs && node lock_manager.js`:

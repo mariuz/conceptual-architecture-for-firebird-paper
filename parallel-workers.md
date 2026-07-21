@@ -324,6 +324,17 @@ done.
 
 Three `<Worker>` attachments plus the user's own is four — [the counting convention](#two-knobs-both-defaulting-to-off), reproduced. The workers still being there *after* the build is [`WORKER_IDLE_TIMEOUT`](extern/firebird/src/jrd/WorkerAttachment.cpp#L49) at work: they are pooled attachments, not per-task threads. (On this one-core machine the 10.4 s parallel build proves engagement, not speed — same caveat as the [live demonstrations](#live-demonstrations) above.)
 
+### fb-cpp sample — [`samples/fb-cpp/parallel_workers.cpp`](samples/fb-cpp/parallel_workers.cpp)
+
+The same two phases through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API, and phase A exposes two edges of the wrapper at once. fb-cpp has no typed option for `isc_dpb_parallel_workers`, so the sample uses the escape hatch — `AttachmentOptions::setDpb({isc_dpb_version1, isc_dpb_parallel_workers, 4, 4, 0, 0, 0})`, raw clumplets that the typed options are merged into — and fb-cpp's status handling throws on errors but *discards warnings*, so the `isc_bad_par_workers` warning the OO-API sample fishes out of the status vector is invisible here; the clamp is read back from SQL instead, as `MON$ATTACHMENTS.MON$PARALLEL_WORKERS`. Phase B is unchanged in substance (the `FIREBIRD` environment variable is read by the engine provider that fbclient loads, wrapper or not), with the monitoring poller using `queryScalar<std::int64_t>` and `std::optional`-returning column getters.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_parallel_workers    # ~30 s: builds a 40 MB scratch table
+```
+
+Verified: phase A reports `granted: mon$parallel_workers = 1` against server config `ParallelWorkers = 1, MaxParallelWorkers = 1` — the clamp shown as data rather than as a warning; phase B matches the OO-API run — 200,000 rows across 4 pointer pages, `create index: 10813 ms; max '<Worker>' attachments seen: 3`, the same seven-attachment roster at the widest moment, and 3 workers still pooled after the build.
+
 ### JavaScript sample — [`samples/nodejs/parallel-workers.js`](samples/nodejs/parallel-workers.js)
 
 The twin (`cd samples/nodejs && node parallel-workers.js`) runs the same poll-during-`CREATE INDEX` technique against the live server and reports the honest zero: `'<Worker>' attachments seen in 63 polls: 0`. It first reads both knobs from `RDB$CONFIG` and its own grant from `MON$ATTACHMENTS.MON$PARALLEL_WORKERS` (= 1), so the zero is *predicted* before it is measured. A pure-JS driver has no embedded escape hatch — phase B of the C++ sample is exactly the door that is closed to it (see the [embedded comparison](embedded-architecture-comparison.md)) — which makes the pair a clean statement of who controls parallelism: the server process's config, never the client.

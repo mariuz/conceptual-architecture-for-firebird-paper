@@ -244,6 +244,17 @@ uncommitted rows      : 0   <- rolled back by visibility, not replay
 
 The engine died with ~2 MB of the uncommitted transaction's pages already on disk, yet re-attach took 111 ms with no recovery phase — the [precedence graph](#the-precedence-block-a-graph-over-dirty-buffers) never let an inconsistent ordering reach the file, and the "rollback" of the dead transaction is just the [MGA visibility rule](transactions-and-concurrency.md#the-multi-generational-foundation) declining to show its record versions. `gstat -h` on the survivor confirms `Attributes: force write`.
 
+### fb-cpp sample — [`samples/fb-cpp/careful_writes.cpp`](samples/fb-cpp/careful_writes.cpp)
+
+The same experiment through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — trick included: the forked child still attaches by plain local path with `FIREBIRD=/opt/firebird`, so the embedded engine runs inside the process being `kill -9`ed. fb-cpp changes nothing about that mechanism (embedded vs remote is the connection string at every abstraction level); what it absorbs is the ceremony around it — attach is one RAII `Attachment`, the survivor counts come back as `std::optional<std::int64_t>` from `queryScalar`, and no status vector appears anywhere in the file.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_careful_writes
+```
+
+Verified: the file grew `2260992 -> 7782400` bytes of uncommitted work before the `SIGKILL` to engine pid 6040; re-attach plus both counts took 33 ms with no recovery phase, and the counts read `committed marker rows : 1` and `uncommitted rows : 0` — same verdict as the OO-API run, this time with ~5 MB of dead transaction on disk at the moment of death.
+
 ### JavaScript sample — [`samples/nodejs/careful_writes.js`](samples/nodejs/careful_writes.js)
 
 node-firebird speaks the wire protocol to a remote server, so it *cannot* crash the engine — an honest limitation worth stating. What a client can show is the reader-side half of the same guarantee: the sample spawns a writer process that commits a marker and then inserts uncommitted rows until the parent `SIGKILL`s it mid-transaction; the server treats the severed connection as an abrupt rollback (`cd samples/nodejs && node careful_writes.js`):

@@ -347,6 +347,17 @@ MON$ATTACHMENT_ID MON$SYSTEM_FLAG TRIM              COALESCE
 
 Three claims of this document in three lines: `1 distinct server pid` across thirteen attachments is `ServerMode = Super`'s one-process topology; 16 → 24 threads under load and **22 remaining after detach** is the thread *pool* retaining workers (the [connection-pooling](connection-pooling.md) argument, measured); and the `MON$SYSTEM_FLAG = 1` rows are the Cache Writer and Garbage Collector from the census holding real, queryable attachments. (On a warm server the baseline is higher than the doc's fresh-boot `4` — earlier samples' threads are still pooled; the *delta* is the signal.)
 
+### fb-cpp sample — [`samples/fb-cpp/threading.cpp`](samples/fb-cpp/threading.cpp)
+
+The same measurement through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. Each of the twelve client threads builds its own `Client` + `Attachment` — four RAII objects per thread replacing the OO-API version's manual dispatcher/DPB/status lifecycle — and the one-value monitoring queries become `att.queryScalar<std::int64_t>(...)` returning `std::optional`. The isql-style `MON$ATTACHMENTS` table is printed generically: column names come from `getOutputDescriptors()`, every value from `getString(i)`.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_threading
+```
+
+Verified: 8 threads with one attachment open, 19 with the twelve extras (`13 user attachments, 1 distinct server pid`), and still 19 one second after they detach — this run kept *all* new workers pooled, an even starker retention than the OO-API run's 24 → 22; the final table shows both the `Cache Writer` and the `Garbage Collector` as `MON$SYSTEM_FLAG = 1` attachments alongside the sample's own SYSDBA row. (The first cut of the table printer called `fetchNext()` straight after `execute()` and silently dropped the first row — `Statement::execute()` already fetches it, an fb-cpp idiom the [page-cache twin](page-cache-coherency.md#fb-cpp-sample--samplesfb-cpppage_cachecpp) tripped over too.)
+
 ### JavaScript sample — [`samples/nodejs/threading.js`](samples/nodejs/threading.js)
 
 The same measurement from node (`cd samples/nodejs && node threading.js`), with an instructive inversion: node opens its twelve concurrent attachments from **one** event-loop thread — all the concurrency in the experiment is server-side. Run immediately after the C++ sample it also completes the pooling story:

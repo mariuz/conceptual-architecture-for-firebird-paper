@@ -19,6 +19,19 @@ and debugging"** section built on a pair of samples here:
   TPB builder, fetch-everything-as-text queries). The CMake build below
   compiles each to a binary of the same name, always with `-g` so the gdb
   walk-throughs in the documents work out of the box.
+- **`fb-cpp/<topic>.cpp`** — the same program a third time, written against
+  [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at
+  [`../extern/fb-cpp`](../extern/fb-cpp)), the modern C++20 wrapper over
+  the OO API: RAII attachments and transactions, `std::optional` for
+  nullable values, typed builder options where the OO API takes parameter
+  blocks, `Boost.Multiprecision` for INT128/DECFLOAT. Each twin's header
+  comment names the instructive diff against its OO-API sibling — what the
+  wrapper absorbs (TPB/DPB/SPB bytes, status-vector plumbing, message
+  buffers) and where it hands back the raw interface (`getHandle()` for
+  service actions it does not wrap). Built as `fbcpp_<topic>` by the same
+  CMake run when Boost is installed; they share only the tiny
+  [`fb-cpp/fbcpp_sample.h`](fb-cpp/fbcpp_sample.h) (credentials + error
+  reporting), because the wrapper leaves almost no boilerplate to share.
 - **`nodejs/<topic>.js`** — the JavaScript twin, sharing
   [`nodejs/common.js`](nodejs/common.js) (promisified attach/query/
   transaction, raw-TPB isolation constants). Where the driver cannot reach
@@ -67,12 +80,19 @@ under `/tmp/fbhandson/` (create it once: `mkdir -p /tmp/fbhandson && chmod
 
 ## Prerequisites
 
-- A C++17 compiler.
-- The Firebird API headers, provided by the `extern/firebird` submodule:
+- A C++17 compiler (C++20 for the `fb-cpp/` twins).
+- The Firebird API headers, provided by the `extern/firebird` submodule —
+  and, for the `fb-cpp/` twins, the vendored fb-cpp sources plus the Boost
+  headers (fb-cpp loads `libfbclient` at runtime through Boost.DLL, so
+  those binaries never link it):
 
   ```sh
-  git submodule update --init extern/firebird
+  git submodule update --init extern/firebird extern/fb-cpp
+  sudo apt install libboost-dev libboost-filesystem-dev   # Debian/Ubuntu
   ```
+
+  Without Boost or the submodule the CMake run simply skips the fb-cpp
+  twins with a warning; everything else still builds.
 
 - The Firebird client library and a server to talk to:
 

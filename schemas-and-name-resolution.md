@@ -503,6 +503,17 @@ PLAN ("PUBLIC"."CUSTOMERS" NATURAL)
 
 The final `getPlan()` line is the [plans-and-errors observation](#plans-and-errors) from client code: the optimizer reports the *resolved* qualified name, so the plan itself documents which schema won.
 
+### fb-cpp sample — [`samples/fb-cpp/schemas.cpp`](samples/fb-cpp/schemas.cpp)
+
+The same five demonstrations through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. Nothing schema-specific needs the API — the search path is session state the engine keeps — so the twin is a near-straight port whose diffs are all plumbing: every one-row probe is a `Statement` whose answer comes back as `std::optional<std::string>`, the idempotent cleanup catches typed `DatabaseException`s instead of checking status vectors, and the plan arrives via `StatementOptions().setPrefetchLegacyPlan(true)` + `getLegacyPlan()` where the OO-API version calls `IStatement::getPlan()`. Same resolution rules, same engine state, observed through a typed surface.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_schemas
+```
+
+Verified: identical resolution story — `from PUBLIC` then `from APP` as the path changes, `"APP", "SYSTEM"` after the auto-append, `APP.WHICH_ONE` still answering `from APP` (with `RDB$DEPENDENCIES` recording `APP.CUSTOMERS`) after the session flips to `PUBLIC`, and the plan reporting the resolved name `PLAN ("PUBLIC"."CUSTOMERS" NATURAL)`.
+
 ### JavaScript sample — [`samples/nodejs/schemas.js`](samples/nodejs/schemas.js)
 
 The twin (`cd samples/nodejs && node schemas.js`) needs no special driver support — resolution is entirely server-side — but it demonstrates one architectural point the C++ sample cannot: node-firebird wraps every `query()` in its own short transaction, and `SET SEARCH_PATH` *still* carries over to the next call, proving the search path is **attachment** state, not transaction state (`att_schema_search_path` lives on the [`Attachment`](extern/firebird/src/jrd/Attachment.h#L597), as described above). Verified:

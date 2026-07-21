@@ -354,6 +354,17 @@ authenticated  : SYSDBA
 detached. bye
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/protocol.cpp`](samples/fb-cpp/protocol.cpp)
+
+The same negotiated-session report through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is on both sides of the call: the DPB the OO-API sample assembles with `IXpbBuilder` becomes an `AttachmentOptions` builder (`defaultOptions().setConnectionCharSet("NONE")`), and where that sample hand-decodes each `RDB$GET_CONTEXT` answer out of the fetch buffer (2-byte length prefix, trailing blanks), here every answer is one `att.queryScalar<std::string>(...)` returning `std::optional` — with `value_or("(none)")` standing in for the NULL that `WIRE_CRYPT_PLUGIN` reports on an unencrypted connection. The `Attachment` constructor still runs the entire `op_connect` / `Srp256` / `op_crypt` handshake through fbclient; nothing changes on the wire.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_protocol
+```
+
+Verified: output matches the OO-API sample line for line — engine version `6.0.0`, protocol `TCPv4`, wire crypt `ChaCha64`, authenticated `SYSDBA`.
+
 ### JavaScript samples — [`samples/nodejs/query.js`](samples/nodejs/query.js) and [`samples/nodejs/srp-handshake.js`](samples/nodejs/srp-handshake.js)
 
 `query.js` (`cd samples/nodejs && node query.js`) is the same report through node-firebird — re-verified, and still negotiating **Arc4** where fbclient picks ChaCha64, the two-clients-one-server contrast discussed [above](#wire-encryption-from-the-session-key-to-the-cipher). `srp-handshake.js` (`node srp-handshake.js`) is the from-scratch implementation: on re-run it again negotiated protocol 20 and plugin `Srp256` and attached over Arc4, but every SRP value differed from the transcript in [Worked examples](#worked-examples) — `a` and `b` are random per session, so `A`, `B`, `u`, `S`, `K` and the proof `M` are session-specific (this run's `K` did *not* start with `00`; the captured one did, which is exactly the 1-in-256 edge case of [deviation 2](#how-firebirds-srp-differs-from-the-papers)).

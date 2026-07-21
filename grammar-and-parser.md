@@ -207,6 +207,17 @@ Dynamic SQL Error
 -At line 1, column 8
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/parser_errors.cpp`](samples/fb-cpp/parser_errors.cpp)
+
+The same six strings fed to the parser through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. Here "prepare" is just constructing a `Statement` — fb-cpp prepares in the constructor and always prefetches metadata, so a successful parse hands back ready-made `Descriptor` vectors (`getInputDescriptors()`, `getOutputDescriptors()`: type, length, name per parameter and column) instead of manual `IMessageMetadata` calls, and a failed parse throws a typed `DatabaseException` whose `what()` carries the fully formatted status chain, `getErrors()` the raw status vector, and `getErrorCode()` the first gds code.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_parser_errors
+```
+
+Verified: the parser facts are identical to the OO-API run — `sqltype=500, length=2` for the `?` parameter, both `FIRST` roles parse OK, `Token unknown - line 1, column 1` / `line 3, column 7`, and `Column unknown "FRST_NAME" At line 1, column 8` — with the typed layer adding structure the OO sample had to format by hand: each failure reports `getErrorCode()=335544569` (`isc_dsql_error`) and a decoded status vector (4 gds codes, 1 string, 3 numbers for the syntax errors; 5 gds codes for the semantic one, the extra code being the deeper `-206` chain).
+
 ### JavaScript sample — [`samples/nodejs/parser_errors.js`](samples/nodejs/parser_errors.js)
 
 The same six statements through node-firebird (`cd samples/nodejs && node parser_errors.js`). The driver has no separate prepare step — each `query()` allocates, prepares and executes in one round trip — but the parser's status vector travels back over the [wire protocol](firebird-wire-protocol.md) unchanged, so the identical `Token unknown - line 3, column 7 / ORDER` report surfaces as the JavaScript error message. Successful parses are shown by the rows they return (`SELECT FIRST 1 emp_no` → `EMP_NO=2`), including the parameterised query executed with `[2]` bound to the `?`.

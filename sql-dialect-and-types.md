@@ -163,6 +163,17 @@ TRUE 170141183460469231731687303715884105727 0.1   2026-07-21 12:00:00.0000 Euro
 
 Note the round-trip fidelity: INT128's full 39 digits, `0.1` exactly, and the *named zone* `Europe/Bucharest` — not an offset.
 
+### fb-cpp sample — [`samples/fb-cpp/types.cpp`](samples/fb-cpp/types.cpp)
+
+The same showcase table through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — with the coercion trick removed. Where the OO-API sample cast every column to VARCHAR and let the server's CVT rules render text, this one fetches each column *typed*: `getBool` yields a C++ `bool`, `getBoostInt128` a real 128-bit integer (Boost.Multiprecision, so the program can recompute `(1 << 127) - 1` and compare), `getBoostDecFloat34` a 34-digit decimal that equals `BoostDecFloat34{"0.1"}` exactly, and `getTimestampTz` a `{std::chrono UTC instant, zone name}` pair. The wire type codes come from fb-cpp's cached `Descriptor` per column (`originalType`) instead of raw `IMessageMetadata::getType` calls, and the domain violation arrives as a typed `DatabaseException` with `getErrorCode()`.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_types
+```
+
+Verified: the same wire codes (32764, 32752, 32762, 32754, 448) via `Descriptor.originalType`; the CHECK fires as gds 335544347 with the same `validation error for column "PUBLIC"."SHOWCASE"."MAIL"` text; and the typed round-trip adds what VARCHAR coercion could not show — `== (1 << 127) - 1 computed in Boost? yes`, `== exactly 0.1? yes`, and the zone split into `zone = "Europe/Bucharest", UTC instant = 2026-07-21 09:00`.
+
 ### JavaScript sample — [`samples/nodejs/types.js`](samples/nodejs/types.js)
 
 The same table through node-firebird 2.11 (`cd samples/nodejs && node types.js`) is a study in driver coverage: a pure-JavaScript wire-protocol driver must decode every wire type itself, and the FB4 types are exactly where it shows. Verified:

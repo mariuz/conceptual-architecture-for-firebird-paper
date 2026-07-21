@@ -168,6 +168,17 @@ A conflicting update failed as designed:
 done.
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/transactions_demo.cpp`](samples/fb-cpp/transactions_demo.cpp)
+
+The same scenario through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff against the OO-API version is the TPB: the three raw byte decisions (`isc_tpb_concurrency`, `isc_tpb_read_committed, isc_tpb_rec_version`, `isc_tpb_nowait`) become three typed builder calls — `setIsolationLevel(TransactionIsolationLevel::SNAPSHOT)`, `setReadCommittedMode(TransactionReadCommittedMode::RECORD_VERSION)`, `setWaitMode(TransactionWaitMode::NO_WAIT)` — and nullable fetches come back as `std::optional`. Same engine, same TPB on the wire, one abstraction level up.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_transactions_demo
+```
+
+Verified: output matches the OO-API sample line for line, with the conflict surfaced as a typed `DatabaseException` (`getErrorCode()` = 335544336 `isc_deadlock`, `what()` carrying the full three-line chain).
+
 ### JavaScript sample — [`samples/nodejs/transactions.js`](samples/nodejs/transactions.js)
 
 The same scenario through node-firebird's pure-JavaScript wire-protocol driver (`cd samples/nodejs && npm install && node transactions.js`). One behavioural difference is itself instructive: node-firebird's default TPB is **WAIT**, so the conflicting update *blocks* until the holder commits and only then raises the conflict — the sample commits the blocker after 300 ms to let the error surface, exactly the WAIT-policy behaviour described [above](#locking-waiting-and-conflicts).

@@ -433,6 +433,17 @@ done.
 
 Demo 3's message is, verbatim, `ElementBase::newVersionBusy`'s `raiseFmt` — family `table`, `MetaId` 128, and the transaction number holding the uncommitted head of the chain.
 
+### fb-cpp sample — [`samples/fb-cpp/metadata_cache.cpp`](samples/fb-cpp/metadata_cache.cpp)
+
+The same four demonstrations from two attachments A and B through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is on both sides of the errors: B's open SNAPSHOT in demo 2 is declared as a typed transaction option rather than a raw `isc_tpb_concurrency` byte, and every failure arrives as a typed `DatabaseException` whose `what()` already carries the formatted status chain — no `IUtil::formatStatus` plumbing — with the numeric code available separately through `getErrorCode()`.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_metadata_cache
+```
+
+Verified: line-for-line agreement with the OO-API run — the same `-206` `Column unknown "E"` for B, the same `newVersion: table 128 is used by transaction 10`, the same three `RDB$FORMATS` shapes — plus one typed extra: the demo-3 failure also reports `gds 335544351` (`unsuccessful metadata update`) from `getErrorCode()`.
+
 ### JavaScript sample — [`samples/nodejs/metadata_cache.js`](samples/nodejs/metadata_cache.js)
 
 The same two-attachment script over the wire protocol (`cd samples/nodejs && node metadata_cache.js`), using node-firebird's explicit transactions for the uncommitted DDL and `ISOLATION.SNAPSHOT` for demo 2. Verified output matches the C++ run line for line — same `-206 Column unknown`, same `newVersion: table 128 is used by transaction 10`, same three formats — which is itself the point: the visibility rule lives in the server's cache, and every client sees the same one.

@@ -195,6 +195,17 @@ done.
 
 One honest footnote to the multi-process story in Figure 2: whether two *processes* may hold the same file open concurrently is governed by `ServerMode` even in embedded — with the default (`Super`) the second embedded attach fails with SQLSTATE 08001 *"Database already opened with engine instance, incompatible with current"*; the shared-lock-table coexistence described by `README.user.embedded` requires `ServerMode = Classic`/`SuperClassic` in the `firebird.conf` the embedded engine reads (settable per application via the `FIREBIRD` environment variable). The concurrency that needs no configuration is *within* the process: many attachments and writing transactions, full MVCC.
 
+### fb-cpp sample — [`samples/fb-cpp/embedded_demo.cpp`](samples/fb-cpp/embedded_demo.cpp)
+
+The same demonstration through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — with one extra rung on the ladder. Because `Client{"fbclient"}` loads even the *client* library at runtime (via Boost.DLL) instead of link-time `libfbclient` dependency, `/proc/self/maps` now shows three states rather than two: before `Client{}` not even `libfbclient` is mapped; after `Client{}` the client is in but the engine is not; after the first local-path attach the Y-valve has pulled `libEngine14.so` — the full server — into the process. The rest is the same experiment one abstraction up: detach becomes `~Attachment()` running at scope exit (which is what the timing loop measures), and the count/protocol/pid row comes back through typed `getInt64`/`getString`/`getInt32` accessors returning `std::optional`, so in-process `NETWORK_PROTOCOL` is an empty optional rather than a NULL indicator.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_embedded_demo
+```
+
+Verified: the three-state map progression printed exactly as described (`libfbclient mapped=no` → `yes` with `libEngine14 mapped=no` → both `yes`); `rows=3 max(name)=sprocket NETWORK_PROTOCOL=<null: in-process>` with `engine pid=6066, my pid=6066`; and the continuum measured at `2.11 ms` embedded vs `14.89 ms` remote attach+detach average over 5 runs — same order-of-magnitude gap as the OO-API run, both absolute numbers smaller on this pass.
+
 ### JavaScript sample — [`samples/nodejs/embedded-demo.js`](samples/nodejs/embedded-demo.js)
 
 The twin (`cd samples/nodejs && node embedded-demo.js`) can only do the remote half, and says so: measured `48.73 ms` average attach+detach over the wire, and *no embedded number at all*. The gap is architectural — embedded mode is native engine code (`libEngine14.so`) loaded through the native client's Y-valve, and a driver that reimplements the wire protocol in pure JavaScript has no native code to load. A local path in its options would still be opened by a *server* process, not by node. This is the SQLite comparison inverted: SQLite bindings for node embed trivially (the engine is just C code in the process) but can never become a network client; node-firebird is the mirror image.

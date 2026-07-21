@@ -326,6 +326,17 @@ done.
 
 The census is the catalog bootstrap made visible: 40 pointer pages and 40 index roots — one pair per on-disk system relation, allocated by `DPM_create_relation` at creation (see [catalog bootstrap](catalog-bootstrap.md); the remaining system relations are virtual `MON$`/`SEC$`-style tables with no pages) — and exactly one TIP, one PIP, one generator page and one SCN page, matching the [page-type table](#the-page-types) row for row.
 
+### fb-cpp sample — [`samples/fb-cpp/ods_header.cpp`](samples/fb-cpp/ods_header.cpp)
+
+The same read of page 0 through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — and an instructive split. The database half shrinks to a few typed calls: `Client`, `Attachment`, `Transaction`, `Statement`, with the `MON$DATABASE` columns coming back as `std::optional` via `getString(i).value_or("?")`. The raw half cannot shrink at all: it is the same plain `fopen`/`fread` decoding bytes at the offsets `ods.h` pins with `static_assert`s, because no wrapper can abstract the file format away — which is this document's point: the file *is* the database.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_ods_header
+```
+
+Verified: against its own scratch file `/tmp/fbhandson/ods_fbcpp.fdb` the header facts match the OO-API sample exactly — `hdr_ods_version @18 = 0x800e -> ODS 14`, page size 8192, TIP markers next 5 / OIT 4 / OAT 5 / OST 5, and the identical 294-page census (40 `pag_pointer`, 40 `pag_root`, 106 `pag_index`, 97 `pag_data`, one each of header/PIP/TIP/generators/SCN) — only the GUID differs (`{3874A163-16DA-411B-AAD9-3AE0EC15C0EA}`), as every database gets its own.
+
 ### JavaScript sample — [`samples/nodejs/ods_header.js`](samples/nodejs/ods_header.js)
 
 The same parse is arguably *more* natural in Node — `Buffer.readUInt16LE(18)`, `readBigUInt64LE(48)` — with no C structs anywhere (`cd samples/nodejs && node ods_header.js`). Two instructive deltas in its verified output: node-firebird creates its scratch database with a **32 KB** page size (the driver's own creation default, unlike `fb_sample.h`'s 8 KB), and the census shows ten pages of **type 0** — pages preallocated by file extension but not yet formatted, a page state the C++ run's smaller file didn't happen to exhibit:

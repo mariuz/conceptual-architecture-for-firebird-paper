@@ -523,6 +523,17 @@ done.
 
 This is the [dispatch path](#the-dispatch-path-how-an-event-reaches-a-plugin) end to end: the worker's attachment saw the registry's change counter move, attached the `fbtrace` plugin, and every event site behind `needs()` began paying its cost — statement text, plan, and the per-table `Natural`/`Index` counters all formatted into the shared-memory ring the sample reads back over the wire.
 
+### fb-cpp sample — [`samples/fb-cpp/trace.cpp`](samples/fb-cpp/trace.cpp)
+
+The same choreography through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — and a demonstration of its escape hatch at full stretch. fb-cpp wraps service *actions* (backup, restore, repair) but not the trace family, so `ServiceManager` owns what it can own — the typed SPB-attach options and RAII detach — while `trace_start`, the line-by-line `isc_info_svc_line` drain and `trace_stop` drop through `getHandle()` to the underlying `IService`, spelling the same raw tags (`isc_action_svc_trace_start`, `isc_spb_trc_cfg`, `isc_spb_trc_id`) as the OO-API version inside an otherwise typed program.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_trace
+```
+
+Verified: the full stream arrives — `Trace session ID 2 started`, the marker's `EXECUTE_STATEMENT_FINISH` with `PLAN ("SYSTEM"."RDB$RELATIONS" NATURAL)`, `0 ms, 68 fetch(es)` and `Natural` = 60 for `"SYSTEM"."RDB$RELATIONS"`, then `TRACE_FINI` and `[stop ] Trace session ID 2 stopped` — with two captured-record deltas against the OO-API run: the attachment's charset reads `NONE` rather than `UTF8`, and the trace shows an extra `(READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY)` transaction started alongside the marker's `CONCURRENCY | WAIT | READ_WRITE` one — fb-cpp's attachment machinery at work, read straight out of the trace.
+
 ### JavaScript sample — [`samples/nodejs/trace.js`](samples/nodejs/trace.js)
 
 The same choreography in pure JavaScript (`cd samples/nodejs && node trace.js`): node-firebird's `ServiceManager.startTraceAsync()` sends the same SPB (its option is named `configfile` but carries the configuration *text* — it lands in `isc_spb_trc_cfg`) and returns the stream as a Node `Readable`; `stopTraceAsync({ traceid })` on a second service connection ends it. Verified: the same event sequence, with two instructive deltas in the captured records — the remote process is identified as `node:209076` instead of the binary path, and the marker statement runs in `(READ_COMMITTED | READ_CONSISTENCY | WAIT | READ_WRITE)` rather than the C++ sample's `CONCURRENCY` — the two drivers' default TPBs, read straight out of the trace stream.

@@ -213,6 +213,17 @@ done.
 
 Both files grow by the same ~330 KB during the insert burst — every page write went to both, synchronously, exactly the "media failure" primitive of [Figure 1](#firebird-ha-building-blocks). (The shadow stays a page or two smaller than the main file: it mirrors used pages, not the main file's preallocation.)
 
+### fb-cpp sample — [`samples/fb-cpp/ha.cpp`](samples/fb-cpp/ha.cpp)
+
+The same lifecycle through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. `CREATE SHADOW`/`DROP SHADOW` are plain DSQL, so the wrapper changes nothing about the mechanism — the diff is all in the client code around it: `Statement{att, tra, sql}.execute(tra)` one-liners instead of hand-rolled exec helpers, the `RDB$FILES` listing as an ordinary fetch loop with `getString(n).value_or(...)` on `std::optional` results instead of the coerce-to-VARCHAR machinery, and the idempotent cleanup catching a typed `DatabaseException` rather than inspecting a status vector.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_ha
+```
+
+Verified: same lifecycle on its own scratch database (`ha_fbcpp.fdb`/`ha_fbcpp.shd`) with byte-identical sizes to the OO-API run — `2564096`/`2433024` after `CREATE SHADOW`, `2899968`/`2818048` after 5000 inserts, shadow gone (`-1 bytes`) and `RDB$FILES rows left: 0` after `DROP SHADOW 1 DELETE FILE`; the `RDB$FILES` row prints as `shadow file /tmp/fbhandson/ha_fbcpp.shd   number 1   flags 1`.
+
 ### JavaScript sample — [`samples/nodejs/ha.js`](samples/nodejs/ha.js)
 
 The identical exercise through node-firebird (`cd samples/nodejs && node ha.js`) — `CREATE SHADOW`/`DROP SHADOW` are ordinary DSQL statements, so the pure-JavaScript driver needs nothing special; `fs.statSync` plays the role of `stat()`. Verified: same lock-step growth, `RDB$FILES rows left: 0` after the drop. Run it twice: both samples clean up after themselves (`DROP SHADOW ... DELETE FILE` on entry), demonstrating that the shadow lifecycle is fully scriptable from a client.

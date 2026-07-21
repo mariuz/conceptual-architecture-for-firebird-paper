@@ -1,3 +1,6 @@
 [submodule "extern/firebird"]
 	path = extern/firebird
 	url = https://github.com/FirebirdSQL/firebird.git
+[submodule "extern/fb-cpp"]
+	path = extern/fb-cpp
+	url = https://github.com/asfernandes/fb-cpp

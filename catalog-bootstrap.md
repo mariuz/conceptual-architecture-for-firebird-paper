@@ -194,6 +194,17 @@ done.
 
 Section 2's second row is this document's [thesis in one line](#bootstrap-in-action-validated): the row saying where `RDB$PAGES` lives, stored in `RDB$PAGES`, readable only because `hdr_PAGES` already said "page 3".
 
+### fb-cpp sample — [`samples/fb-cpp/catalog.cpp`](samples/fb-cpp/catalog.cpp)
+
+The same four self-description queries through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The catalog content is unchanged by definition; what the wrapper absorbs is the plumbing around it: drop-and-recreate is a `dropDatabase()` call plus an attach with `defaultOptions().setCreateDatabase(true)` — no `CREATE DATABASE` DPB tag to assemble — DDL goes through `Attachment::execute()`, and every catalog value fetches as a `std::optional<std::string>` via `getString`, with `value_or("<null>")` standing in for null-indicator checks. The `hdr_PAGES` cross-check stays deliberately primitive — `fopen`/`fseek` to byte 28 of page 0 — because that anchor lives below every API.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_catalog
+```
+
+Verified: identical fixed points to the OO-API run — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `0 / 60 / 598` for formats/system relations/system columns, and user DDL planting formats 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128. Even the incidental page numbers (TIP on 287, generator page on 85) came out the same as the documented OO-API run on this fresh file.
+
 ### JavaScript sample — [`samples/nodejs/catalog.js`](samples/nodejs/catalog.js)
 
 The same four steps over the wire protocol (`cd samples/nodejs && node catalog.js`), with the `hdr_PAGES` cross-check done the Node way — `fs.readSync` of four bytes at offset 28, `readUInt32LE`. Verified output matches the C++ run (same fixed ids, same `0 / 60 / 598`, same two format rows for relation 128); only incidental page numbers differ (e.g. the TIP landed on page 223 rather than 287 — allocation order is not part of the contract, the fixed points are). One driver note: `Firebird.drop()` holds its socket open, so the sample ends with an explicit `process.exit(0)`.

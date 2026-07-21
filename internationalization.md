@@ -157,6 +157,17 @@ SELECT name_win FROM t WHERE name_bin = 'Café' — same row, two connections:
 
 The column stores the WIN1252 byte `E9`; the UTF8 connection receives the transliterated pair `C3 A9`, the NONE connection the raw stored byte — same row, different bytes, chosen by `isc_dpb_lc_ctype` alone. An implementation note in the sample matters for API users: `fb_sample.h`'s generic `query()` coerces output to `CS_NONE`, which *suppresses* transliteration (both connections would show `E9`), so the demo fetches with the statement's own output metadata instead.
 
+### fb-cpp sample — [`samples/fb-cpp/intl.cpp`](samples/fb-cpp/intl.cpp)
+
+The same three demonstrations through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is precisely the implementation note above: where the OO-API sample needed a raw-fetch workaround to escape its own `CS_NONE`-coercing query helper, fb-cpp always fetches through the statement's own output metadata, so `getString()` hands over exactly the bytes the engine transliterated into the connection charset — the effect this sample measures, with no workaround. The connection charset itself shrinks from an `isc_dpb_lc_ctype` DPB item to one typed builder call, `setConnectionCharSet("UTF8")` / `setConnectionCharSet("NONE")` (fb-cpp sets no lc_ctype at all unless asked).
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_intl
+```
+
+Verified: same numbers as the OO-API run — 3 vs 1 matches for `UNICODE_CI_AI` vs `UCS_BASIC`, `UPPER('café èñ ß')` → `CAFÉ ÈÑ ß`, and the same row hex-dumped over two connections as `len= 5  43 61 66 C3 A9` (UTF8 connection) against `len= 4  43 61 66 E9` (NONE connection).
+
 ### JavaScript sample — [`samples/nodejs/intl.js`](samples/nodejs/intl.js)
 
 The twin (`cd samples/nodejs && node intl.js`) maps `encoding:` to the connection charset and lands in the same two worlds — plus a driver-side wrinkle. Verified (codepoints of the received JS strings in brackets):

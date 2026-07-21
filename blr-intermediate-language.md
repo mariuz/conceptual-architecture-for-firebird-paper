@@ -358,6 +358,17 @@ SET BLOB ALL;  -- isql: render blobs through the engine's BLR blob filter
 SELECT RDB$PROCEDURE_BLR FROM RDB$PROCEDURES WHERE RDB$PROCEDURE_NAME = 'GET_EMP_PROJ';
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/blr.cpp`](samples/fb-cpp/blr.cpp)
+
+The same read through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. What changes is only the *fetching*: the OO API's `openCursor`/`fetch`/`openBlob`/`getSegment` plumbing collapses into `Statement::getBlobId(0)` — a `std::optional` blob id, so the NULL-blob case is a `has_value()` check — plus the `fbcpp::Blob` class, whose `getLength()` sizes a vector and whose one `read(std::span{...})` call fills it. The decoders are copied unchanged from the OO-API version and still `#include` `firebird/impl/blr.h` for the real opcode values, because the *bytes* are identical: BLR is a stored artifact, and no client-side abstraction level touches it.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_blr
+```
+
+Verified: byte-for-byte the same dump as the OO-API run — `FULL_NAME`'s BLR is the identical 37 bytes (`05 27 27 17 00 09 4c ...`) decoding to `blr_concatenate` over `LAST_NAME`, the `", "` literal and `FIRST_NAME`, ending in `blr_eoc`; `GET_EMP_PROJ` is 155 bytes whose openings decode to `blr_message 0, 2 fields` and `blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)`.
+
 ### JavaScript sample — [`samples/nodejs/blr.js`](samples/nodejs/blr.js)
 
 The same read through node-firebird (`cd samples/nodejs && node blr.js`). Blob columns arrive as a function that streams `Buffer` chunks; the sample collects them and runs the identical mini-disassembler (opcode values transcribed from `blr.h`). The output is **byte-for-byte identical** to the C++ run — `05 27 27 17 00 09 4c ...`, 37 bytes — which is the document's stability argument made empirical: two unrelated client stacks, one wire protocol, one stored artifact, no translation anywhere.

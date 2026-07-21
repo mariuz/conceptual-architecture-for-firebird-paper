@@ -248,6 +248,17 @@ temporary user and role dropped. done.
 
 The same user sees 1 attachment without the role and 2 with it — one grantable system privilege visibly changing what `MON$` exposes. Two engine behaviours surfaced while writing this: **user management is deferred work executed at commit** — `GRANT ... TO USER` fails with "record not found for user" if the `CREATE USER` hasn't been fully committed first, and a `DROP USER` of a missing user reports its error at `COMMIT`, not at execute; and on this Firebird 6 snapshot, continuing to use a transaction after a `COMMIT RETAINING` that performed `CREATE USER` **crashed the server** (guardian restart, `terminated abnormally (-1)` in `firebird.log`) — reproduced twice, so the sample gives every user-management batch its own transaction and a full commit.
 
+### fb-cpp sample — [`samples/fb-cpp/security.cpp`](samples/fb-cpp/security.cpp)
+
+The same four steps through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API, under its own user/role names (`FBCPP_USER`, `FBCPP_MONITOR`) so both twins can run side by side. The instructive diffs sit at the two DPB touchpoints: the role travels as `AttachmentOptions().setUserName(...).setPassword(...).setRole("FBCPP_MONITOR")` instead of a hand-inserted `isc_dpb_sql_role_name`, and the wrong password surfaces as a typed `DatabaseException` whose `getErrorCode()` is the first gds code rather than a status vector to format. The engine rules are unchanged — user management is still deferred work executed at commit, so the twin keeps the one-transaction-per-DDL-batch, full-commit discipline the OO-API sample adopted after the `COMMIT RETAINING` crash described above.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_security
+```
+
+Verified: same layer-by-layer story — `auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4` on every attachment, `FBCPP_USER`/`Srp`/`FALSE` in `SEC$USERS`, 1 visible attachment without the role and 2 with it — and the failed login carrying the typed code the OO-API output only implies: `gds 335544472 (isc_login)` above the familiar "Your user name and password are not defined" line.
+
 ### JavaScript sample — [`samples/nodejs/security.js`](samples/nodejs/security.js)
 
 The read-only observations through the pure-JS driver (`cd samples/nodejs && node security.js`), and the client-dependence of layer 2 is the point. Verified output (first line):

@@ -169,6 +169,17 @@ same row fetched with every column coerced to VARCHAR:
 
 Two details reward attention. `NUMERIC(38,8)` describes as `SQL_INT128` with scale −8 — high-precision numerics ride on the INT128 carrier, so a driver that "supports NUMERIC" but not `SQL_INT128` fails on wide columns. And the text face preserves everything, named time zone included — which is why "cast to text on the way out" is the universal fallback in the [flat-file and ETL paths](#runtime-interoperability) above.
 
+### fb-cpp sample — [`samples/fb-cpp/migration.cpp`](samples/fb-cpp/migration.cpp)
+
+The same `TYPE_PROBE` table through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API, probed on both faces. The DESCRIBE face comes from fb-cpp's cached `Descriptor` structs — the same `SQL_*` codes `IMessageMetadata` reports, one struct per column instead of five interface calls — and for the text face, where the OO-API sample coerced every column to `VARCHAR` so the server's CVT rules rendered the strings, `getString()` converts client-side from the native wire value; `getBoostInt128()` then reads the same column as a native 128-bit Boost.Multiprecision integer, proving the value never rode through text at all.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_migration
+```
+
+Verified: identical wire codes — `C_NUM` still describes as `32752 SQL_INT128` with scale `-8` — and identical digits for every value (`C_INT128` = `170141183460469231731687303715884105727` both as a string and as a native int128), with two client-side deltas worth noticing: `C_BOOL` renders as lowercase `true` (fb-cpp's own rendering, not the server's `TRUE`), and `C_VC` describes as length 20 where the OO-API run showed 80, because the fb-cpp helper attaches with no connection charset to a database created with engine defaults, so the `VARCHAR(20)` travels at one byte per character instead of in a UTF8-coerced 4-bytes-per-char buffer.
+
 ### JavaScript sample — [`samples/nodejs/migration.js`](samples/nodejs/migration.js)
 
 The same table probed column by column through node-firebird (`cd samples/nodejs && node migration.js`) — a pure-JavaScript driver forced to map each wire type onto JavaScript's few value types, exactly the downcasting problem every migration faces. Verified results, which are the document's ⚠ marks reproduced live:

@@ -379,6 +379,17 @@ MON$STAT_GROUP COUNT SUM      SUM      COUNT
 
 Three of this document's claims, measured. Every group-1/2/3 pool shows `allocated = 0` — [parent redirection](#parent-redirection) live — while the one `cmp_statement` pool that crossed the threshold mapped exactly **65 536** bytes, one `DEFAULT_ALLOCATION` extent. The rollback line is the [bulk-free design](#the-pool-is-the-lifetime) *and* the [nested statistics](#six-levels-of-attribution) in a single subtraction: the attachment's `used` fell from 78 464 to 57 696 — by **20 768 bytes, exactly the dead transaction pool's total** — because `increment_usage()` had counted every transaction-pool byte in the attachment group too. And a negative result echoing [where sort memory does not appear](#where-sort-memory-does-not-appear): 3000 old record versions grew the transaction pool by only ~7 KB, because undo *bookkeeping* lives in the pool while the undo record *data* rides in `TempSpace`-backed buffers accounted elsewhere.
 
+### fb-cpp sample — [`samples/fb-cpp/memory_pools.cpp`](samples/fb-cpp/memory_pools.cpp)
+
+The same walk through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. Where the OO-API version splices attachment and transaction ids into the SQL text, fb-cpp binds them as typed parameters — a `std::tuple` against the `?` placeholders — and each usage row lands directly in a struct via `queryFirstRowAs<PoolUsage>()`. One cursor idiom is worth learning from this sample: fb-cpp's `Statement::execute()` already fetches a SELECT's first row (its return value says whether one arrived), so row loops are written `for (bool more = stmt.execute(t); more; more = stmt.fetchNext())` — the `execute` + `while (fetchNext())` shape silently drops the first row, and this sample's first version lost the group-0 summary line exactly that way.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_memory_pools
+```
+
+Verified: the redirection signature holds — every group-1/2/3 pool shows `allocated = 0` while the one `cmp_statement` pool that crossed the threshold mapped exactly 65 536 bytes — and the rollback subtraction repeats with this run's numbers: the worker attachment's `used` fell from 78 880 to 58 112, by 20 768 bytes, exactly the dead transaction pool's total.
+
 ### JavaScript sample — [`samples/nodejs/memory_pools.js`](samples/nodejs/memory_pools.js)
 
 The same walk from node-firebird (`cd samples/nodejs && node memory_pools.js`), which computes the roll-up arithmetic itself:

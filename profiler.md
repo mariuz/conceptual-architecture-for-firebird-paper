@@ -423,6 +423,17 @@ done.
 
 The signatures from the [live demonstrations](#live-demonstrations) reappear on this fresh database: line 8 (the singleton `SELECT` in the loop) dominates at 46 ms over 20,000 executions, and line 6 — the `WHILE` — counts **20,001**, the loop test that runs once more to decide to stop.
 
+### fb-cpp sample — [`samples/fb-cpp/profiler.cpp`](samples/fb-cpp/profiler.cpp)
+
+The same session through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — and because the control surface is a SQL package and the output a SQL schema, nothing is lost in the wrapper; what changes is only the fetch idiom. `START_SESSION` returns through `queryScalar<std::int64_t>`, the `PROFILE_ID` is bound with `setInt64(0, profileId)`, and the two views come back through `Statement` loops with `std::optional` column getters. The autonomous-transaction pitfall applies unchanged: the sample must hard-`commit()` and open a genuinely new `Transaction` before reading `PLG$PROFILER`, exactly as the OO-API version discovered.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_profiler
+```
+
+Verified: the same shapes on its own scratch database — the identical seven-operator hash-join tree (`Hash Join (inner) (keys: 1, total key length: 4)`, 5001/10001 fetch counters), line 8 dominating the PSQL ranking at 8,714,739 ns over 20,000 executions, and the `WHILE` on line 6 counting 20,001; this warmer run is faster than the OO-API sample's documented one (8.7 ms vs 46 ms for line 8), which reshuffles the time-ordered ranking below the hotspot — the counters, not the times, are the reproducible part.
+
 ### JavaScript sample — [`samples/nodejs/profiler.js`](samples/nodejs/profiler.js)
 
 The twin (`cd samples/nodejs && node profiler.js`) profiles its own `hotspot_js` procedure and reads the same per-line ranking back (verified: line 8 at 41 ms / 20,000 executions, line 6 at 20,001). As with [extensibility](extensibility.md), the pure-JS driver loses nothing, and that is the payoff of [the plugin's central choice](#the-plugin-and-why-the-output-is-a-schema): the control surface is a SQL package and the output is a SQL schema, so *any* client that can run queries can profile — no native API, no log-file access, no special protocol. (node-firebird's one-transaction-per-query style also sidesteps the snapshot subtlety the C++ sample had to handle explicitly.)

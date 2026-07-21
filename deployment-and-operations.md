@@ -184,6 +184,17 @@ done.
 
 `ServerMode = Super` confirms [Figure 2's default](#servermode-three-execution-models) from inside a client, and the empty "explicitly set" table is itself informative: this server runs on stock defaults, every one of which `RDB$CONFIG` still reports with its effective value.
 
+### fb-cpp sample — [`samples/fb-cpp/deployment.cpp`](samples/fb-cpp/deployment.cpp)
+
+The same self-portrait through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is where type conversion lives: the OO-API sample coerces every output column to `VARCHAR` server-side so its message buffer only ever holds strings, while fb-cpp lets the queries stay plain `SELECT` and converts client-side — `getString(0)` renders numbers and booleans, `getBool(2)` reads `RDB$CONFIG_IS_SET` as a real `bool`, and every fetch comes back as `std::optional`, so the unset `WireCrypt` value surfaces as an empty optional handled with `value_or("<null>")` rather than a NULL-indicator check.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_deployment
+```
+
+Verified: the three layers report the same facts as the OO-API run — ODS `14.0`, page size `8192`, sweep interval `20000`, `ServerMode Super` among 69 `RDB$CONFIG` settings all `is_set=false`, engine `6.0.0` over `TCPv4` with `ChaCha64` wire encryption — with the empty explicitly-set table rendered as "(none — this server runs on stock defaults)".
+
 ### JavaScript sample — [`samples/nodejs/deployment.js`](samples/nodejs/deployment.js)
 
 The same three layers through node-firebird (`cd samples/nodejs && node deployment.js`). One line differs, and instructively so: `WIRE_CRYPT_PLUGIN` reports **`Arc4`** instead of fbclient's **`ChaCha64`** — the two clients negotiated different wire-encryption plugins with the same server (node-firebird implements only the older Arc4), a per-session deployment fact that `RDB$CONFIG`'s server-wide `WireCrypt` row cannot show.

@@ -197,6 +197,17 @@ TracePlugin           fbtrace
 WireCryptPlugin       ChaCha64, ChaCha, Arc4
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/extensibility.cpp`](samples/fb-cpp/extensibility.cpp)
+
+The same UDR walk through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. Because every extension seam in this document lives on the server side of the wire, the mirror is nearly 1:1 and the instructive diff is confined to client idiom: DDL and calls go through `Attachment::execute`, the single-value `sum_args` call becomes a one-liner `att.queryScalar<std::int32_t>(...)` returning `std::optional<int32_t>`, and the `gen_rows` and system-table listings are plain `Statement` fetch loops with `getInt32`/`getString` — no hand-rolled message metadata anywhere.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_extensibility
+```
+
+Verified: `gen_rows(1, 5)` yields `n = 1` through `n = 5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo both bindings (`GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)`, `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`), and the `RDB$CONFIG` plugin roster matches the OO-API run exactly — `Providers Remote, Engine14, Loopback` down to `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
+
 ### JavaScript sample — [`samples/nodejs/extensibility.js`](samples/nodejs/extensibility.js)
 
 The twin (`cd samples/nodejs && node extensibility.js`) does the same DDL, calls and `RDB$CONFIG` listing — and loses *nothing*, in instructive contrast to the [architecture](architecture-comparison.md) and [embedded](embedded-architecture-comparison.md) samples where the pure-JS driver could only reach half the story. The reason: this document's extension seams live on the **server** side of the wire. `EXTERNAL NAME ... ENGINE udr` is plain DDL and `gen_rows(1,5)` a plain `SELECT`; the `udr_engine` plugin loads the native module inside the server process, and the protocol neither knows nor cares that the rows were produced by compiled C++ (`gen_rows(1, 5) -> 1, 2, 3, 4, 5` verified).

@@ -167,6 +167,17 @@ run 'gfix -sweep' (or wait for OAT-OIT > interval) to move the OIT past the stum
 
 Every number is a claim from the sections above made live: `imgc=10` after twelve updates under a pinned snapshot is intermediate GC collecting exactly the ten committed intermediates (head + the snapshot's version survive — the same 12→2 collapse as the [validated experiment](#gc-internals-in-action-validated)); the post-release scan yields one `purge` (chain trimmed, record lives); the committed delete yields one `expunge` (record removed); and the rollback pins the OIT while OAT/OST/Next move on. (The `upd=47` baseline is DDL — MON$ database-level counters aggregate everything, including system-table updates.)
 
+### fb-cpp sample — [`samples/fb-cpp/gc_sweep.cpp`](samples/fb-cpp/gc_sweep.cpp)
+
+The same experiment through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is the MON$ bookkeeping: each counter peek fetches a whole row straight into a plain struct via `queryFirstRowAs<RecordStats>()` — positional aggregate binding, field count checked against column count — instead of a hand-built message buffer, and the OO-API version's two TPB tricks become typed builder calls, `setIsolationLevel(TransactionIsolationLevel::SNAPSHOT)` for the pin and `setNoAutoUndo(true)` for the stump. The twelve updates reuse one prepared `Statement` with a typed `set(0, i)` parameter under a fresh transaction each time.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_gc_sweep
+```
+
+Verified: the record-stats trajectory reproduces the OO-API run exactly — `upd=47` baseline, then `upd=59 imgc=10 backreads=32` after the twelve updates under the pinned snapshot (still reading `val = 0`), one `purge` after release + scan, one `expunge` after the delete — and the stump experiment lands one transaction later on this fresh database (`OIT=28 ... Next=29` before, `OIT=29 ... Next=31` after the `no_auto_undo` rollback), same shape: the OIT freezes at the stump while OAT/OST/Next move on.
+
 ### JavaScript sample — [`samples/nodejs/gc_sweep.js`](samples/nodejs/gc_sweep.js)
 
 The same experiment through node-firebird (`cd samples/nodejs && node gc_sweep.js`). Two instructive deltas in a real run made *after* the C++ one: the database-level counters are cumulative for the life of the loaded database, so the previous run's rolled-back stump is still visible — `OIT=28` stays pinned while `Next` has advanced to 59 — and the post-release cleanup was booked as `imgc=10→11` rather than a `purge`, showing that *which* collector disposes of a chain depends on which code path trips over it first, not on the garbage itself.

@@ -264,6 +264,17 @@ One libfbclient, two providers behind the Y-valve.
 done.
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/architecture_comparison.cpp`](samples/fb-cpp/architecture_comparison.cpp)
+
+The same two attachments through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — and one more loading model on top: `Client{"fbclient"}` resolves and loads the client library *at runtime* via Boost.DLL, so even `libfbclient` itself is a plugin here, one level above the Y-valve loading its providers. The three questions come back typed instead of through message buffers: `stmt.getString(0)` and `getInt32(2)` return `std::optional`, so the embedded attachment's SQL `NULL` for `NETWORK_PROTOCOL` is simply an empty optional rendered by `value_or("<null>")` — no null-indicator bookkeeping.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_architecture_comparison
+```
+
+Verified: same shape as the OO-API run — remote attachment reports `NETWORK_PROTOCOL : TCPv4` with `MON$SERVER_PID : 690` against a client pid of 5998; the embedded attachment (scratch database `/tmp/fbhandson/arch_embedded_fbcpp.fdb`) reports `NETWORK_PROTOCOL : <null>` and `MON$SERVER_PID : 5998 (this process is pid 5998 -- the engine runs IN this process)`.
+
 ### JavaScript sample — [`samples/nodejs/architecture-comparison.js`](samples/nodejs/architecture-comparison.js)
 
 The twin (`cd samples/nodejs && node architecture-comparison.js`) can only reproduce attachment [1]: node-firebird is a pure-JavaScript reimplementation of the **wire protocol only**, so `NETWORK_PROTOCOL` comes back `TCPv4` and `MON$SERVER_PID` is the server's, never node's. That missing second half *is* the architectural point of this document: embedded mode is a property of the native client library's Y-valve/provider stack, not of the server, so a driver that reimplements only the network layer — as most pure drivers for PostgreSQL and MySQL do too — gets exactly the client-server half of Firebird and nothing else. A local path in `options.database` is still resolved *by the server* at `options.host`, not by the node process.

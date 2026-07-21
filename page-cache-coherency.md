@@ -146,6 +146,17 @@ same workload — the private caches paid for coherency in disk I/O.
 
 The `reads` column is the protocol made visible: ~55 physical reads per worker under the shared cache (startup metadata only) versus **~1 040** under private caches — every ping-pong is a blocking AST, a flush in the holder, a downgrade, and a forced re-read in the requester, exactly Figure 2's round trip, because [data travels through the disk](#data-travels-through-the-disk). And both phases end at `v=300`/`v=300`: not one update lost between two independent engines writing one page. (Writes are similar in both phases — the created databases run with forced writes on, so commits flush either way; coherency's own price shows up as *reads*.)
 
+### fb-cpp sample — [`samples/fb-cpp/page_cache.cpp`](samples/fb-cpp/page_cache.cpp)
+
+The same two-topology experiment through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is the referee query: the three `MON$IO_STATS` counters land directly in a plain struct via `att.queryFirstRowAs<IoStats>(...)` — no message buffer, no per-column extraction — and the check phase reads its rows as `std::optional` through `getInt32(i).value_or(-1)`. The fork/exec choreography and the self-built SuperClassic sandbox are unchanged, because cache topology is decided by the connection string, not by the wrapper.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_page_cache
+```
+
+Verified: the same coherency price as the OO-API run — phase 1 (shared cache) reads=36 and 78 per worker, phase 2 (private caches) reads=1053 and 1047, with writes near 900 in both phases and the checker reporting `id=1 v=300` and `id=2 v=300` — no lost updates in either topology. (The first cut of the check loop called `fetchNext()` straight after `execute()` and silently skipped row 1 — `Statement::execute()` already lands on the first row, a real fb-cpp idiom difference worth remembering.)
+
 ### JavaScript sample — [`samples/nodejs/page_cache.js`](samples/nodejs/page_cache.js)
 
 node-firebird is a wire-protocol client, so it can only reach the server's one shared cache — it is the twin of phase 1, and phase 2 is C++-only by nature (you cannot run an embedded engine from a socket). Two connections, same 300-round ping-pong (`cd samples/nodejs && node page_cache.js`):

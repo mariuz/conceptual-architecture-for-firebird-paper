@@ -180,6 +180,17 @@ after COMMIT: delivered count = 3  (correct - one delivery, count 3)
 PASS
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/events.cpp`](samples/fb-cpp/events.cpp)
+
+The same three semantics through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is how much of the client-side dance disappears: where the OO-API sample hand-rolls `isc_event_block` for the EPB, an `IEventCallback` with manual `addRef`/`release`, `isc_event_counts` for the delta, and an explicit re-queue after every one-shot delivery, fb-cpp's `EventListener` does all of that internally — it consumes the baseline, computes per-name deltas, re-queues itself, and hands the callback a `std::vector<EventCount>` of `{name, count}` pairs on a dispatcher thread. What remains for the sample to write is the genuinely application-level part: a mutex/condition-variable rendezvous between that dispatcher thread and `main`.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_events
+```
+
+Verified: `PASS`, with the same three checkpoints as the OO-API run — `delivered count = 0` after `POST_EVENT` + `ROLLBACK`, `0` before `COMMIT` of the triple post, `3` after it ("one delivery, count 3") — the only textual delta being the first line's "(baseline consumed by EventListener)", naming who swallowed the baseline this time.
+
 ### JavaScript sample — [`samples/nodejs/events.js`](samples/nodejs/events.js)
 
 node-firebird implements the whole [auxiliary-channel dance](#the-wire-the-auxiliary-connection) in JavaScript — `db.attachEvent()` sends `op_connect_request` and opens the second socket (`lib/wire/eventConnection.js`), `registerEvent()` sends `op_que_events`, and each `op_event` is emitted as `'post_event'`, after which the driver re-queues the one-shot interest itself. Run: `cd samples/nodejs && node events.js`. Verified output:

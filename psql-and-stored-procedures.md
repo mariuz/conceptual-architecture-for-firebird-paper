@@ -301,6 +301,17 @@ exception 1
 done.
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/psql.cpp`](samples/fb-cpp/psql.cpp)
+
+The same four module types through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The executable-vs-selectable divide the OO-API sample expresses as `execute` versus `openCursor` surfaces here as a queryable property: `Statement::getType()` returns `StatementType::EXEC_PROCEDURE` for `EXECUTE PROCEDURE hire(...)` (one output message — `execute()` fills it, `getInt32(0)` reads it, no cursor anywhere) and `StatementType::SELECT` for the `SUSPEND`-streaming `raises(10)`, where `execute()` opens the cursor and fetches the first row and `fetchNext()` walks the rest. Output values come back as `std::optional`, `NUMERIC(10,2)` renders its scale through `getString()`, and the failing hire throws a typed `DatabaseException` whose `getErrorCode()` and `what()` carry the status vector the OO-API version formats by hand with `IUtil::formatStatus`.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_psql
+```
+
+Verified: `NEW_ID = 1` and `2` both tagged `[type=EXEC_PROCEDURE]`, 2 audit rows from the trigger, `raises(10)` streaming `5500.00` / `6600.00`, and the exception surfacing as `gds 335544517 = isc_except` with the identical four-line chain — `"PUBLIC"."LOW_SALARY"`, `salary below minimum`, `At procedure "PUBLIC"."HIRE" line: 4, col: 29`.
+
 ### JavaScript sample — [`samples/nodejs/psql.js`](samples/nodejs/psql.js)
 
 The same objects called through node-firebird (`cd samples/nodejs && node psql.js`). The driver surfaces the same distinctions in JavaScript shapes: `EXECUTE PROCEDURE hire(?, ?)` resolves to a **plain object** (`{ NEW_ID: 1 }` — one output message, no cursor) while `SELECT ... FROM raises(10)` resolves to an **array of rows**; and the failing call rejects with an `Error` whose message is the identical status vector, stack trace included: `Exception 1, "PUBLIC"."LOW_SALARY", salary below minimum, At procedure "PUBLIC"."HIRE" line: 4, col: 29`.

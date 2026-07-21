@@ -200,6 +200,17 @@ ID AMOUNT CAST
 
 The plan's *four nested SORTs* are the document's execution story in one line: one sort per distinct window ordering plus the final output — grouping and windowing really are "sort, then a group-wise pass". A hypothetical 175-amount sale would rank 3rd in East (above 100 and 150) and 1st in West (below everything), and row 2's neighbour average `125.00 = (100+150)/2` proves its own amount was excluded from its frame.
 
+### fb-cpp sample — [`samples/fb-cpp/windows.cpp`](samples/fb-cpp/windows.cpp)
+
+The same six-row table and the same four query groups through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. Where the OO-API sample coerced whole result sets to VARCHAR so the server would render text, this printer walks fb-cpp's cached `Descriptor`s — which is why its headers show the SELECT-list *aliases* (`RN`, `OVERALL_RANK`, `RUNNING_TOTAL`) instead of the engine field names the OO version printed — and lets `getString()` render each value client-side; `LAG`'s NULL in the first row of every partition arrives as an empty `std::optional`, not a sentinel string. The plan comes prefetched via `StatementOptions().setPrefetchLegacyPlan(true)`.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_windows
+```
+
+Verified: every number matches the OO-API run — the same six-row window output, the same `PLAN SORT (SORT (SORT (SORT ("PUBLIC"."SALES" NATURAL))))`, `RANK(175)` = 3 in East and 1 in West, and row 2's neighbour average `125.00` — with one rendering delta: the medians print as `150.000000`/`300.000000` (client-side formatting of the DOUBLE) rather than the server's 16-digit `150.0000000000000`.
+
 ### JavaScript sample — [`samples/nodejs/windows.js`](samples/nodejs/windows.js)
 
 The twin (`cd samples/nodejs && node windows.js`) runs the same queries through node-firebird — and unlike the FB4 types in the [types](sql-dialect-and-types.md#javascript-sample--samplesnodejstypesjs) and [numerics](numeric-and-precision-arithmetic.md#javascript-sample--samplesnodejsnumericsjs) samples, *everything here decodes cleanly*: analytical results are ordinary INT64/DOUBLE/VARCHAR messages, so the full window/aggregate surface is usable from a pure-JS driver. `LISTAGG` is `CAST` to VARCHAR (it is otherwise a BLOB). Verified (excerpt):

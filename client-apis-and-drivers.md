@@ -165,6 +165,17 @@ Verified output:
 same engine, same Y-valve, two API styles. done.
 ```
 
+### fb-cpp sample — [`samples/fb-cpp/api_styles.cpp`](samples/fb-cpp/api_styles.cpp)
+
+The same `SELECT` through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API — a *third* rung on the ladder this document climbs. Where the ISC half needed ~70 lines of DPB bytes, status vectors and XSQLDA bookkeeping, and the OO half five lines through the helper, the fb-cpp version is the whole program in four objects: `Client{"fbclient"}` loads the library, `Attachment` takes an options object (`defaultOptions().setConnectionCharSet("NONE")`) instead of a hand-built DPB, `Transaction` and `queryScalar<std::string>` replace the prepare/execute/fetch lifecycle, and the nullable result arrives as a `std::optional`. RAII replaces `release()` bookkeeping and one typed exception hierarchy replaces both error models. All three styles load the same `fbclient` and meet at the same Y-valve.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_api_styles
+```
+
+Verified: prints `[fb-cpp ] engine version = 6.0.0` — the same engine version the ISC and OO halves report — followed by `same engine, same Y-valve, a third API style. done.`
+
 ### JavaScript sample — [`samples/nodejs/query.js`](samples/nodejs/query.js)
 
 The JavaScript counterpart is the existing [`query.js`](samples/nodejs/query.js) (`cd samples/nodejs && node query.js`), and the architectural point is *which path it takes*: node-firebird is a **Path B** driver ([Figure 2](#two-ways-to-build-a-driver)) — no `fbclient` is loaded at all; the driver re-implements the wire protocol, SRP and Arc4 in JavaScript. So where `api_styles.cpp` shows two APIs over one client library, `query.js` shows no client library whatsoever — the two driver strategies of this document, both verified against the same server (re-run output in the [wire-protocol document](firebird-wire-protocol.md#worked-examples)).

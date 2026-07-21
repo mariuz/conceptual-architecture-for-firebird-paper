@@ -194,6 +194,17 @@ count = 10000, point = 4242
 
 Read the deltas like the [tuning workflow](#tuning-workflow-validated-walk-through) would: `SEQ_READS` +10 132 is the `COUNT(*)` full scan (10 000 rows plus system-table traffic), `IDX_READS` +37 includes the `ID = 4242` PK lookup, and inserts stayed flat. There is even a self-referential detail in the hierarchy row: the "running statement" it shows is the MON$ query that *created the snapshot* — the snapshot contains its own cause.
 
+### fb-cpp sample — [`samples/fb-cpp/monitoring.cpp`](samples/fb-cpp/monitoring.cpp)
+
+The same walk through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API: `MON$DATABASE` markers, the hierarchy joined down to the sample's own statement, then the freeze-and-refresh demonstration on the `MON$STAT_ID`-joined counters. The instructive diff is in how the numbers arrive — the `BIGINT` counters come back through `getInt64()` as `std::optional` values instead of the OO-API sample's VARCHAR-coerced strings, so the before/after arithmetic is done on integers the wire delivered, with no message-buffer walking and no string parsing.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_monitoring
+```
+
+Verified: OIT 9 / OAT 10 / NEXT 11 from `MON$DATABASE`, then the identical freeze-then-refresh pattern with this run's numbers — `seq_reads 18178` twice inside the same transaction, then `28178` in a new one (the `COUNT(*)` full scan's +10 000 exactly), with `idx_reads` 1607 → 1641 and inserts flat at 10 023.
+
 ### JavaScript sample — [`samples/nodejs/monitoring.js`](samples/nodejs/monitoring.js)
 
 The same walk through node-firebird (`cd samples/nodejs && node monitoring.js`), with one driver-behaviour lesson built in: outside an explicit `transaction()`, each node-firebird `query()` auto-commits its own transaction, so every MON$ read would get a *fresh* snapshot and the "stale counters" effect would never appear. The sample therefore does the whole demonstration inside one explicit SNAPSHOT transaction — verified output shows the identical freeze-then-refresh pattern (`seq=40428` twice, then `seq=50560`).

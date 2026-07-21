@@ -318,6 +318,17 @@ Verified output:
 
 A cache hit costs 0.07 ms; a compile costs ~1.7 ms — 20×. Runs 2 and 3 being indistinguishable is the equivalence result: a trailing space and a changed literal are equally "a different statement". Run 4 matching them is the purge: the text is byte-identical to run 1, and only the interleaved DDL commit separates 0.07 from 1.85 ms.
 
+### fb-cpp sample — [`samples/fb-cpp/stmt_cache.cpp`](samples/fb-cpp/stmt_cache.cpp)
+
+The same four timing runs through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The instructive diff is the statement lifetime: the `prepare` + `free` pair the OO-API sample spells out collapses into one object — constructing a `Statement` prepares (metadata request included), letting it fall out of scope frees — so "prepare once" is literally a braced temporary, `Statement{att, tra, sql};`. The server-side cache neither knows nor cares which wrapper is calling: the key is still the text verbatim, and the timings prove it from one abstraction level up.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_stmt_cache
+```
+
+Verified: identical text hits at 0.03 ms/prepare; the three miss runs cost 0.84, 1.64 and 1.03 ms/prepare — trailing spaces, changed literal and post-DDL re-prepare all pay a full compile (28–55× the hit), though this run's miss timings spread more than the OO-API sample's near-identical trio; the hit-versus-miss gap, not the exact miss cost, is the reproducible signal.
+
 ### JavaScript sample — [`samples/nodejs/stmt_cache.js`](samples/nodejs/stmt_cache.js)
 
 The same experiment where the driver forces a limitation worth knowing: node-firebird cannot prepare without executing (each `query()` is allocate + prepare + execute + drop), so every timing includes execution — which is why the sample's join is nearly free to run. Verified (`cd samples/nodejs && node stmt_cache.js`): identical text 2.42 ms/query, whitespace-varied 4.28 ms/query — the ~1.9 ms delta is the same compile cost the C++ run isolated. The DDL-interleaved run reports 35 ms/query, but that figure includes the `RECREATE TABLE` itself; the honest comparison is runs 1 vs 2.

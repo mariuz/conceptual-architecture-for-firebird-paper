@@ -389,6 +389,17 @@ done.
 
 Twenty catalog record inserts for one two-column table with a primary key — rows in `RDB$RELATIONS`, `RDB$RELATION_FIELDS`, `RDB$FIELDS`, `RDB$INDICES`, `RDB$RELATION_CONSTRAINTS`, … — all written by the engine's own internal BLR requests, which is Stage 7's claim measured rather than asserted.
 
+### fb-cpp sample — [`samples/fb-cpp/request_lifecycle.cpp`](samples/fb-cpp/request_lifecycle.cpp)
+
+The same instrumented round trip through [fb-cpp](https://github.com/asfernandes/fb-cpp) (vendored at [`extern/fb-cpp`](extern/fb-cpp)), the modern C++20 wrapper over the OO API. The three stages map onto the RAII surface directly: *prepare* is the `Statement` constructor — and where the OO-API sample decodes an `isc_info_sql_stmt_type` info buffer to learn what the parser chose, here `stmt.getType()` returns the typed enumerator `StatementType::DDL`; *execute* is `stmt.execute(tra)`; *commit* is `tra.commit()`. The MON$ sampling query reads its `BIGINT` counters through `std::optional<std::int64_t>` via `getInt64()`, and the timings come from `std::chrono::steady_clock` rather than hand-rolled clocks.
+
+```sh
+cmake -B build samples && cmake --build build   # needs libboost-dev + libboost-filesystem-dev
+./build/fbcpp_request_lifecycle
+```
+
+Verified: statement type `DDL` at prepare (0.08 ms), execute at 105.78 ms with the same `+20` catalog record inserts (page marks `+136`), `RDB$RELATIONS has TRACE_DEMO = 1` inside the writing transaction, and commit at 11.02 ms draining `+14` page writes — the stage-by-stage numbers matching the OO-API run to within run-to-run noise.
+
 ### JavaScript sample — [`samples/nodejs/request_lifecycle.js`](samples/nodejs/request_lifecycle.js)
 
 The same round trip where [Stage 2's](#stage-2-the-remote-module-client-side) client half is JavaScript rather than fbclient (`cd samples/nodejs && node request_lifecycle.js`). node-firebird has no separate prepare call, so the DDL travels as a single `op_execute`; the MON$ deltas match the C++ run (+20 record inserts, +16 page writes). The twin adds the visibility cross-check the C++ sample only does from inside: a *second* transaction on the same connection sees `TRACE_DEMO rows in RDB$RELATIONS = 0` until the DDL transaction commits — the catalog write is an ordinary [MVCC record version](transactions-and-concurrency.md) until `TRA_commit` flips the TIP bits.
