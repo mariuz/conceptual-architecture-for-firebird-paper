@@ -45,11 +45,12 @@ The storage layer, bottom-up ([status table](https://github.com/mariuz/fire-crab
 QA and benchmark results, with their caveats spelled out, live in
 [fire-crab's qa-and-benchmarks document](https://github.com/mariuz/fire-crab/blob/master/docs/qa-and-benchmarks.md);
 the short version: header decode agrees with `gstat` on every compared field
-across every database this paper can produce; the record-version walk
-(pointer pages → data pages → MVCC flag classification) agrees with live
-`SELECT COUNT(*)` on gbak-restored copies of the samples' databases, from
-empty tables through blob-bearing ones to a 200,000-row relation spanning
-multiple pointer pages; tool wall-clock is the same
+across every database this paper can produce; the record walk now decodes
+full rows from raw pages — RDB$FORMATS bootstrap, blob-id resolution,
+segmented blob assembly, descriptor-driven field decode — matching live
+`SELECT` output value-for-value on every compared column, from empty tables
+through blob-bearing ones to a 200,000-row relation, with the not-yet-decoded
+types (DECFLOAT, INT128, TZ) excluded per-table and visibly, never silently; tool wall-clock is the same
 order of magnitude (1.8 ms vs 2.6 ms, both startup-dominated), and the
 official [firebird-qa](https://github.com/FirebirdSQL/firebird-qa) suite is
 explicitly the *milestone* (reachable when the wire protocol converts), not a
@@ -65,7 +66,7 @@ the reading order for anyone joining the effort:
 |---|---|---|---|
 | Pages, records, RLE | [on-disk-structure.md](on-disk-structure.md) | `src/jrd/ods.h`, `sqz.cpp` | **done** |
 | PIP / pointer / data pages, record walk | [on-disk-structure.md](on-disk-structure.md), [transactions-and-concurrency.md](transactions-and-concurrency.md) | `ods.h`, `dpm.cpp` | **done** — the record walk re-derives `SELECT COUNT(*)` from raw pages, verified against the live engine from 0 to 200k rows |
-| Record field decoding | [on-disk-structure.md](on-disk-structure.md), [metadata-cache.md](metadata-cache.md) | RDB$FORMATS blobs | next |
+| Record field decoding | [on-disk-structure.md](on-disk-structure.md), [metadata-cache.md](metadata-cache.md), [catalog-bootstrap.md](catalog-bootstrap.md) | RDB$FORMATS blobs, `met.epp` | **done** — full rows decoded from raw pages via the same metadata bootstrap the engine uses, matching live `SELECT` value-for-value |
 | B-tree pages | [indexing-and-full-text-search.md](indexing-and-full-text-search.md) | `btr.cpp` | planned |
 | Transactions, TIP semantics, snapshots | [transactions-and-concurrency.md](transactions-and-concurrency.md) | `tra.cpp` | planned |
 | Record versions and GC | [garbage-collection-and-sweep.md](garbage-collection-and-sweep.md) | `vio.cpp` | planned |
