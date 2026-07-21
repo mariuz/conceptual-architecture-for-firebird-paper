@@ -356,6 +356,12 @@ The same two-act structure through [rsfbclient](https://github.com/fernandobatel
 
 Verified: against its scratch file `/tmp/fbhandson/ods_header_rust.fdb` — `hdr_ods_version @18 = 0x800e -> ODS 14`, page size 8192, `hdr_flags 0x12 (force_write SQL_dialect_3)`, `hdr_PAGES = 3`, GUID `{4A0CF623-C7EB-45DD-9816-7D8E5AD6CEF4}`, and TIP markers next 16 / OIT 15 / OAT 16 / OST 16 — higher than the C++ run's 5/4/5/5 precisely because of the warm-up commits (and matching `MON$DATABASE`'s view exactly). The census is byte-for-byte the same 294-page skeleton: 40 `pag_pointer`, 40 `pag_root`, 106 `pag_index`, 97 `pag_data`, one each of header/PIP/TIP/generators/SCN.
 
+### Free Pascal sample — [`samples/fpc/ods_header.pas`](samples/fpc/ods_header.pas)
+
+The same two acts through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — plus a third act neither the node nor the Rust twin could reach (`make -C samples/fpc bin/ods_header && samples/fpc/bin/ods_header`): fbintf wraps `isc_database_info` as `IAttachment.GetDBInformation`, returning typed `IDBInfoItem` results, with `GetODSMajorVersion`/`GetODSMinorVersion` conveniences on top, so the ODS facts also arrive through the client info API with no SQL involved. One honest hole in that third view: the 64-bit transaction-marker info tags (`isc_info_oldest_transaction` through next-transaction, 104–107) have no typed decoding in fbintf — they fall into its untyped "special item" bucket where `getAsInteger` refuses — so the sample covers the markers from `MON$DATABASE` and from the raw page-0 bytes instead, which a plain `TFileStream` parses at the `ods.h` offsets through three `Move`-based helpers.
+
+Verified: all three views agree — `MON$DATABASE`, `GetODSMajorVersion` and the disk each report ODS 14 at page size 8192 (`hdr_ods_version @18 = 0x800E`, FIREBIRD flag set), `isc_info_allocation = 294 pages` matches the census's 294-page count exactly, and the header markers next 35 / OIT 34 / OAT 35 / OST 35 equal `MON$DATABASE`'s row after the warm-up commits. `hdr_PAGES = 3`, `hdr_flags 0x12 (force_write SQL_dialect_3)`, and the census is the familiar skeleton: 40 pointer, 97 data, 40 root and 106 index pages, one each of header/PIP/TIP/generators/SCN.
+
 ### Things to try
 
 - Point both samples at a copy of `employee.fdb` (`gbak` it, or use any restored copy) and compare the census: user data changes the data/index page mix, not the fixed skeleton.

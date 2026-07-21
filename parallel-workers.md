@@ -345,6 +345,12 @@ The same two phases through [rsfbclient](https://github.com/fernandobatels/rsfbc
 
 Verified: phase A reports server config `ParallelWorkers = 1, MaxParallelWorkers = 1` and `MON$PARALLEL_WORKERS = 1`; phase B matches both C++ runs — 200,000 rows across 4 pointer pages, `create index: 10648 ms; max '<Worker>' attachments seen: 3`, the same seven-attachment roster (two `SYSDBA`, Cache Writer, Garbage Collector, three `<Worker>` rows, all workers `system_flag 1`), and 3 workers still pooled after the build.
 
+### Free Pascal sample — [`samples/fpc/parallel_workers.pas`](samples/fpc/parallel_workers.pas)
+
+The same two phases through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/parallel_workers && samples/fpc/bin/parallel_workers`). Unlike rsfbclient, phase A *can* ask: fbintf's DPB constant tables stop at Firebird 4 (`isc_dpb_decfloat_traps = 87`), but `IDPB.Add` accepts a raw byte, so the sample declares `isc_dpb_parallel_workers = 100` itself and the Firebird 5 tag passes straight through — the same escape hatch the fb-cpp twin used. What fbintf then loses is the reply: its status handling raises exceptions on errors but discards warnings, so the `isc_bad_par_workers` warning the OO-API twin fishes out of the status vector is invisible, and the sample reads the clamp back from `MON$ATTACHMENTS.MON$PARALLEL_WORKERS` as data. Phase B is fully reachable: `setenv` (imported from libc — the FPC RTL has no portable setter) points `FIREBIRD` at a private root before the embedded attach, and the poller is an ordinary `TThread` holding a second embedded attachment, taking a fresh MON$ snapshot every 20 ms.
+
+Verified: phase A attaches with `MON$PARALLEL_WORKERS = 1` under server config `ParallelWorkers = 1, MaxParallelWorkers = 1` — request clamped, 0 extra workers, no warning surfaced; phase B matches the C++ and Rust runs — 200,000 rows across 4 pointer pages, `create index: 10913 ms; max '<Worker>' attachments seen: 3`, the same seven-attachment roster (two `SYSDBA`, Cache Writer, Garbage Collector, three `<Worker>` rows, every worker `system_flag 1`), and 3 workers still pooled after the build.
+
 ### Things to try
 
 - In the C++ sample's private root, set `ParallelWorkers = 8` and watch `getMaxWorkers()` cap the width at the pointer-page count instead (the output already prints both numbers).

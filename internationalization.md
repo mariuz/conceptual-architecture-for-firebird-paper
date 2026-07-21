@@ -187,6 +187,12 @@ The same scenario through [rsfbclient](https://github.com/fernandobatels/rsfbcli
 
 Verified: same collation numbers — 3 vs 1 matches for `UNICODE_CI_AI` vs `UCS_BASIC`, `UPPER('café èñ ß')` → `CAFÉ ÈÑ ß`, and sort orders `cafe CAFE Café` (CI_AI) vs `CAFE Café cafe` (binary). The UTF8 connection reads `name_win` as `len= 5  43 61 66 C3 A9`; the NONE connection instead reports `Found column with an invalid UTF-8 string: incomplete utf-8 byte sequence from index 3` — the raw stored `E9` arriving unconverted — while the UTF8-typed `name_bin` column's bytes `43 61 66 C3 A9` pass through NONE untouched because they happen to be valid UTF-8.
 
+### Free Pascal sample — [`samples/fpc/intl.pas`](samples/fpc/intl.pas)
+
+The same scenario through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/intl && samples/fpc/bin/intl`). The second attachment builds its DPB explicitly — `FirebirdAPI.AllocateDPB`, then `Add(isc_dpb_lc_ctype).setAsString('NONE')` — the same item the C++ sample packs by hand, as a typed interface call. What no other twin does: FPC's `AnsiString` carries a codepage, and fbintf tags every fetched string with the charset the column was *described* with on that connection (`GetCharsetName(rs[0].getCharSetID)` reports it), so a plain assignment would transcode behind your back; the sample assigns into a `RawByteString` to freeze the wire bytes before hex-dumping — the driver layer here has its own transliteration machinery that the measurement must deliberately switch off.
+
+Verified: same 3-vs-1 collation split, `UPPER('café èñ ß')` → `CAFÉ ÈÑ ß`, sort orders `cafe CAFE Café` (CI_AI) vs `CAFE Café cafe` (binary), and the same row over two connections: `lc_ctype=UTF8` receives `len= 5  43 61 66 C3 A9` with the column described as charset `UTF8`, `lc_ctype=NONE` receives the raw stored `len= 4  43 61 66 E9` with the column described as `WIN1252`.
+
 ### Things to try
 
 - Add `COLLATE UNICODE_CI` (case- but not accent-insensitive) as a third column: `'cafe'` then matches 2 of the 3 rows — the missing middle step between the sample's 3 and 1.

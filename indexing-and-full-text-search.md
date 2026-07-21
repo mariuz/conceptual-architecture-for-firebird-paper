@@ -178,6 +178,12 @@ The same five queries through [rsfbclient](https://github.com/fernandobatels/rsf
 
 Verified: all five access paths agree with the other runs, in explain form — `Index "PUBLIC"."DOC_UPPER_TITLE" Range Scan (full match)` for the expression index, `Index "PUBLIC"."DOC_ACTIVE" Full Scan` for the partial, `First N Records` over `Index "PUBLIC"."DOC_ID_DESC" Full Scan` for the descending walk, a `Bitmap Or` combining `DOC_NUM` and `DOC_ID_DESC` range scans, and `Table "PUBLIC"."DOC" Full Scan` for `CONTAINING`, closing with the same count: `matched 111 rows by scanning all 3000`.
 
+### Free Pascal sample — [`samples/fpc/indexes.pas`](samples/fpc/indexes.pas)
+
+The same five plans through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/indexes && samples/fpc/bin/indexes`). Where node-firebird had to reach one level below its public API and rsfbclient had to ask the engine via `RDB$SQL.EXPLAIN`, fbintf simply exposes the plan on the statement: `A.Prepare(Tr, sql)` returns an `IStatement` and `S.GetPlan` is the whole call. One quirk worth knowing: fbintf requests only the *detailed* (explained) plan form — there is no way to ask it for the legacy one-line `PLAN (...)` string the OO-API and fb-cpp runs print — so its output is the indented tree, the same shape rsfbclient's engine-side workaround produced.
+
+Verified: all five access paths agree with every other run, in explained form — `Index "PUBLIC"."DOC_UPPER_TITLE" Range Scan (full match)` for the expression predicate, `Index "PUBLIC"."DOC_ACTIVE" Full Scan` for the partial, `First N Records` over `Index "PUBLIC"."DOC_ID_DESC" Full Scan` for the descending walk, a `Bitmap Or` over `DOC_NUM` and `DOC_ID_DESC` range scans for the `OR`, `Table "PUBLIC"."DOC" Full Scan` for `CONTAINING` — and the same closing count, `matched 111 rows by scanning all 3000`.
+
 ### Things to try
 
 - Drop `doc_active` and re-run: the `status = 'active'` query falls back to... check whether the optimizer picks `doc_num` (it can't) or `NATURAL` — then recreate the partial index with `WHERE status = 'done'` and watch the `'active'` query *ignore* it: a partial index only serves predicates that imply its condition.

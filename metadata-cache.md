@@ -454,6 +454,12 @@ The same four demonstrations through [rsfbclient](https://github.com/fernandobat
 
 Verified: the same story with this run's own numbers — B's probe fails with `sql error -206: ... Column unknown "E"` while A sees `<null>` in the same uncommitted transaction; B's open SNAPSHOT then reads `d` from an ALTER committed after the snapshot began; demo 3 fails with `sql error -607: unsuccessful metadata update / ALTER TABLE "PUBLIC"."T" failed / newVersion: table 130 is used by transaction 35` (note the schema-qualified `"PUBLIC"."T"` — Firebird 6's spelling of the same error the other samples got for table 128); and `RDB$FORMATS` holds 3 shapes, with the shape-1 row decoding as `a=1, e=<null>, d=<null>`.
 
+### Free Pascal sample — [`samples/fpc/metadata_cache.pas`](samples/fpc/metadata_cache.pas)
+
+The same four demonstrations through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/metadata_cache && samples/fpc/bin/metadata_cache`). Transaction boundaries — the whole experiment here — are explicit open-array TPBs per demo, with a declared default completion (`taCommit`, or `taRollback` for B's doomed DDL in demo 3) that fires if the interface is released un-ended. The probe helper leans on fbintf's per-column typing: `OpenCursorAtStart(tr, sql)[0]` hands back an `ISQLData` whose `IsNull` distinguishes a real NULL in the not-yet-populated new column from an error, and failures arrive as `EIBInterBaseError` with the formatted chain already in `E.Message` and the code in `IBErrorCode`.
+
+Verified: B fails with `-206 ... Column unknown "E"` while A reads `<null>` from the same uncommitted ALTER; B's still-open SNAPSHOT then reads `d` from an ALTER committed after its snapshot began; demo 3 raises `Engine Code: 335544351 / unsuccessful metadata update / ALTER TABLE "PUBLIC"."T" failed / newVersion: table 132 is used by transaction 71`; and `RDB$FORMATS` holds 3 shapes for `T`, the surviving row decoding as `1 | <null> | <null>`.
+
 ### Things to try
 
 - In demo 2, move the `SELECT d FROM t` *before* A's second ALTER commits, keep the statement handle, and re-execute it after the commit: an already-prepared statement keeps running against the version it was compiled with — resolution is at *prepare* time, which is the precise wording the document insists on.

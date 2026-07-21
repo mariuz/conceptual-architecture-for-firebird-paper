@@ -322,6 +322,12 @@ The same four module types through [rsfbclient](https://github.com/fernandobatel
 
 Verified: `NEW_ID = 1` and `2` from the two hires, 2 audit rows from the trigger, `raises(10)` streaming `5500.00` / `6600.00`, and the failing hire printing `sql error -836: exception 1` followed by the identical chain — `"PUBLIC"."LOW_SALARY"`, `salary below minimum`, `At procedure "PUBLIC"."HIRE" line: 4, col: 29` — the one delta being that rsfbclient leads with the SQLCODE where the C++ samples lead with the `exception 1` line.
 
+### Free Pascal sample — [`samples/fpc/psql.pas`](samples/fpc/psql.pas)
+
+The same four module types through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/psql && samples/fpc/bin/psql`). The executable-vs-selectable divide maps onto two interface types: `A.Prepare` + `IStatement.Execute` returns the one output message of `EXECUTE PROCEDURE hire(...)` as an `IResults` read by name (`Res.ByName('NEW_ID').AsInteger` — no cursor), while the `SUSPEND`-streaming `raises(10)` is `OpenCursor` + `IResultSet.FetchNext` like any table. Where rsfbclient's coarse type surface degrades `NUMERIC(10,2)` to an `f64`, fbintf reaches the value exactly: `AsCurrency` maps the scaled integer onto Pascal's fixed-point `Currency` type. The custom exception arrives as `EIBInterBaseError` whose `IBErrorCode` is the gds code and whose `Message` carries the full status-vector chain, PSQL stack trace included.
+
+Verified: `NEW_ID = 1` and `2` from the two hires, 2 audit rows from the trigger, `raises(10)` streaming `5500.00` / `6600.00`, and the failing hire raising `gds 335544517` with the identical chain — `exception 1`, `"PUBLIC"."LOW_SALARY"`, `salary below minimum`, `At procedure "PUBLIC"."HIRE" line: 4, col: 29` — fbintf's one rendering delta being an `Engine Code: 335544517` line prefixed above the chain.
+
 ### Things to try
 
 - Add a nested call (`hire` invoked from an `EXECUTE BLOCK`, or from a second procedure) and watch the stack trace grow to multiple `At procedure ... At block` lines — the `dbginfo` machinery described in the [BLR document](blr-intermediate-language.md#both-directions-of-translation).

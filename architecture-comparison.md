@@ -285,6 +285,12 @@ The Rust version through [rsfbclient](https://github.com/fernandobatels/rsfbclie
 
 Verified: attachment [1] reports `NETWORK_PROTOCOL : TCPv4` and `MON$SERVER_PID : 690` against a client pid of 27977; attachment [2] (`/tmp/arch_embedded_rust.fdb`) reports `NETWORK_PROTOCOL : <null>` and `MON$SERVER_PID : 27977 (this process is pid 27977 -- the engine runs IN this process)`; attachment [3] over the pure-Rust backend mirrors [1] (`TCPv4`, server pid 690) — and has no embedded variant, because a wire-only backend always hands the database path to a server process to resolve, never to its own.
 
+### Free Pascal sample — [`samples/fpc/architecture_comparison.pas`](samples/fpc/architecture_comparison.pas)
+
+The same two-providers proof through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX, linked only against libfbclient (`make -C samples/fpc bin/architecture_comparison && samples/fpc/bin/architecture_comparison`). Because fbintf is a native binding, the Y-valve rows of the comparison table are all reachable: `FirebirdAPI.OpenDatabase('localhost:employee', DPB)` goes through the Remote provider, while the same call on a plain local path (after a libc `setenv('FIREBIRD', '/opt/firebird', 0)` so the embedded engine finds its plugins and security database) loads the Engine provider *into this process* — no server, no socket, one `Inspect` procedure for both. Each attachment then asks the engine where it runs: `ENGINE_VERSION`, `NETWORK_PROTOCOL` and `MON$SERVER_PID` from `MON$ATTACHMENTS`, compared against the program's own `FpGetPid`.
+
+Verified: attachment [1] reports `NETWORK_PROTOCOL : TCPv4` and `MON$SERVER_PID : 690` against a client pid of 46634; attachment [2] (`/tmp/fbhandson/arch_embedded_fpc.fdb`) reports `NETWORK_PROTOCOL : (null)` and `MON$SERVER_PID : 46634 (this process is pid 46634 -- the engine runs IN this process)` — the same server pid 690 and same in-process verdict as the C++ and Rust native runs.
+
 ### Things to try
 
 - Point both attachments at databases of your own and diff the full `MON$ATTACHMENTS` row (`MON$REMOTE_PROTOCOL`, `MON$REMOTE_PROCESS`, `MON$AUTH_METHOD`) between the two providers — embedded also skips server authentication entirely.

@@ -215,6 +215,12 @@ The same walk through [rsfbclient](https://github.com/fernandobatels/rsfbclient)
 
 Verified: OIT 15 / OAT 16 / NEXT 17 and `page_buffers=2048` from `MON$DATABASE`; the hierarchy join finds the sample's own attachment 7 (SYSDBA), tx 16, with `MON$SQL_TEXT` showing the very query that took the snapshot. The freeze holds exactly — `seq_reads=18281 idx_reads=1602 page_fetches=75723` identical before and after the 10 000-row `COUNT(*)` scan and the indexed point lookup — then the new transaction reads `seq_reads=28281` (+10 000, the full scan) and `idx_reads=1636`, with inserts flat at 10 023.
 
+### Free Pascal sample — [`samples/fpc/monitoring.pas`](samples/fpc/monitoring.pas)
+
+The same walk through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/monitoring && samples/fpc/bin/monitoring`). The snapshot demonstration hangs on transaction lifetime, and fbintf makes that explicit without ceremony: one `StartTransaction([isc_tpb_write, isc_tpb_nowait, isc_tpb_concurrency], taCommit)` held open across the workload, `CommitRetaining` where the scratch DDL needs to land mid-stream, a fresh `StartTransaction` for the refreshed snapshot. The row printer is generic over `IResultSet` — `rs.getCount`, `rs[i].Name`, `rs[i].AsString` — so one procedure renders every MON$ level, and the one-value probes go through `OpenCursorAtStart(Tr, sql)[0].AsString`.
+
+Verified: OIT 40 / OAT 41 / NEXT 42 and `page_buffers=2048` from `MON$DATABASE`; the hierarchy join finds attachment 19 (SYSDBA), tx 41, with `SQL_HEAD` showing the marker query itself. The freeze holds exactly — `seq_reads=18469 idx_reads=1605 page_fetches=76011` identical before and after the 10 000-row `COUNT(*)` scan and the point lookup — then the new transaction reads `seq_reads=28469` (+10 000, the full scan) and `idx_reads=1638`, inserts flat at 10 023 and `page_reads` flat at 195.
+
 ### Things to try
 
 - Open a second connection running `SELECT COUNT(*) FROM MON_WORK` in a loop and re-run the sample: the hierarchy query (drop the `WHERE ... = CURRENT_CONNECTION`) now shows two attachments, and their statements' `MON$SQL_TEXT` side by side.

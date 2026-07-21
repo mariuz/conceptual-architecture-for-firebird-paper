@@ -215,6 +215,12 @@ The same four self-description steps through [rsfbclient](https://github.com/fer
 
 Verified: the same fixed points as the other three runs — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `FORMATS_ROWS 0 SYS_RELATIONS 60 SYS_FIELDS 598`, and after the two DDL statements format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id. Incidentally the TIP landed on page 287 and the generator page on 85, matching the C++ runs on an equally fresh file.
 
+### Free Pascal sample — [`samples/fpc/catalog.pas`](samples/fpc/catalog.pas)
+
+The same four self-description steps through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/catalog && samples/fpc/bin/catalog`). The fresh-database dance shows off two interface niceties: `FirebirdAPI.OpenDatabase(conn, DPB, false)` with `RaiseExceptionOnConnectError` off returns nil instead of throwing when the file is absent, so drop-if-exists is an `if Att <> nil then Att.DropDatabase` followed by `CreateDatabase`; catalog queries walk `IResultset.FetchNext` with per-column `IsNull`/`AsString` and no descriptor bookkeeping. The `hdr_PAGES` anchor check stays as primitive as in every other language — but with a platform detail the others dodge: it reads four bytes at offset 28 through raw `FpOpen`/`FpRead`, because the server holds advisory locks on the live file that `TFileStream`'s share modes would trip over.
+
+Verified: the same fixed points as the other three runs — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `0 / 60 / 598` for formats/system relations/system columns, and after `CREATE TABLE`+`ALTER TABLE` the format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id. Incidentally the TIP landed on page 287 and the generator page on 85, matching the C++ and Rust runs on equally fresh files.
+
 ### Things to try
 
 - Add a third DDL statement (`ALTER TABLE t1 ALTER b TYPE VARCHAR(20)`) and watch `RDB$FORMATS` grow to format 3 — then `SELECT` the table and see all rows decode, the lazy-conversion story of [the metadata-cache document](metadata-cache.md#formats-the-on-disk-half-of-the-same-idea).

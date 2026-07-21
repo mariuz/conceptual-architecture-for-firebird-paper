@@ -274,6 +274,12 @@ The Rust version through [rsfbclient](https://github.com/fernandobatels/rsfbclie
 
 Verified: the file grew `2260992 -> 6479872` bytes of uncommitted work before the `SIGKILL` to engine pid 28026; re-attach plus both counts took 35 ms, and the counts read `committed marker rows : 1 <- survived the crash` and `uncommitted rows : 0 <- rolled back by visibility, not replay` — the same verdict as the C++ engine-kill runs, from a third client stack driving the same in-process engine.
 
+### Free Pascal sample — [`samples/fpc/careful_writes.pas`](samples/fpc/careful_writes.pas)
+
+The same engine-kill experiment through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/careful_writes && samples/fpc/bin/careful_writes`). As a native binding, fbintf gets the genuine failure domain that a wire-only client cannot: attaching by plain local path (with `FIREBIRD=/opt/firebird` set through libc `setenv`) loads the embedded engine, so the child this program spawns via `TProcess` — its own binary re-invoked with `--writer` — *is* the engine. The parent polls the database file's size with `FpStat` while the child flushes freshly allocated pages of an uncommitted 500,000-row `execute block` insert, delivers `SIGKILL` through `FpKill` mid-flight, then simply re-attaches with `FirebirdAPI.OpenDatabase` and counts rows. There is no recovery step to invoke, because none exists — the writer's crash-victim transaction is even declared with fbintf's default-completion parameter as `taRollback`, the outcome the precedence graph guarantees whether or not the process lives to perform it.
+
+Verified: the file grew `2260992 -> 7782400` bytes of uncommitted work before the `SIGKILL` to engine pid 46678; re-attach plus both counts took 35 ms, and the counts read `committed marker rows : 1 <- survived the crash` and `uncommitted rows : 0 <- rolled back by visibility, not replay` — the same verdict, and the same order of magnitude of instant reattach, as the C++ and Rust engine-kill runs.
+
 ### Things to try
 
 - Rerun the C++ sample and then `gfix -v -full -user SYSDBA /tmp/fbhandson/careful_writes.fdb` (embedded, so run it with `FIREBIRD=/opt/firebird` while no server has the file): like the [live test](#crash-safety-live), you may see orphan-page warnings — allocated-but-never-linked pages, the designed leftover — and zero corruption errors.

@@ -205,6 +205,12 @@ The same three layers through [rsfbclient](https://github.com/fernandobatels/rsf
 
 Verified: the same facts against its scratch database — ODS `14.0`, page size `8192`, sweep interval `20000`, forced writes `1`, `ServerMode Super` among 69 settings all `set in config: false`, engine `6.0.0` over `TCPv4` with `ChaCha64` — and then `rsfbclient server_engine() on this server: error: Version not detected: 6.0.0`. Deployments outlive driver assumptions.
 
+### Free Pascal sample — [`samples/fpc/deployment.pas`](samples/fpc/deployment.pas)
+
+The same three layers through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/deployment && samples/fpc/bin/deployment`). Everything is plain SQL, and the surface is one call deep: `A.OpenCursorAtStart(Tr, sql)` prepares, executes, and positions on the first row in one step, columns come back by index with `R[0].IsNull` and `R[0].AsString`, and column names for the isql-style table arrive through `R.GetStatement.MetaData`. Like fb-cpp and unlike the OO-API sample, nothing is coerced to `VARCHAR` server-side — `AsString` converts client-side, which is why `RDB$CONFIG_IS_SET` prints as fbintf's lowercase `false` where the server-rendered runs print `FALSE`. Where rsfbclient's typed `server_engine()` accessor chokes on version 6, fbintf has no such enum to outgrow: the read-only, read-committed transaction is just `StartTransaction([isc_tpb_read, isc_tpb_nowait, isc_tpb_read_committed, isc_tpb_rec_version], taCommit)` and `ENGINE_VERSION` is whatever string the context variable returns.
+
+Verified: the same self-portrait against the shared `employee` database — ODS `14.0`, page size `8192`, sweep interval `20000`, forced writes `1`, `ServerMode Super` among 69 `RDB$CONFIG` settings all `false`, the explicitly-set table again empty, and engine `6.0.0` over `TCPv4` with `ChaCha64` from `127.0.0.1`.
+
 ### Things to try
 
 - Run the C++ sample with an `xnet://` or `inet6://` URL (or embedded, with a direct path and `FIREBIRD=` set) and watch `NETWORK_PROTOCOL`, `CLIENT_ADDRESS` and `WIRE_CRYPT_PLUGIN` change while `RDB$CONFIG` stays identical — deployment facts vs session facts.

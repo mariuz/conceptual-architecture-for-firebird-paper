@@ -408,6 +408,12 @@ The same walk through [rsfbclient](https://github.com/fernandobatels/rsfbclient)
 
 Verified: the redirection signature holds across the whole summary — groups 1/2/3 (4, 2 and 2 pools) all report `allocated = 0` while the database pool owns 28 086 272 bytes and the two `cmp_statement` pools that crossed the threshold map exactly 131 072 bytes (one 64 KB extent each). The worker's transaction pool grows from `used=13680` to `used=20928` under the uncommitted 3000-row UPDATE, and after rollback the attachment's `used` falls from 78 736 to 57 808 — by 20 928 bytes, the dead transaction pool's total to the byte, this run's own instance of the nested roll-up.
 
+### Free Pascal sample — [`samples/fpc/memory_pools.pas`](samples/fpc/memory_pools.pas)
+
+The same walk through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/memory_pools && samples/fpc/bin/memory_pools`). The MON$ freshness rule shapes it the same way as the Rust twin: every observation helper starts its own monitor transaction with the open-array shorthand (`StartTransaction([isc_tpb_read, isc_tpb_nowait, isc_tpb_concurrency], taCommit)`), reads through `IResultSet` (`rs[0].AsString` indexes columns directly), and commits — a fresh snapshot per call. The one-row probes use `OpenCursorAtStart`, fbintf's fetch-the-first-row convenience, to pull `current_connection` and `current_transaction` for the worker's own chain.
+
+Verified: the redirection signature holds — groups 1/2/3 (4, 2 and 1 pools) all report `allocated = 0` against the database pool's 28 479 488 mapped bytes, with the one `cmp` pool that crossed the threshold mapping exactly 65 536. The worker's transaction pool grows from `used=13600` to `used=20848` under the uncommitted 3000-row UPDATE, and after rollback the attachment's `used` falls from 78 912 to 57 984 — 20 928 bytes, the dead transaction pool's 20 848 plus 80 bytes of unrelated attachment-pool churn in this run, so the roll-up is visible but not byte-exact here.
+
 ### Things to try
 
 - Prepare (without executing) twenty distinct statements on one connection and re-run the group summary: group 5 (`cmp_statement`) pools multiply, and each that grows past ~48 KB maps its own 64 KB extent — `PARENT_REDIRECT_THRESHOLD` found empirically.

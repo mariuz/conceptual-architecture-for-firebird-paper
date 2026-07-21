@@ -230,6 +230,12 @@ The same six strings through [rsfbclient](https://github.com/fernandobatels/rsfb
 
 Verified: the three good parses return `FIRST_NAME=Robert` for `?` bound to 2, `EMP_NO=2` for the row-limit `FIRST`, and `FIRST=1` for `FIRST` as a column name; the failures print `sql error -104: ... Token unknown - line 1, column 1 / SELEC`, `Token unknown - line 3, column 7 / ORDER`, and `sql error -206: ... Column unknown "FRST_NAME" At line 1, column 8` — the same tokens, lines and columns as all three other runs, byte for byte after the driver's summary prefix.
 
+### Free Pascal sample — [`samples/fpc/parser_errors.pas`](samples/fpc/parser_errors.pas)
+
+The same six statements through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/parser_errors && samples/fpc/bin/parser_errors`). Where node-firebird and rsfbclient fold prepare into execute, fbintf restores the C++ run's shape: `IAttachment.Prepare` is a genuine prepare-only step returning an `IStatement` whose `GetSQLStatementTypeName`, `SQLParams` and `MetaData` expose the parsed statement's type, typed input parameters and output columns without executing anything. The failure channel is richer too — a failed prepare raises `EIBInterBaseError` whose `Message` is the formatted status vector, and, the fbintf-specific move, `E.Status.CheckStatusVector([...])` still tests the unformatted vector positionally for specific gds codes, so code can tell `isc_dsql_token_unk_err` (syntax) from `isc_dsql_field_err` (semantic) programmatically; only the numeric line/column arguments stay out of reach, pre-formatted into the message text.
+
+Verified: the `?` in `WHERE emp_no = ?` comes back as `param 0: SQL_SHORT, length=2` on a parsed-but-never-executed statement, both `FIRST` roles parse OK, and the failures report `Token unknown - line 1, column 1 / SELEC`, `Token unknown - line 3, column 7 / ORDER` and `Column unknown "FRST_NAME" At line 1, column 8` — the same tokens, lines and columns as the other three runs — with `CheckStatusVector` confirming `isc_dsql_token_unk_err` on both syntax errors and `isc_dsql_field_err` on the semantic one.
+
 ### Things to try
 
 - Feed the C++ sample a statement using a *reserved* word as an identifier (`SELECT order FROM rdb$database`) and compare with the non-reserved `FIRST` case; the token lists at the top of [`parse.y`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/parse.y) explain the difference.

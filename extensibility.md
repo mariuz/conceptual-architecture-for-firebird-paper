@@ -218,6 +218,12 @@ The same UDR walk through [rsfbclient](https://github.com/fernandobatels/rsfbcli
 
 Verified: `gen_rows(1, 5)` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, and the plugin roster matches the other runs — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
 
+### Free Pascal sample — [`samples/fpc/extensibility.pas`](samples/fpc/extensibility.pas)
+
+The same UDR walk through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/extensibility && samples/fpc/bin/extensibility`). As in every other language here, the server-side seams cost the client nothing: the `EXTERNAL NAME 'udrcpp_example!gen_rows' ENGINE udr` bindings are plain `A.ExecuteSQL` calls committed with `CommitRetaining`, the scalar `sum_args` call is a one-liner — `A.OpenCursorAtStart(Tr, ...)[0].AsString` prepares, executes, positions and indexes the first row in a single expression — and the isql-style listings drive `OpenCursor` with column names and widths from `R.GetStatement.MetaData`, `IsNull`/`AsString` doing the client-side rendering.
+
+Verified: `gen_rows(1, 5)` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)` (fbintf reports the computed column's generated name `F_1`, where the C++ run trimmed the header), and the plugin roster matches the other runs — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
+
 ### Things to try
 
 - Declare more of the shipped module: `gen_rows2` (same logic via typed `FB_UDR_MESSAGE`s), `mult`, or the `replicate` UDR *trigger* ([`extern/firebird/examples/udr/`](extern/firebird/examples/udr/) shows each declaration in a comment above its implementation).

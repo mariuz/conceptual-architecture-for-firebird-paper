@@ -379,6 +379,12 @@ The same read through [rsfbclient](https://github.com/fernandobatels/rsfbclient)
 
 Verified: `FULL_NAME`'s BLR is the same 37 bytes (`05 27 27 17 00 09 4c ...`) as the C++ and JavaScript runs, decoding to nested `blr_concatenate` over `blr_field context 0, 'LAST_NAME'`, the `", "` `blr_text2` literal and `FIRST_NAME`, ending in `blr_eoc`; `GET_EMP_PROJ` is 155 bytes opening with `blr_version5, blr_begin`, then `blr_message 0, 2 fields: blr_short(scale 0) blr_short(scale 0)` and `blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)`.
 
+### Free Pascal sample — [`samples/fpc/blr.pas`](samples/fpc/blr.pas)
+
+The same read through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/blr && samples/fpc/bin/blr`) — with two conveniences the other stacks lack. Fetching stored BLR is a one-liner, `OpenCursorAtStart(Tr, sql)[0].AsBlob.GetAsString` into a `rawbytestring`, where the C++ twin walks `openBlob`/`getSegment` by hand and rsfbclient needs a server-side `CAST` to even touch subtype 2; and the mini-disassembler needs no transcribed opcode tables, because fbintf vendors `blr.inc` — a Pascal translation of the very `firebird/impl/blr.h` the engine compiles — so `blr_version5`, `blr_concatenate`, `blr_field` and `blr_text2` are the real named constants. One detail worth copying: the attachment's DPB deliberately omits `isc_dpb_lc_ctype`, so the system BLR blobs arrive as bytes rather than text to transliterate.
+
+Verified: `FULL_NAME`'s BLR is the identical 37 bytes (`05 27 27 17 00 09 4C ...`) as the C++, JavaScript and Rust runs, decoding to nested `blr_concatenate` over `blr_field context 0, 'LAST_NAME'`, the `", "` `blr_text2` literal and `FIRST_NAME`, ending in `blr_eoc`; `GET_EMP_PROJ` is 155 bytes opening with `blr_version5, blr_begin`, then `blr_message 0, 2 fields: blr_short(scale 0) blr_short(scale 0)` and `blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)` — a fourth client stack, byte-for-byte the same stored artifact.
+
 ### Things to try
 
 - Point the sample at your own scratch database, create `CREATE TABLE t (a INT, b COMPUTED BY (a * 2 + 1))`, and decode the arithmetic: you will meet `blr_multiply`/`blr_add` (prefix, two operands each) and a `blr_literal blr_long`.

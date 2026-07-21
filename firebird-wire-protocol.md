@@ -375,6 +375,12 @@ One program, both kinds of client. [rsfbclient](https://github.com/fernandobatel
 
 Verified: same server, same `SYSDBA`, same `Srp256` — but the native attachment reports wire protocol `P20`, wire crypt `ChaCha64` and client version `LI-T6.0.0.2076 Firebird 6.0 fd83f03`, while the pure-Rust attachment reports `P13`, `Arc4` and no client version string at all: the version-list negotiation meeting each client where it stands, recorded by the engine itself.
 
+### Free Pascal sample — [`samples/fpc/protocol.pas`](samples/fpc/protocol.pas)
+
+The same negotiated-session report through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — behind COM-style reference-counted interfaces (`make -C samples/fpc bin/protocol && samples/fpc/bin/protocol`). Where node-firebird and rsfbclient-rust re-implement the wire protocol in their own languages, fbintf has no wire implementation at all: it ships bindings for both the legacy 2.5 API and the 3.0+ OO API, picks at load time (`FirebirdAPI.GetImplementationVersion`, `HasMasterIntf`), and drives libfbclient — the very library the C++ twins link — so its handshake *is* the Remote provider's. The sample asks `MON$ATTACHMENTS` what was negotiated, then reads the same facts client-side off `IAttachment` without a query: `GetRemoteProtocol`, `GetAuthenticationMethod`, `GetSecurityDatabase`, `GetODSMajorVersion`.
+
+Verified: `fbintf 1.4.9 loaded libfbclient 6.0 -> Firebird 3+ OO API selected (HasMasterIntf = TRUE)`, and the engine records the identical session the C++ clients get — `Srp256`, wire protocol `P20`, wire crypt `ChaCha64`, client version `LI-T6.0.0.2076 Firebird 6.0 fd83f03` — where the pure-JS and pure-Rust re-implementations above sit at protocol 13 and Arc4. The `IAttachment` echo agrees: `TCPv4`, `Srp256`, security database `Default`, ODS major 14.
+
 ### Things to try
 
 - In `srp-handshake.js`, offer only `Srp` instead of `Srp256,Srp` in `CNCT_plugin_list` — the server accepts and the proof drops to SHA-1: the downgrade the in-tree README [warns about](#what-srp256-improves), performed by hand.

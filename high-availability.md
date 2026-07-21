@@ -234,6 +234,12 @@ The same lifecycle through [rsfbclient](https://github.com/fernandobatels/rsfbcl
 
 Verified: same shape on its own scratch pair (`ha_rust.fdb`/`ha_rust.shd`) — `RDB$FILES` shows `/tmp/fbhandson/ha_rust.shd shadow# 1 flags 1`; `3284992`/`3211264` bytes after `CREATE SHADOW` growing to `3719168`/`3538944` after the 5000 inserts (both files larger than the C++ runs' because this scratch database is reused across runs); then shadow at `-1 bytes` (gone) and `RDB$FILES rows left: 0` after the drop.
 
+### Free Pascal sample — [`samples/fpc/ha.pas`](samples/fpc/ha.pas)
+
+The same lifecycle through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/ha && samples/fpc/bin/ha`). `CREATE SHADOW 1 '...'` and `DROP SHADOW 1 DELETE FILE` go through `A.ExecuteSQL` as ordinary DSQL — the mechanism needs nothing from the wrapper — and the client idiom around them is fbintf's: the idempotent cleanup is a one-line `ExecImmediate` in a `try ... except on EIBInterBaseError do ;` (the typed-exception counterpart of fb-cpp's `DatabaseException` catch and rsfbclient's discarded `Result`), the `RDB$FILES` listing a `while not R.IsEof ... R.FetchNext` loop over an `IResultSet`, and `stat()` is literally `FpStat` from Free Pascal's `BaseUnix` unit.
+
+Verified: on its reused scratch pair (`ha.fdb`/`ha_fpc.shd`) the shadow registers as `/tmp/fbhandson/ha_fpc.shd shadow_number=1 flags=1` and appears at `3604480` bytes against the main file's `3719168`; this pass shows the reuse effect the Rust note predicted, taken one step further — the main file has enough free pages from earlier runs that it does not grow at all during the 5000 inserts (`3719168` before and after) while the shadow still advances to `3670016`; after `DROP SHADOW 1 DELETE FILE` the shadow is gone (`-1 bytes`) and `RDB$FILES rows left: 0`.
+
 ### Things to try
 
 - Create the shadow with `CREATE SHADOW 1 AUTO` vs `MANUAL` and read `RDB$FILE_FLAGS` again — the flag bits encode the [conditional/manual modes](#firebird-ha-building-blocks) that decide what happens when the shadow becomes unavailable.

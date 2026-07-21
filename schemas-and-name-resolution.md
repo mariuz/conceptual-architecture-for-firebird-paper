@@ -535,6 +535,12 @@ The same five demonstrations through [rsfbclient](https://github.com/fernandobat
 
 Verified: `from PUBLIC` for the cached text under the new path, `from APP` for the freshly-prepared text; `"APP", "SYSTEM"` after the auto-append; `APP.WHICH_ONE` still answering `from APP` with `RDB$DEPENDENCIES` recording `APP.CUSTOMERS` after the session flips to `PUBLIC`; and the explain output resolving the unqualified name to `Table "PUBLIC"."CUSTOMERS" Full Scan` — the schema-qualified access path, from SQL rather than from `getPlan()`.
 
+### Free Pascal sample — [`samples/fpc/schemas.pas`](samples/fpc/schemas.pas)
+
+The same five demonstrations through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/schemas && samples/fpc/bin/schemas`). Resolution being server-side, the sample is `ExecuteSQL` for each `SET SEARCH_PATH` and `OpenCursorAtStart` one-row probes for each answer — but the plans-and-errors observation is where the wrapper families diverge: rsfbclient has no plan surface at all (its twin fell back to `RDB$SQL.EXPLAIN`), while fbintf exposes the plan directly as `IStatement.GetPlan`, no info-buffer decoding. One quirk to know: fbintf's `GetPlan` returns only the *detailed* (explained) plan form — the legacy one-line `PLAN (...)` the OO-API and fb-cpp twins print is not offered — so the same resolved name arrives as an indented operation tree.
+
+Verified: identical resolution story — `from PUBLIC` then `from APP` as the path changes, `"APP", "SYSTEM"` after the auto-append, `APP.WHICH_ONE` still answering `from APP` (with `RDB$DEPENDENCIES` recording `APP.CUSTOMERS`) after the session flips to `PUBLIC` — and `GetPlan` reporting the resolved name in its explained form, `Select Expression -> Aggregate -> Table "PUBLIC"."CUSTOMERS" Full Scan`.
+
 ### Things to try
 
 - Add the [shadowing experiment](#shadowing-and-the-hazard-search-paths-always-carry): `CREATE TABLE PUBLIC."RDB$DATABASE" (X INT)` and watch an unqualified `SELECT ... FROM RDB$DATABASE` on a fresh connection find yours; then `SET SEARCH_PATH TO SYSTEM, PUBLIC` to defuse it.

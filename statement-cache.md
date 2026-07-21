@@ -339,6 +339,12 @@ The same experiment through [rsfbclient](https://github.com/fernandobatels/rsfbc
 
 Verified: run 0 (client cache on) costs 0.26 ms/query with no prepare sent; run 1 (client cache off, identical text) 0.34 ms/query — server hits; trailing spaces and distinct literals miss at 1.10 and 0.91 ms/query, and byte-identical text after each DDL commit misses at 1.48 ms/query. The hit-versus-miss gap is ~3–4× here rather than C++'s 20×, because every rsfbclient timing includes an execution — but the ordering is the same, and run 0 sitting *below* run 1 shows the client cache shaving off even the cheap server-hit prepare.
 
+### Free Pascal sample — [`samples/fpc/stmt_cache.pas`](samples/fpc/stmt_cache.pas)
+
+The same four timing runs through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX, driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/stmt_cache && samples/fpc/bin/stmt_cache`). Where the Rust section above had to *disable* rsfbclient's client-side LRU before it could see the server, fbintf is the clean opposite: it keeps no client-side statement cache at all — grep `extern/fbintf/client` and there is none; every `Att.Prepare(Tr, sql)` builds a fresh `TFB30Statement` and sends a real dsql prepare — so the timings probe the server DSQL cache with nothing in the way. And unlike both node-firebird and rsfbclient, fbintf *can* prepare without executing, so the methodology is exactly the C++ twins': the heavy six-way self-join is compiled `N` times and never run, with "prepare once" being a local `IStatement` whose scope exit drops the refcount and frees the handle.
+
+Verified: identical text hits at 0.06 ms/prepare; trailing spaces and distinct literals miss at 0.84 and 0.81 ms/prepare (a ~14× gap, with no execution cost diluting it), and byte-identical text after each unrelated `RECREATE TABLE` + commit misses at 1.32 ms/prepare — the DDL purge costing more than an ordinary miss, same ordering as every twin above.
+
 ### Things to try
 
 - Change run 2 to vary *case* instead of whitespace (`Select` / `sElect`…) — same misses, same reason.

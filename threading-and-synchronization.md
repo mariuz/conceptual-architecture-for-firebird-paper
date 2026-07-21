@@ -376,6 +376,12 @@ The same census through [rsfbclient](https://github.com/fernandobatels/rsfbclien
 
 Verified: 10 threads with one attachment open, 19 with the twelve extras (`13 user attachments, 1 distinct server pid`), and still 19 after the workers detach — pooled, not destroyed, the same retention signature as both C++ runs. The closing `MON$ATTACHMENTS` table shows the `Cache Writer` and `Garbage Collector` as `MON$SYSTEM_FLAG = 1` attachments, and the sample's own row carries `MON$REMOTE_PROCESS = .../samples/rust/target/debug/threading` — the monitoring tables name the client binary, whatever language it was written in.
 
+### Free Pascal sample — [`samples/fpc/threading.pas`](samples/fpc/threading.pas)
+
+The same census through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX, driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/threading && samples/fpc/bin/threading`). The twelve workers are classic `TThread` descendants, each `Execute` opening its own `IAttachment` via `FirebirdAPI.OpenDatabase` — the one-attachment-per-thread discipline that rsfbclient's borrow checker enforces is here a documented convention, since fbintf's reference-counted interfaces carry no compile-time thread-safety guarantee — and Pascal on Unix must name `cthreads` first in the `uses` clause or `TThread.Create` fails at runtime. The `/proc/<pid>/task` count is a plain `FindFirst` loop, and the one-value monitoring queries are `Att.OpenCursorAtStart(Tr, ...)[0].AsString` one-liners.
+
+Verified: 9 threads with one attachment open, 19 with the twelve extras (`13 user attachments, 1 distinct server pid`), and still 19 one second after the workers detach — pooled, not destroyed, the retention signature of every twin above. The closing `MON$ATTACHMENTS` table shows `Cache Writer` and `Garbage Collector` as `MON$SYSTEM_FLAG = 1` attachments with `<internal>` in place of a remote process, and the sample's own SYSDBA row carries `MON$REMOTE_PROCESS = .../samples/fpc/bin/threading`.
+
 ### Things to try
 
 - Raise the worker count above the pool size (e.g. 40) and watch the thread count climb by exactly the shortfall.

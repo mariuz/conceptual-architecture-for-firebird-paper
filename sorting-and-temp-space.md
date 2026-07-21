@@ -172,6 +172,12 @@ Both halves of the experiment through [rsfbclient](https://github.com/fernandoba
 
 Verified: the explained plan shows `Sort (record length: 430, key length: 408)` under a `Refetch` node — 408 of the 430 bytes *are* the key, confirming why refetch cannot shrink this particular sort. The threshold signature is identical to both C++ twins: the big sort peaks at 1 unlinked `fb_sort_*` file of exactly 73400320 bytes with MON$ growth of +68620288 over a 21008384-byte idle; the small sort shows 0 scratch files, 0 bytes, and +20492288 of in-memory growth.
 
+### Free Pascal sample — [`samples/fpc/sorting.pas`](samples/fpc/sorting.pas)
+
+Both halves of the experiment once more, through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX, driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/sorting && samples/fpc/bin/sorting`). The watcher is a classic `TThread` whose `Execute` opens its own `IAttachment`, and each MON$ poll collapses to a one-liner — `Mon.OpenCursorAtStart(Tr, MON_SQL)[0].AsInt64` inside a fresh `StartTransaction([isc_tpb_read, isc_tpb_nowait, isc_tpb_concurrency], taCommit)` — while the `/proc/<pid>/fd` half is the same shell-out as everywhere, here through FPC's `POpen`. The plan story lands between the neighbors: fbintf *has* `Stmt.GetPlan` where rsfbclient has nothing, but it returns only the detailed plan, never the legacy one-liner — which for this document is the right quirk, since the explained tree carries the Sort node's record and key lengths without any `RDB$SQL.EXPLAIN` detour.
+
+Verified: both plans print `Sort (record length: 430, key length: 408)` under a `Refetch` node; the big sort peaks at 1 unlinked `fb_sort_*` file of exactly 73400320 bytes with MON$ growth of +67964928 over a 28217344-byte idle; the small sort shows 0 scratch files, 0 bytes, and +19836928 of in-memory growth — the same threshold signature as all four twins above.
+
 ### Things to try
 
 - Drop the `desc` and `first 1` and fetch everything: the numbers barely move — the sort is a pipeline breaker, so the *open* pays for the whole sort whether you fetch one row or all 200,000.

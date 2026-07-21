@@ -211,6 +211,12 @@ The same commit semantics through [rsfbclient](https://github.com/fernandobatels
 
 Verified: the listener stays `still blocked` after `POST_EVENT` + `ROLLBACK` and again before the `COMMIT` of the triple post, then `wait_for_event returned` once it commits; `listen_event: handler fired 2 times over 2 committed posts` before its closure ended the re-queue loop; and the pure-Rust backend answers the identical call with `error: Events only works with the native client` — no auxiliary channel in the wire implementation yet.
 
+### Free Pascal sample — [`samples/fpc/events.pas`](samples/fpc/events.pas)
+
+The same three semantics through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/events && samples/fpc/bin/events`). fbintf sits between fb-cpp's fully-automatic `EventListener` and rsfbclient's countless `wait_for_event`: `LA.GetEventHandler('demo_event')` returns an `IEvents`, `AsyncWaitForEvent` arms the auxiliary connection and fires a method-of-object callback on fbintf's event thread, and — unlike rsfbclient's `()` wakeup — `ExtractEventCounts` returns the per-name delivered deltas, the `isc_event_counts` arithmetic pre-packaged with the previous counts kept as baseline. What fbintf does *not* automate is the one-shot re-queue: every delivery disarms the wait, and the sample must call `AsyncWaitForEvent` again after each callback (it opens with a committed primer post precisely to prove that plumbing before the assertions start).
+
+Verified: `PASS` — the primer post is delivered with count 1, `delivered count = 0` after `POST_EVENT` + `ROLLBACK`, still `0` before the `COMMIT` of the triple post, and `delivered count = 3 (correct - one delivery, count 3)` after it.
+
 ### Things to try
 
 - Set `EVENTS_DEMO_PAUSE_MS=5000` and, during the pause, list the demo process's sockets (`ss -tnp | grep events_demo`): two attachments, **three** TCP connections — the third is the aux channel to a non-3050 ephemeral port, the [`RemoteAuxPort` firewall pitfall](#the-wire-the-auxiliary-connection) made visible.

@@ -275,6 +275,12 @@ The full four-step scenario through [rsfbclient](https://github.com/fernandobate
 
 Verified: the same layer-by-layer story — `auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4` on the admin and both `HANDSON_USER` attachments, `HANDSON_USER`/`Srp`/`false` in `SEC$USERS`, 1 visible attachment without the role and 2 with it under `role=HANDSON_MONITOR` — and the failed login flattened into `sql error -902: Your user name and password are not defined. Ask your database administrator to set up a Firebird login.`, the SQLCODE-first rendering of the same `isc_login` chain.
 
+### Free Pascal sample — [`samples/fpc/security.pas`](samples/fpc/security.pas)
+
+The full four-step scenario through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/security && samples/fpc/bin/security`). The DPB sits exactly between the OO-API sample's hand-built buffer and the builder methods above: `FirebirdAPI.AllocateDPB` takes the same `isc_dpb_user_name` / `isc_dpb_password` / `isc_dpb_sql_role_name` constants, but as typed `Add(...).AsString` entries, and the role-carrying attachment is just `FirebirdAPI.OpenDatabase(conn, dpb)`. Deferred-at-commit user management dictates the same structure as the other twins: each `CREATE`/`DROP USER` batch runs in its own transaction with a full commit, and the idempotent cleanup must commit-and-rollback-on-failure, since `DROP USER` of a missing user only errors at `COMMIT`. The wrong password surfaces as `EIBInterBaseError` with the gds code in `IBErrorCode`.
+
+Verified: the same layer-by-layer story — `auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4` on the admin and both `HANDSON_USER` attachments, `HANDSON_USER`/`Srp`/`false` in `SEC$USERS`, 1 visible attachment without the role and 2 with `role=HANDSON_MONITOR` — and the failed login raising `gds 335544472` with `Your user name and password are not defined. Ask your database administrator to set up a Firebird login`, fbintf's rendering delta being an `Engine Code: 335544472` line prefixed above the message.
+
 ### Things to try
 
 - Grant `HANDSON_MONITOR` more bits — `set system privileges to MONITOR_ANY_ATTACHMENT, USE_GSTAT_UTILITY` — and re-run the doc's `fbsvcmgr ... action_db_stats` as `HANDSON_USER`: the [services-api document's layer-2 rejection](services-api.md#authorization-two-independent-layers) turns into success.

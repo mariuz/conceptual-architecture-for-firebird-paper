@@ -4,3 +4,6 @@
 [submodule "extern/fb-cpp"]
 	path = extern/fb-cpp
 	url = https://github.com/asfernandes/fb-cpp
+[submodule "extern/fbintf"]
+	path = extern/fbintf
+	url = https://github.com/MWASoftware/fbintf

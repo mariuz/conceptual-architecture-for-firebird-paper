@@ -175,6 +175,12 @@ Both phases through [rsfbclient](https://github.com/fernandobatels/rsfbclient), 
 
 Verified: the same coherency price as the C++ runs — phase 1 (shared cache) reads=43 and 71 per worker, phase 2 (private caches over `/tmp/fbhandson_rust_emb/page_cache_rust.fdb`) reads=1045 and 1051, writes near 900 in both phases, and every checker line `final: id=1 v=300` / `id=2 v=300` — roughly a 20-fold jump in physical reads for the identical workload, with not one update lost in either topology.
 
+### Free Pascal sample — [`samples/fpc/page_cache.pas`](samples/fpc/page_cache.pas)
+
+Both phases through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/page_cache && samples/fpc/bin/page_cache`). Because fbintf drives libfbclient directly, the embedded door closed to the JavaScript twin is simply open: a connection string with no host part makes each child process a full in-process engine, no builder flag needed. The choreography is `TProcess` re-invoking `ParamStr(0)` with a role argument (`--init`/`--worker`/`--check`) — the Pascal spelling of the C++ twin's fork/exec — and for phase 2 the parent assembles the SuperClassic sandbox itself with `FpMkdir`/`FpSymlink` plus a one-line `firebird.conf`, handing it to each child by appending `FIREBIRD=` to the `TProcess.Environment`. The referee is the same `MON$IO_STATS` join, read positionally from an `IResultset`.
+
+Verified: phase 1 (one SuperServer shared cache) reads = 51 and 59 per worker; phase 2 (two embedded engines with private caches over one file) reads = 1048 and 1052 — the same roughly 20-fold coherency price as the C++ and Rust runs — while writes stay near 900 in both topologies (877/874 vs 908/907), and every checker line reads `final: id=1 v=300` / `id=2 v=300 (expected 300)`: not one update lost in either topology.
+
 ### Things to try
 
 - Give the two rows their own pages (`create table t (id int primary key, v int, pad char(4000))` forces ~one row per 8K page) and rerun: phase 2's `reads` collapse — no shared page, no ping-pong, the protocol goes quiet.

@@ -200,6 +200,12 @@ Both directions through [rsfbclient](https://github.com/fernandobatels/rsfbclien
 
 Verified: the outbound half matches the C++ runs line for line — `before: size=5 lifetime=30s idle=0 active=0`, `inside the block: idle=0 active=1` for 3 calls, `idle=1` after the full commit, `idle=0` after `CLEAR ALL`; the inbound half opens attachments 619 and 620 (`2 rows in MON$ATTACHMENTS`), reuses `CURRENT_CONNECTION` 619, and after `drop(a)` reports `1 row left — detach really detached`.
 
+### Free Pascal sample — [`samples/fpc/pooling.pas`](samples/fpc/pooling.pas)
+
+The outbound half through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/pooling && samples/fpc/bin/pooling`). Everything is plain SQL via `IAttachment.ExecuteSQL` / `OpenCursorAtStart` — the `ALTER EXTERNAL CONNECTIONS POOL` tuning, the three-call `EXECUTE BLOCK`, the four `EXT_CONN_POOL_*` context variables read in one `RDB$GET_CONTEXT` SELECT — and the stage separation rides on fbintf spelling the two commit forms as distinct `ITransaction` methods: `CommitRetaining` keeps the transaction context (and with it the ACTIVE pooled connection) alive, while only the real `Commit` lets the external connection be reset and parked on the idle list. On the inbound side fbintf, like the raw client API it wraps, ships no client-side pool — in the Pascal stack that layer belongs to components above it (IBX or application code) — so unlike the node-firebird twin this sample is purely the server-side EDS story.
+
+Verified: `before: size=5 lifetime=30s idle=0 active=0`; inside the block `idle=0 active=1` for the three `EXECUTE STATEMENT ON EXTERNAL` calls — one outbound connection; after the full commit `idle=1 active=0`; after `CLEAR ALL` back to `idle=0 active=0` — line for line the same pool arithmetic as the C++ and Rust runs.
+
 ### Things to try
 
 - Run `./build/pooling` twice within 30 seconds: the second run starts with `idle=1` — the pool is per **server process** and outlives your attachment. Wait past the 30-second lifetime (or run `CLEAR OLDEST`) and it starts at `idle=0` again.

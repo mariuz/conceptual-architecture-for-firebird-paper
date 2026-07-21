@@ -410,6 +410,12 @@ The same instrumented round trip through [rsfbclient](https://github.com/fernand
 
 Verified: prepare at 0.09 ms, execute at 57.84 ms with the same `+20` catalog record inserts (page marks `+128`), commit at 13.99 ms draining `+14` page writes (`+2115` fetches over the whole trip) — and around the commit, `RDB$RELATIONS has TRACE_DEMO = 1` in the writing transaction while the monitor attachment `sees 0  (TRA_commit has not happened)`, flipping to `sees 1  (the DDL is now durable and public)` after.
 
+### Free Pascal sample — [`samples/fpc/request_lifecycle.pas`](samples/fpc/request_lifecycle.pas)
+
+The same instrumented round trip through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/request_lifecycle && samples/fpc/bin/request_lifecycle`). Like the OO API and unlike node-firebird's bundled `op_execute`, fbintf keeps the phases separate: `A.Prepare(Tr, sql)` is Stages 1–5, `Stmt.Execute` Stages 6–8, `Tr.Commit` Stage 9, and what the parser chose comes back typed — `Stmt.GetSQLStatementType = SQLDDL`, fbintf's enumerator for what fb-cpp calls `StatementType::DDL`. Where rsfbclient's borrow checker forced a second attachment for the MON$ sampling, fbintf attachments carry any number of concurrent transactions, so each sample is simply a fresh read-committed `ITransaction` on the *same* connection (MON$ snapshots are frozen per transaction) reading `MON$IO_STATS` / `MON$RECORD_STATS` for `CURRENT_CONNECTION`.
+
+Verified: prepare at 0.11 ms with `statement type = DDL`, execute at 58.28 ms with the same `+20` catalog record inserts (page marks `+130`), `RDB$RELATIONS has TRACE_DEMO = 1` inside the writing transaction, and commit at 13.74 ms draining `+16` page writes (`+2250` fetches over the whole trip) — the counters matching the other twins to within run-to-run noise (they report `+14` writes; the deltas ride whatever the cache happens to hold).
+
 ### Things to try
 
 - Add a column or a second index to the `CREATE TABLE` and watch the record-insert delta grow by exactly the extra catalog rows.

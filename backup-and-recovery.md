@@ -195,6 +195,12 @@ The Rust version through [rsfbclient](https://github.com/fernandobatels/rsfbclie
 
 Verified: the gbak log matches the other runs — `gbak:3 records written`, `closing file, committing, and finishing. 3072 bytes written` on backup; `backup version is 12`, `3 records restored` and `activating and creating deferred index "PUBLIC"."RDB$PRIMARY3"` on restore — and the in-driver check of `/tmp/fbhandson/backup_rust_restored.fdb` prints `restored database says: 3 rows, max name = gamma`.
 
+### Free Pascal sample — [`samples/fpc/backup.pas`](samples/fpc/backup.pas)
+
+The same round trip through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/backup && samples/fpc/bin/backup`) — and it lands on the opposite side of the driver contrast from Rust: where rsfbclient has no services attach at all and must shell out to gbak, fbintf reaches the Services API natively, like the C++ OO API and node-firebird's pure-JS reimplementation. `FirebirdAPI.GetServiceManager('localhost', TCP, SPB)` returns an `IServiceManager`; the request block is built tag by typed tag (`Req.Add(isc_action_svc_backup)`, `Req.Add(isc_spb_dbname).AsString`, `isc_spb_verbose`), and gbak's verbose log is streamed by re-querying `isc_info_svc_line` until an empty line signals the service is done — the same drain loop serving both the backup and the `isc_spb_res_replace` restore. The backup runs while the source attachment is still open, the online property of the [gbak section](#gbak-logical-backup).
+
+Verified: the backup ends with `gbak:3 records written` and `closing file, committing, and finishing. 3072 bytes written`; the restore reports `backup version is 12`, `3 records restored`, and defers the primary-key index until `activating and creating deferred index "PUBLIC"."RDB$PRIMARY4"`; the final in-driver check prints `restored database says: 3 rows, max name = gamma` — the same log and the same verdict as the C++, JavaScript and Rust runs.
+
 ### Things to try
 
 - Add `start->insertTag(&st, isc_spb_bkp_metadata_only)` (C++) or `metadataonly: true` (JS) and compare the `.fbk` sizes and the restore log — structure without data, the `-SKIP_DATA` idea from the [gbak section](#gbak-logical-backup).

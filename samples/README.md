@@ -38,6 +38,22 @@ and debugging"** section built on a pair of samples here:
   a feature the document says so honestly — and those deltas (type-mapping
   gaps, Arc4-vs-ChaCha wire crypt, WAIT-vs-NO WAIT defaults) are themselves
   part of what the samples teach.
+- **`fpc/<topic>.pas`** — the Free Pascal twin, written against
+  [fbintf](https://github.com/MWASoftware/fbintf) (vendored at
+  [`../extern/fbintf`](../extern/fbintf)), MWA Software's Firebird Pascal
+  API — the layer under IBX — driving the same libfbclient as the C++
+  samples behind COM-style reference-counted interfaces. It is the
+  richest wrapper of the twin families: a real Services API
+  (`IServiceManager` runs the verbose gbak backup and the full
+  two-service trace session natively), events with delivered counts,
+  `GetPlan` (always the detailed form), INT128/DECFLOAT as `TBCD`,
+  time-zone decoding down to the zone name, and TPB-level table
+  reservation — most of the gaps the JavaScript and Rust twins declare
+  simply do not exist here. Its own quirks are documented where they
+  bite: no blob `Seek`, status-vector warnings discarded, a DECFLOAT
+  decode bug for scales 16–31, and the sample for the types document is
+  named `types_demo.pas` because a program named `types.pas` would
+  shadow the FPC RTL unit and break every build in the directory.
 - **`rust/src/bin/<topic>.rs`** — the Rust twin, written against
   [rsfbclient](https://github.com/fernandobatels/rsfbclient) (one cargo
   package, one binary per topic, shared helper in
@@ -204,6 +220,18 @@ The per-document twins run the same way once the driver is installed:
 ```sh
 cd samples/nodejs
 node transactions.js        # or any other <topic>.js
+```
+
+## Free Pascal samples
+
+The [`fpc/`](fpc/) directory holds the per-document twins in Free Pascal.
+With fpc 3.2+ (`sudo apt install fpc`), the Firebird client library, and
+the vendored fbintf submodule:
+
+```sh
+git submodule update --init extern/fbintf
+make -C samples/fpc                    # everything into fpc/bin/
+samples/fpc/bin/transactions           # or any other topic
 ```
 
 ## Rust samples

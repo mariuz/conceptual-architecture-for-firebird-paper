@@ -306,6 +306,12 @@ The same state walk through [rsfbclient](https://github.com/fernandobatels/rsfbc
 
 Verified: the identical four-state progression — `RDB$DEFAULT` at `active=0 auto_enable=0` with no published tables, then `active=1`, then `PUBLIC.REPL_ORDERS`, then `PUBLIC.REPL_ORDERS, PUBLIC.REPL_SCRATCH` with `auto_enable=1` after `INCLUDE ALL` — ending in `MON$REPLICA_MODE = 0` (this side publishes; it is not a replica).
 
+### Free Pascal sample — [`samples/fpc/replication.pas`](samples/fpc/replication.pas)
+
+The same publication state walk through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/replication && samples/fpc/bin/replication`). With no replication-specific API in any wrapper, the sample is pure plumbing choices: one `ITransaction` carries all four states with `Tr.CommitRetaining` publishing each DDL step (rsfbclient's `commit_retaining` pattern), each `ALTER DATABASE` is a one-line `A.ExecImmediate(Tr, sql)`, the idempotent reset wraps each `DROP` / `DISABLE` in `try ... except on EIBInterBaseError do ;` (fb-cpp's per-statement catch, in Pascal syntax), and the `CHAR(63)` blank-padding fb-cpp's section flags is handled the Rust way — `TRIM(...)` in the read-back queries, walked through `IResultSet.FetchNext`.
+
+Verified: the identical four-state progression — `RDB$DEFAULT` at `active=0 auto_enable=0` with `(no tables in the publication)`, then `active=1`, then `published table: PUBLIC.REPL_ORDERS`, then both `PUBLIC.REPL_ORDERS` and `PUBLIC.REPL_SCRATCH` with `auto_enable=1` after `INCLUDE ALL` — ending in `MON$DATABASE.MON$REPLICA_MODE = 0` (not a replica: this side publishes).
+
 ### Things to try
 
 - Create a new table *after* `INCLUDE ALL` and re-read `RDB$PUBLICATION_TABLES` — `RDB$AUTO_ENABLE` means it appears without any further DDL.

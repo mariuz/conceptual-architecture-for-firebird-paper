@@ -186,6 +186,12 @@ The Rust twin through [rsfbclient](https://github.com/fernandobatels/rsfbclient)
 
 Verified: both backends report `engine version = 6.0.0` — the native line annotated `(isc_* calls inside libfbclient)`, the pure-Rust line `(op_attach/op_execute on a socket)` — and both resolve `db_name()` to the same server-side file `/opt/firebird/examples/empbuild/employee.fdb`; `server_engine()` fails with `error: Version not detected: 6.0.0`, the enum-stops-at-V5 driver-lag delta stated in the code.
 
+### Free Pascal sample — [`samples/fpc/api_styles.pas`](samples/fpc/api_styles.pas)
+
+The same query through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/api_styles && samples/fpc/bin/api_styles`) — and its contribution to this document is that fbintf *vendors both C APIs* of the [two-API section](#two-c-apis-oo-and-isc): `TFB25ClientAPI` built on the `isc_*` entry points and XSQLDA, `TFB30ClientAPI` built on `IMaster`, both hidden behind the one `IFirebirdAPI` interface, with the loader auto-selecting the OO binding whenever fbclient exports `fb_get_master_interface`. The sample subclasses the loader (`TLegacyOnlyLibrary`, overriding `GetFirebird3API` to return nil) to force the legacy fallback next to the default, then runs one identical `RunQuery` procedure through both — the same `AllocateDPB`/`OpenDatabase`/`OpenCursorAtStart` Pascal code driving XSQLDA descriptors in one half and `IMessageMetadata` in the other, against the same Y-valve in the same process. Where the C++ sample writes the two liturgies out by hand, fbintf shows them fully abstracted: the style becomes a loader decision, not a coding style.
+
+Verified: the legacy binding reports `GetImplementationVersion = 2.5, OO master interface used = FALSE` — the API *level* it models, not the library it drives — and still answers `engine version = 6.0.0`; the default binding reports `6.0` / `TRUE` and the same `6.0.0`, closing with `same engine, same Y-valve, two API styles behind one IFirebirdAPI`.
+
 ### Things to try
 
 - Break the password in `iscStyle()` and in `ooStyle()` and compare how the same `isc_login` error surfaces: `fb_interpret` loop output versus one `FbException` — the two error models of the [API table](#comparison-postgresql-mysql-sqlite).

@@ -231,6 +231,12 @@ The same four query groups through [rsfbclient](https://github.com/fernandobatel
 
 Verified: all numbers match the other twins — running totals 100/300/450 (East) and 300/550/950 (West), `RANK(175)` = 3 in East and 1 in West, row 2's neighbour average `125` with its own `200` excluded from the frame. The explained plan shows what the legacy `PLAN SORT (SORT (SORT (SORT (...))))` compresses: five `Window Partition` nodes over one `Table "PUBLIC"."SALES" Full Scan`, four of them fed by their own `Sort` node (key lengths 24, 24, 12, 28 — one per distinct window ordering) with a `Record Buffer` between every pair — the document's `SortedStream` → `WindowedStream` execution story, node by node.
 
+### Free Pascal sample — [`samples/fpc/windows.pas`](samples/fpc/windows.pas)
+
+The same four query groups through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX, driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/windows && samples/fpc/bin/windows`). The isql-style printer is built from the statement's own surface — column aliases from `IStatement.MetaData[i].getAliasName`, every value via `ISQLData.AsString` with `IsNull` mapped to `<null>` — and the plan needs neither fb-cpp's prefetch option nor Rust's `RDB$SQL.EXPLAIN` detour: fbintf's `GetPlan` only ever returns the *detailed* plan, a quirk that is a limitation elsewhere but exactly the right tool here, printing the whole per-window cascade the legacy `PLAN SORT (SORT (SORT (SORT (...))))` compresses.
+
+Verified: every number matches the other twins — running totals 100/300/450 (East) and 300/550/950 (West), `LAG`'s `<null>` opening each partition, `RANK(175)` = 3 in East and 1 in West, medians 150/300, and row 2's neighbour average `125` with its own `200` excluded from the FB6 frame. `GetPlan` prints five `Window Partition` nodes over one `Table "PUBLIC"."SALES" Full Scan`, four fed by their own `Sort` with a `Record Buffer` between every pair — same shape as the Rust run's explained plan, though with wider sort keys (key lengths 56, 56, 12, 60 versus 24, 24, 12, 28 there: this sample attaches with a UTF8 client charset, and text sort keys widen with the connection charset).
+
 ### Things to try
 
 - Change the FB6 exclusion to `EXCLUDE TIES` or `EXCLUDE GROUP` after adding a duplicate amount — the frame drops peers instead of the current row.

@@ -216,6 +216,12 @@ The same three demonstrations through [rsfbclient](https://github.com/fernandoba
 
 Verified: `libEngine14 mapped=no` before the attach, `yes` after, with `libfbclient` mapped `yes` throughout; `rows=3 max(name)=sprocket NETWORK_PROTOCOL=<null: in-process>` and `engine pid=28054, my pid=28054 — the 'server' is this process`; the continuum measured at `1.34 ms` embedded vs `16.86 ms` remote attach+detach average over 5 runs — the same order-of-magnitude gap as both C++ runs.
 
+### Free Pascal sample — [`samples/fpc/embedded_demo.pas`](samples/fpc/embedded_demo.pas)
+
+The same three demonstrations through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient behind COM-style reference-counted interfaces (`make -C samples/fpc bin/embedded_demo && samples/fpc/bin/embedded_demo`). Like fb-cpp and unlike the link-time C++/Rust builds, fbintf dlopens libfbclient on first use of `FirebirdAPI`, so the `/proc/self/maps` ladder has three states: nothing mapped, client mapped after the first `FirebirdAPI.AllocateDPB`, engine mapped after the first local-path attach. The embedded attach is where fbintf's DPB surface earns its keep: `AllocateDPB` plus a single `Add(isc_dpb_lc_ctype).setAsString('UTF8')` builds a credential-free DPB — no user, no password, authentication is the OS login — and `OpenDatabase(localDb, EmbeddedDPB, false)` with `RaiseExceptionOnConnectError=false` returns `nil` instead of raising, so create-if-missing is a plain `if A = nil then CreateDatabase(...)`. Detach is an explicit `att.Disconnect` (reference counting alone would also do it), which is what the timing loop measures.
+
+Verified: the three-state progression prints exactly as described (`libfbclient mapped=no` → `yes` with `libEngine14 mapped=no` → both `yes`); `rows=3 max(name)=sprocket NETWORK_PROTOCOL=<null: in-process>` with `engine pid=46710, my pid=46710`; and the continuum measured at `1.40 ms` embedded (`~/fbhandson/embedded_demo_fpc.fdb`) vs `17.60 ms` remote (`localhost:employee`) attach+detach average over 5 runs — the same order-of-magnitude gap as every native run above.
+
 ### Things to try
 
 - Run `./build/embedded_demo` while `/opt/firebird/bin/isql /tmp/fbhandson/embedded_demo.fdb` sits attached in another shell — observe the 08001 exclusive-open error from the footnote above; then point both at a `FIREBIRD` root whose `firebird.conf` says `ServerMode = Classic` and watch them coexist.

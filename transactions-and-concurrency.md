@@ -189,6 +189,12 @@ The same scenario through [rsfbclient](https://github.com/fernandobatels/rsfbcli
 
 Verified: snapshot holds at 100 while B commits 150, read committed then sees 150, and the NO WAIT conflict surfaces as `sql error -913: deadlock / update conflicts with concurrent update / concurrent transaction number is 22` — the same three-line chain the OO-API sample prints, with the winning transaction's number in the last line.
 
+### Free Pascal sample — [`samples/fpc/transactions.pas`](samples/fpc/transactions.pas)
+
+The same scenario through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX — driving the same libfbclient as the C++ samples behind COM-style reference-counted interfaces (`make -C samples/fpc bin/transactions && samples/fpc/bin/transactions`). The TPB sits exactly between the OO-API sample's hand-packed byte array and fb-cpp's builder methods: `StartTransaction([isc_tpb_write, isc_tpb_nowait, isc_tpb_concurrency], taCommit)` takes the same `isc_tpb_*` constants, but as a Pascal open array with a declared default completion, and the conflict arrives as an `EIBInterBaseError` whose `IBErrorCode` is the gds code.
+
+Verified: snapshot holds at 100 while B commits 150, read committed then sees 150, and the NO WAIT conflict raises `gds 335544336` with the same `deadlock / update conflicts with concurrent update / concurrent transaction number is` chain in `E.Message`.
+
 ### Things to try
 
 - Change `isc_tpb_nowait` to `isc_tpb_wait` in step 3 of the C++ sample and watch the update block until `holdB` commits — then fail anyway (SNAPSHOT cannot see the new version).
