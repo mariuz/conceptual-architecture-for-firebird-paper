@@ -74,7 +74,7 @@ the reading order for anyone joining the effort:
 | Lock manager | [lock-manager.md](lock-manager.md) | `src/lock/lock.cpp` | planned |
 | BLR decode | [blr-intermediate-language.md](blr-intermediate-language.md) | `par.cpp`, `blp.h`, `gds.cpp` | **done** — 171-verb walker; every decodable BLR blob matches the engine's own `SET BLOB ALL` printer token-for-token |
 | DSQL, execution, optimizer | [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `src/dsql/`, `exe.cpp` | planned |
-| Wire protocol — the firebird-qa milestone | [firebird-wire-protocol.md](firebird-wire-protocol.md), [security-architecture.md](security-architecture.md) | `src/remote/`, `src/auth/` | **fire-crab logs in** — XDR, negotiation, SRP-256 auth (from-scratch crypto), Arc4 wire encryption and op_attach over real TCP; the engine records it as an Srp256/Arc4 attachment. op_execute/op_fetch remain before the pytest suite runs |
+| Wire protocol — the firebird-qa milestone | [firebird-wire-protocol.md](firebird-wire-protocol.md), [security-architecture.md](security-architecture.md) | `src/remote/`, `src/auth/` | **fire-crab runs a query end-to-end** — login (SRP-256/Arc4/attach) plus the statement pipeline (transaction, allocate, prepare, execute, fetch); a single-BIGINT query's decoded value matches isql. This is the firebird-qa entry threshold; running the suite and widening type coverage is the ongoing work |
 | Services, events, security | [services-api.md](services-api.md), [firebird-events.md](firebird-events.md), [security-architecture.md](security-architecture.md) | `svc.cpp`, `event.cpp`, `src/auth/` | planned |
 
 The conversion's working rules (explicit little-endian decoding instead of
