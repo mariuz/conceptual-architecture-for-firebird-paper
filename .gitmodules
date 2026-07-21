@@ -7,3 +7,6 @@
 [submodule "extern/fbintf"]
 	path = extern/fbintf
 	url = https://github.com/MWASoftware/fbintf
+[submodule "extern/fire-crab"]
+	path = extern/fire-crab
+	url = https://github.com/mariuz/fire-crab

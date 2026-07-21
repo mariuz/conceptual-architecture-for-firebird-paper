@@ -66,6 +66,7 @@ In this paper, we investigate the conceptual architecture for the Firebird datab
 * Companion document: [Parallel Workers — parallelism built out of attachments](parallel-workers.md)
 * Companion document: [The Compiled Statement Cache — what makes two statements the same](statement-cache.md)
 * Companion document: [Debugging Firebird in C++ — build a symbolled engine, debug it embedded, and the instrumentation that beats gdb](debugging-firebird.md)
+* Companion document: [fire-crab — converting the Firebird engine to Rust, guided by this collection and differential-tested against the C++ engine](firebird-rust-conversion.md)
 
 ## Introduction
 
