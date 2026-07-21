@@ -56,13 +56,15 @@ official [firebird-qa](https://github.com/FirebirdSQL/firebird-qa) suite is
 explicitly the *milestone* — now in reach rather than distant: fire-crab
 speaks the *server* half of the wire protocol well enough that a genuine
 third-party client (node-firebird) authenticates via SRP-256, encrypts the
-wire and runs `SELECT COUNT(*) FROM <table>` end-to-end, the server opening
-the attached database file and counting from its pages — matching isql
-exactly. That is the first query op dispatched into the converted storage
-engine; what stands between here and running the suite is the *breadth* of
-the SQL surface behind the pipeline (projections, column types, predicates,
-DML), not the protocol — so firebird-qa remains a milestone, not yet a
-current coverage claim.
+wire and runs real queries end-to-end — both `SELECT COUNT(*)` and column
+projections (`SELECT <cols>` / `SELECT *`), the server opening the attached
+file, resolving table and columns through `RDB$RELATIONS`/`RDB$RELATION_FIELDS`
+and decoding typed rows from the pages — matching isql value-for-value on user
+tables (including NULLs and mixed-width tables, where the record-format field
+id diverges from the column position). What stands between here and running the
+suite is the remaining *breadth* of the SQL surface (predicates, joins, more
+column types, DML), not the protocol — so firebird-qa remains a milestone, not
+yet a current coverage claim.
 
 ## Conversion pointers: document → C++ → Rust
 
@@ -83,7 +85,7 @@ the reading order for anyone joining the effort:
 | BLR decode | [blr-intermediate-language.md](blr-intermediate-language.md) | `par.cpp`, `blp.h`, `gds.cpp` | **done** — 171-verb walker; every decodable BLR blob matches the engine's own `SET BLOB ALL` printer token-for-token |
 | DSQL, execution, optimizer | [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `src/dsql/`, `exe.cpp` | planned |
 | Wire protocol — client (`src/remote/`, `src/auth/`) | [firebird-wire-protocol.md](firebird-wire-protocol.md), [security-architecture.md](security-architecture.md) | `src/remote/`, `src/auth/` | **fire-crab runs general SELECTs** — login (SRP-256/Arc4/attach) plus prepare/execute/batched-fetch of integer+text columns, matching isql row-for-row. This is a wire *client* that validates the codec against the real engine |
-| Wire protocol — server (the firebird-qa milestone) | [firebird-wire-protocol.md](firebird-wire-protocol.md) | `src/remote/` server side | **accepts real clients and answers a real query** — a third-party driver (node-firebird) negotiates protocol 20, authenticates via the *server* half of SRP-256, arms Arc4 encryption, and runs `SELECT COUNT(*) FROM <table>` end-to-end: the server opens the attached database file and counts from its pages (name resolved through `RDB$RELATIONS`), matching isql exactly on user and system tables. First op dispatched into the converted `ods` engine; widening the SQL surface (projections, types, predicates) is what remains before firebird-qa runs |
+| Wire protocol — server (the firebird-qa milestone) | [firebird-wire-protocol.md](firebird-wire-protocol.md) | `src/remote/` server side | **accepts real clients and answers real queries** — a third-party driver (node-firebird) negotiates protocol 20, authenticates via the *server* half of SRP-256, arms Arc4 encryption, and runs both `SELECT COUNT(*)` and column projections (`SELECT <cols>` / `SELECT *`) end-to-end: the server opens the attached file, resolves table and columns through `RDB$RELATIONS`/`RDB$RELATION_FIELDS`, decodes records from the pages, and returns typed rows matching isql value-for-value on user tables (incl. NULLs and mixed-width tables where field id ≠ column position). Widening the remaining SQL surface (predicates, joins, more types) is what stands before firebird-qa runs |
 | Services, events, security | [services-api.md](services-api.md), [firebird-events.md](firebird-events.md), [security-architecture.md](security-architecture.md) | `svc.cpp`, `event.cpp`, `src/auth/` | planned |
 
 The conversion's working rules (explicit little-endian decoding instead of
