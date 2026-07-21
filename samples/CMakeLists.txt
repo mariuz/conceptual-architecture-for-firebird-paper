@@ -36,3 +36,17 @@ target_include_directories(events_demo PRIVATE "${FIREBIRD_INCLUDE_DIR}")
 target_link_libraries(events_demo PRIVATE "${FBCLIENT_LIBRARY}")
 find_package(Threads REQUIRED)
 target_link_libraries(events_demo PRIVATE Threads::Threads)
+
+# Per-document hands-on samples: one small program per companion document,
+# all sharing cpp/fb_sample.h.  Each cpp/<topic>.cpp builds to <topic>.
+# Debug info (-g) is always included so the gdb walk-throughs in the
+# documents' "Hands-on" sections work out of the box.
+file(GLOB HANDSON_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/cpp/*.cpp")
+foreach(src ${HANDSON_SOURCES})
+    get_filename_component(name "${src}" NAME_WE)
+    add_executable("${name}" "${src}")
+    target_include_directories("${name}" PRIVATE
+        "${FIREBIRD_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/cpp")
+    target_link_libraries("${name}" PRIVATE "${FBCLIENT_LIBRARY}" Threads::Threads)
+    target_compile_options("${name}" PRIVATE -g)
+endforeach()
