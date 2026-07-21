@@ -72,7 +72,8 @@ the reading order for anyone joining the effort:
 | Record versions and GC | [garbage-collection-and-sweep.md](garbage-collection-and-sweep.md) | `vio.cpp` | **done** — predicts which versions a sweep collects; the prediction matches `gfix -sweep`'s actual removal exactly (210 versions across both GC paths) |
 | Page cache and careful writes | [page-cache-coherency.md](page-cache-coherency.md), [careful-writes-and-crash-safety.md](careful-writes-and-crash-safety.md) | `cch.cpp` | planned — the correctness gate |
 | Lock manager | [lock-manager.md](lock-manager.md) | `src/lock/lock.cpp` | planned |
-| BLR, DSQL, execution | [blr-intermediate-language.md](blr-intermediate-language.md), [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `par.cpp`, `src/dsql/`, `exe.cpp` | planned |
+| BLR decode | [blr-intermediate-language.md](blr-intermediate-language.md) | `par.cpp`, `blp.h`, `gds.cpp` | **done** — 171-verb walker; every decodable BLR blob matches the engine's own `SET BLOB ALL` printer token-for-token |
+| DSQL, execution, optimizer | [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `src/dsql/`, `exe.cpp` | planned |
 | Wire protocol — the firebird-qa milestone | [firebird-wire-protocol.md](firebird-wire-protocol.md) | `src/remote/` | planned |
 | Services, events, security | [services-api.md](services-api.md), [firebird-events.md](firebird-events.md), [security-architecture.md](security-architecture.md) | `svc.cpp`, `event.cpp`, `src/auth/` | planned |
 
