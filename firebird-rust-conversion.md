@@ -68,8 +68,8 @@ the reading order for anyone joining the effort:
 | PIP / pointer / data pages, record walk | [on-disk-structure.md](on-disk-structure.md), [transactions-and-concurrency.md](transactions-and-concurrency.md) | `ods.h`, `dpm.cpp` | **done** — the record walk re-derives `SELECT COUNT(*)` from raw pages, verified against the live engine from 0 to 200k rows |
 | Record field decoding | [on-disk-structure.md](on-disk-structure.md), [metadata-cache.md](metadata-cache.md), [catalog-bootstrap.md](catalog-bootstrap.md) | RDB$FORMATS blobs, `met.epp` | **done** — full rows decoded from raw pages via the same metadata bootstrap the engine uses, matching live `SELECT` value-for-value |
 | B-tree pages | [indexing-and-full-text-search.md](indexing-and-full-text-search.md) | `btr.cpp`, `btn.h` | **done** — leaf-level walks with prefix decompression match the engine's `ORDER BY` over the same index, row-for-row at 200k rows |
-| Transactions, TIP semantics, snapshots | [transactions-and-concurrency.md](transactions-and-concurrency.md) | `tra.cpp` | planned |
-| Record versions and GC | [garbage-collection-and-sweep.md](garbage-collection-and-sweep.md) | `vio.cpp` | planned |
+| Transactions, TIP semantics, snapshots | [transactions-and-concurrency.md](transactions-and-concurrency.md) | `tra.cpp`, `vio.cpp`, `sqz.cpp` | **done** — TIP-driven committed-only visibility walk (with delta reconstruction) matches a fresh-snapshot `SELECT` on a file frozen mid-uncommitted-work |
+| Record versions and GC | [garbage-collection-and-sweep.md](garbage-collection-and-sweep.md) | `vio.cpp` | next |
 | Page cache and careful writes | [page-cache-coherency.md](page-cache-coherency.md), [careful-writes-and-crash-safety.md](careful-writes-and-crash-safety.md) | `cch.cpp` | planned — the correctness gate |
 | Lock manager | [lock-manager.md](lock-manager.md) | `src/lock/lock.cpp` | planned |
 | BLR, DSQL, execution | [blr-intermediate-language.md](blr-intermediate-language.md), [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `par.cpp`, `src/dsql/`, `exe.cpp` | planned |
