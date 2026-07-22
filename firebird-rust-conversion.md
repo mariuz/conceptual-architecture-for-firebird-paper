@@ -151,14 +151,25 @@ runtime-blob segment fire-crab wrote), CREATE INDEX with backfill
 (the engine PLAN-navigates it; a unique backfill over duplicate data
 fails like the engine's own index build), and DROP TABLE (catalog
 rows stubbed for the engine's sweep to collect, pages released, the
-restored backup still enforcing the PK). What stands between here and
-running the suite is now *breadth* — select-list expressions and
-arithmetic, ALTER TABLE, foreign keys — not the storage engine,
-the indexes, the protocol, the catalog or the constraints: every layer from pages to B-trees to the wire now both
-reads and writes files the real engine validates, through the same
-prepared-statement machinery the suite's driver uses — so firebird-qa
-remains a milestone, not yet a current coverage claim, but one with no
-structural piece missing.
+restored backup still enforcing the PK). And the suite's own client
+now works against it: the reference python firebird-driver — the OO
+client firebird-qa's tests run every SQL statement through — drives
+fire-crab end-to-end (SELECT, parameterised DML, CREATE TABLE with a
+primary key the driver's own duplicate insert then hits, DROP TABLE,
+a reconnect reading the committed writes), which forced the protocol
+to answer the client's exact requested info-item template and to echo
+the transaction handle the way the engine does. What stands between
+here and *running the suite* is the plugin's session bootstrap: it
+needs the Services API (`op_service_attach`/`op_service_info` for the
+server version and directories) and `op_create` for per-test
+databases — named, concrete next milestones — plus the remaining
+*breadth* of the SQL surface (select-list expressions and arithmetic,
+ALTER TABLE, foreign keys). Not the storage engine, the indexes, the
+statement protocol, the catalog or the constraints: every layer from
+pages to B-trees to the wire now both reads and writes files the real
+engine validates, and the real driver drives it — so firebird-qa
+remains a milestone, not yet a current coverage claim, but one whose
+last mile is now measured in named pieces, not unknowns.
 
 ## Conversion pointers: document → C++ → Rust
 
