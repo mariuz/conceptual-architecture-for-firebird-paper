@@ -159,17 +159,26 @@ primary key the driver's own duplicate insert then hits, DROP TABLE,
 a reconnect reading the committed writes), which forced the protocol
 to answer the client's exact requested info-item template and to echo
 the transaction handle the way the engine does. What stands between
-here and *running the suite* is the plugin's session bootstrap: it
-needs the Services API (`op_service_attach`/`op_service_info` for the
-server version and directories) and `op_create` for per-test
-databases — named, concrete next milestones — plus the remaining
+here and *running the suite* was the plugin's session bootstrap, and
+its front door is now converted: the Services API
+(`op_service_attach`/`op_service_info`, from which the plugin reads the
+server version, home and lock directories, security database and
+architecture) and `op_create` (the driver's `create_database` — fire-crab
+materialises an empty database with the engine, then serves and mutates
+it) both work with the real python driver, engine-validated. What is
+left of the bootstrap is deeper server emulation: past these operations
+the plugin attaches to the `employee` sample database and probes
+`MON$ATTACHMENTS` and the ODS version to detect the server architecture
+— monitoring tables and the sample database itself — plus the remaining
 *breadth* of the SQL surface (select-list expressions and arithmetic,
 ALTER TABLE, foreign keys). Not the storage engine, the indexes, the
-statement protocol, the catalog or the constraints: every layer from
-pages to B-trees to the wire now both reads and writes files the real
-engine validates, and the real driver drives it — so firebird-qa
-remains a milestone, not yet a current coverage claim, but one whose
-last mile is now measured in named pieces, not unknowns.
+statement protocol, the catalog, the constraints or the session
+handshake: every layer from pages to B-trees to the wire now both reads
+and writes files the real engine validates, the real driver drives it,
+and its session bootstrap gets its version and creates its databases
+through fire-crab — so firebird-qa remains a milestone, not yet a
+current coverage claim, but one whose last mile is now a short list of
+named server-emulation pieces.
 
 ## Conversion pointers: document → C++ → Rust
 
