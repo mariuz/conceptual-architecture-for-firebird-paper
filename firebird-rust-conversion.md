@@ -85,12 +85,17 @@ and committed in the TIP, image laid into a data-page slot), and
 `UPDATE`/`DELETE` write real MVCC *version chains* — the old version copied
 to a fresh slot flagged `rhd_chain`, the primary rewritten with a back
 pointer (a patched image for update, a deleted stub for delete) — and the
-write path now ALLOCATES: when every data page is full the relation grows,
-pages taken from the PIP (the file itself extending past EOF), formatted
-and hooked into the pointer pages, validated by `gfix -v -full` and by
-gstat's own page accounting (1 → 8 data pages under a 250-row insert
-storm), with DML on indexed tables refused until index maintenance is
-converted — with the
+write path now ALLOCATES AND MAINTAINS INDEXES: when every data page is
+full the relation grows (pages from the PIP, the file extending past EOF,
+pointer pages hooked up), and DML on indexed tables writes real B-tree
+entries — keys byte-exact per btr.cpp's `compress`, nodes in btn.h's
+prefix-compressed encoding, page splits and root splits per
+`split_and_insert` — that the ENGINE then reads through: isql point
+lookups with PLAN-asserted index scans, range scans, navigational ORDER
+BY, all finding exactly the rows fire-crab wrote, with `gfix -v -full`
+cross-checking every record against every index entry and duplicate
+primary keys refused (multi-segment/descending/expression indexes still
+refuse DML) — with the
 engine itself as the oracle three ways: `gfix -v -full` accepts the chains,
 the engine applying the *same statements* to a second copy produces an
 identical table, and `gfix -sweep` — the engine's own garbage collector —
@@ -108,10 +113,12 @@ by the engine's own bootstrap walk ([ini.epp](https://github.com/FirebirdSQL/fir
 catalog rows — the file describes itself, and the computation must
 reproduce the offsets earlier increments established by differential
 testing before it is trusted. What stands between here and
-running the suite is the remaining *breadth* of the SQL surface
-(the write path's index
-maintenance, now its one remaining piece), not the protocol — so firebird-qa remains
-a milestone, not yet a current coverage claim.
+running the suite is now *breadth* — parameter binding, multi-segment and
+descending indexes, the less-common statement shapes — not the storage
+engine or the protocol: every layer from pages to B-trees to the wire now
+both reads and writes files the real engine validates — so firebird-qa
+remains a milestone, not yet a current coverage claim, but one with no
+structural piece missing.
 
 ## Conversion pointers: document → C++ → Rust
 
@@ -132,7 +139,7 @@ the reading order for anyone joining the effort:
 | BLR decode | [blr-intermediate-language.md](blr-intermediate-language.md) | `par.cpp`, `blp.h`, `gds.cpp` | **done** — 171-verb walker; every decodable BLR blob matches the engine's own `SET BLOB ALL` printer token-for-token |
 | DSQL, execution, optimizer | [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `src/dsql/`, `exe.cpp` | planned |
 | Wire protocol — client (`src/remote/`, `src/auth/`) | [firebird-wire-protocol.md](firebird-wire-protocol.md), [security-architecture.md](security-architecture.md) | `src/remote/`, `src/auth/` | **fire-crab runs general SELECTs** — login (SRP-256/Arc4/attach) plus prepare/execute/batched-fetch of integer+text columns, matching isql row-for-row. This is a wire *client* that validates the codec against the real engine |
-| Wire protocol — server (the firebird-qa milestone) | [firebird-wire-protocol.md](firebird-wire-protocol.md) | `src/remote/` server side | **accepts real clients and answers real filtered/sorted/aggregated queries** — a third-party driver (node-firebird) negotiates protocol 20, authenticates via the *server* half of SRP-256, arms Arc4 encryption, and runs column projections (`SELECT <cols>` / `SELECT *`), `WHERE` filtering (comparisons, `AND`/`OR`, `IS [NOT] NULL`, three-valued logic), `ORDER BY` (columns/ordinals, ASC/DESC, engine NULL ordering), `MIN`/`MAX`/`SUM`/`COUNT` aggregates, `GROUP BY` (grouped aggregates, NULL keys bucketing together, multi-aggregate global queries) and `HAVING` (evaluated on the computed group rows, aggregates in the predicate resolved to output items — hidden ones when not selected) and INNER + LEFT/RIGHT/FULL OUTER equi-joins (qualified/bare column resolution, multi-key `ON`, NULL keys never matching, pad-insensitive text keys; outer kinds NULL-pad partnerless rows and WHERE runs on the padded row — the anti-join) end-to-end — returning native wire types (SHORT/LONG/INT64, scaled numerics the client divides per the describe, IEEE float/double, raw-unit date/time/timestamp, boolean, INT128 and DECFLOAT(16/34) — DPD-decoded via the engine's own decNumber tables, rendered per decNumberToString with cohort preserved, serialized exactly as xdr.cpp does — the TIME ZONE types (UTC + zone id, offset zones converted exactly, named zones honest, ORDER BY by UTC instant), and blobs served as real blobs (the 8-byte id in the row, content through `op_open_blob`/`op_get_segment`, first content-level blob differential incl. a multi-page level-1 blob and a system blob): the server opens the attached file, resolves table and columns through `RDB$RELATIONS`/`RDB$RELATION_FIELDS`, decodes records from the pages, evaluates/groups/sorts/accumulates, and returns typed rows matching isql value-for-value on user tables (incl. NULLs and mixed-width tables where field id ≠ column position) AND on system relations — their formats, absent from `RDB$FORMATS`, computed from the database's own catalog by the ini.epp bootstrap walk, anchored to the differentially-established offsets before being trusted. DML covers all three verbs: INSERT writes real records into the pages, UPDATE/DELETE write real version chains (old version copied out as `rhd_chain`, primary rewritten with a back pointer — a deleted stub for DELETE), with the engine as oracle three ways — isql prints the identical table the engine itself produces from the same statements, `gfix -v -full` accepts the chains, and `gfix -sweep` (the engine's own GC) collects them exactly. Widening the remaining SQL surface (write-path index maintenance — the one remaining piece) is what stands before firebird-qa runs |
+| Wire protocol — server (the firebird-qa milestone) | [firebird-wire-protocol.md](firebird-wire-protocol.md) | `src/remote/` server side | **accepts real clients and answers real filtered/sorted/aggregated queries** — a third-party driver (node-firebird) negotiates protocol 20, authenticates via the *server* half of SRP-256, arms Arc4 encryption, and runs column projections (`SELECT <cols>` / `SELECT *`), `WHERE` filtering (comparisons, `AND`/`OR`, `IS [NOT] NULL`, three-valued logic), `ORDER BY` (columns/ordinals, ASC/DESC, engine NULL ordering), `MIN`/`MAX`/`SUM`/`COUNT` aggregates, `GROUP BY` (grouped aggregates, NULL keys bucketing together, multi-aggregate global queries) and `HAVING` (evaluated on the computed group rows, aggregates in the predicate resolved to output items — hidden ones when not selected) and INNER + LEFT/RIGHT/FULL OUTER equi-joins (qualified/bare column resolution, multi-key `ON`, NULL keys never matching, pad-insensitive text keys; outer kinds NULL-pad partnerless rows and WHERE runs on the padded row — the anti-join) end-to-end — returning native wire types (SHORT/LONG/INT64, scaled numerics the client divides per the describe, IEEE float/double, raw-unit date/time/timestamp, boolean, INT128 and DECFLOAT(16/34) — DPD-decoded via the engine's own decNumber tables, rendered per decNumberToString with cohort preserved, serialized exactly as xdr.cpp does — the TIME ZONE types (UTC + zone id, offset zones converted exactly, named zones honest, ORDER BY by UTC instant), and blobs served as real blobs (the 8-byte id in the row, content through `op_open_blob`/`op_get_segment`, first content-level blob differential incl. a multi-page level-1 blob and a system blob): the server opens the attached file, resolves table and columns through `RDB$RELATIONS`/`RDB$RELATION_FIELDS`, decodes records from the pages, evaluates/groups/sorts/accumulates, and returns typed rows matching isql value-for-value on user tables (incl. NULLs and mixed-width tables where field id ≠ column position) AND on system relations — their formats, absent from `RDB$FORMATS`, computed from the database's own catalog by the ini.epp bootstrap walk, anchored to the differentially-established offsets before being trusted. DML covers all three verbs: INSERT writes real records into the pages, UPDATE/DELETE write real version chains (old version copied out as `rhd_chain`, primary rewritten with a back pointer — a deleted stub for DELETE), with the engine as oracle three ways — isql prints the identical table the engine itself produces from the same statements, `gfix -v -full` accepts the chains, and `gfix -sweep` (the engine's own GC) collects them exactly. The write path is complete for the common shapes — records, version chains, page allocation and B-tree index maintenance all engine-validated; what stands before firebird-qa runs is breadth (parameter binding, the less-common index shapes) |
 | Services, events, security | [services-api.md](services-api.md), [firebird-events.md](firebird-events.md), [security-architecture.md](security-architecture.md) | `svc.cpp`, `event.cpp`, `src/auth/` | planned |
 
 The conversion's working rules (explicit little-endian decoding instead of
