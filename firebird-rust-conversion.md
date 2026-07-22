@@ -67,11 +67,17 @@ joins (two relations matched on AND-ed column equalities through qualified
 or bare names, NULL keys never joining) — with every exactly-decoded column
 type travelling in the engine's native wire form (integers at their own
 width, scaled numerics as raw ints + describe scale, float/double,
-date/time/timestamp in raw units, boolean) — and DML has begun: `INSERT`
-writes real records into the pages (transaction allocated and committed in
-the TIP, image laid into a data-page slot) with the engine itself as the
-oracle — isql reads the rows back, `gfix -v -full` validates the file,
-`gbak` backs it up — the
+date/time/timestamp in raw units, boolean) — and DML now covers all three
+verbs: `INSERT` writes real records into the pages (transaction allocated
+and committed in the TIP, image laid into a data-page slot), and
+`UPDATE`/`DELETE` write real MVCC *version chains* — the old version copied
+to a fresh slot flagged `rhd_chain`, the primary rewritten with a back
+pointer (a patched image for update, a deleted stub for delete) — with the
+engine itself as the oracle three ways: `gfix -v -full` accepts the chains,
+the engine applying the *same statements* to a second copy produces an
+identical table, and `gfix -sweep` — the engine's own garbage collector —
+consumes the chains fire-crab wrote, the version count dropping exactly as
+arithmetic predicts with the data intact — the
 server opening the attached
 file, resolving table and columns through
 `RDB$RELATIONS`/`RDB$RELATION_FIELDS`, decoding typed rows from the pages and
@@ -79,7 +85,7 @@ evaluating/grouping/sorting/accumulating — matching isql value-for-value on
 user tables (including NULLs and mixed-width tables, where the record-format
 field id diverges from the column position). What stands between here and
 running the suite is the remaining *breadth* of the SQL surface
-(UPDATE/DELETE and the write path's page allocation and index
+(the write path's page allocation and index
 maintenance, outer joins, the exotic column types), not the protocol — so firebird-qa remains
 a milestone, not yet a current coverage claim.
 
@@ -102,7 +108,7 @@ the reading order for anyone joining the effort:
 | BLR decode | [blr-intermediate-language.md](blr-intermediate-language.md) | `par.cpp`, `blp.h`, `gds.cpp` | **done** — 171-verb walker; every decodable BLR blob matches the engine's own `SET BLOB ALL` printer token-for-token |
 | DSQL, execution, optimizer | [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `src/dsql/`, `exe.cpp` | planned |
 | Wire protocol — client (`src/remote/`, `src/auth/`) | [firebird-wire-protocol.md](firebird-wire-protocol.md), [security-architecture.md](security-architecture.md) | `src/remote/`, `src/auth/` | **fire-crab runs general SELECTs** — login (SRP-256/Arc4/attach) plus prepare/execute/batched-fetch of integer+text columns, matching isql row-for-row. This is a wire *client* that validates the codec against the real engine |
-| Wire protocol — server (the firebird-qa milestone) | [firebird-wire-protocol.md](firebird-wire-protocol.md) | `src/remote/` server side | **accepts real clients and answers real filtered/sorted/aggregated queries** — a third-party driver (node-firebird) negotiates protocol 20, authenticates via the *server* half of SRP-256, arms Arc4 encryption, and runs column projections (`SELECT <cols>` / `SELECT *`), `WHERE` filtering (comparisons, `AND`/`OR`, `IS [NOT] NULL`, three-valued logic), `ORDER BY` (columns/ordinals, ASC/DESC, engine NULL ordering), `MIN`/`MAX`/`SUM`/`COUNT` aggregates, `GROUP BY` (grouped aggregates, NULL keys bucketing together, multi-aggregate global queries) and `HAVING` (evaluated on the computed group rows, aggregates in the predicate resolved to output items — hidden ones when not selected) and INNER equi-joins (qualified/bare column resolution, multi-key `ON`, NULL and partnerless keys excluded, pad-insensitive text keys) end-to-end — returning native wire types (SHORT/LONG/INT64, scaled numerics the client divides per the describe, IEEE float/double, raw-unit date/time/timestamp, boolean): the server opens the attached file, resolves table and columns through `RDB$RELATIONS`/`RDB$RELATION_FIELDS`, decodes records from the pages, evaluates/groups/sorts/accumulates, and returns typed rows matching isql value-for-value on user tables (incl. NULLs and mixed-width tables where field id ≠ column position). INSERT now writes real records into the pages, with the engine as oracle (isql reads them back, gfix -v passes, gbak backs up). Widening the remaining SQL surface (UPDATE/DELETE, write-path allocation/index maintenance, outer joins, blob/INT128/DECFLOAT columns) is what stands before firebird-qa runs |
+| Wire protocol — server (the firebird-qa milestone) | [firebird-wire-protocol.md](firebird-wire-protocol.md) | `src/remote/` server side | **accepts real clients and answers real filtered/sorted/aggregated queries** — a third-party driver (node-firebird) negotiates protocol 20, authenticates via the *server* half of SRP-256, arms Arc4 encryption, and runs column projections (`SELECT <cols>` / `SELECT *`), `WHERE` filtering (comparisons, `AND`/`OR`, `IS [NOT] NULL`, three-valued logic), `ORDER BY` (columns/ordinals, ASC/DESC, engine NULL ordering), `MIN`/`MAX`/`SUM`/`COUNT` aggregates, `GROUP BY` (grouped aggregates, NULL keys bucketing together, multi-aggregate global queries) and `HAVING` (evaluated on the computed group rows, aggregates in the predicate resolved to output items — hidden ones when not selected) and INNER equi-joins (qualified/bare column resolution, multi-key `ON`, NULL and partnerless keys excluded, pad-insensitive text keys) end-to-end — returning native wire types (SHORT/LONG/INT64, scaled numerics the client divides per the describe, IEEE float/double, raw-unit date/time/timestamp, boolean): the server opens the attached file, resolves table and columns through `RDB$RELATIONS`/`RDB$RELATION_FIELDS`, decodes records from the pages, evaluates/groups/sorts/accumulates, and returns typed rows matching isql value-for-value on user tables (incl. NULLs and mixed-width tables where field id ≠ column position). DML covers all three verbs: INSERT writes real records into the pages, UPDATE/DELETE write real version chains (old version copied out as `rhd_chain`, primary rewritten with a back pointer — a deleted stub for DELETE), with the engine as oracle three ways — isql prints the identical table the engine itself produces from the same statements, `gfix -v -full` accepts the chains, and `gfix -sweep` (the engine's own GC) collects them exactly. Widening the remaining SQL surface (write-path allocation/index maintenance, outer joins, blob/INT128/DECFLOAT columns) is what stands before firebird-qa runs |
 | Services, events, security | [services-api.md](services-api.md), [firebird-events.md](firebird-events.md), [security-architecture.md](security-architecture.md) | `svc.cpp`, `event.cpp`, `src/auth/` | planned |
 
 The conversion's working rules (explicit little-endian decoding instead of
