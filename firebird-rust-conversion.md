@@ -181,7 +181,14 @@ that grows with the SQL surface (the current failures are `SHOW
 DATABASE` and other surface gaps, and version- or architecture-gated
 skips — not the storage engine, the indexes, the statement protocol,
 the catalog, the constraints, the handshake or the session bootstrap,
-all of which the real suite now exercises end to end).
+all of which the real suite now exercises end to end). That growth has
+started: the SELECT list now takes scalar expressions — arithmetic over
+integer columns and literals, evaluated per row with NULL propagating,
+each shape checked identically against isql down to the engine's own
+column names (`ADD`/`SUBTRACT`/`MULTIPLY`) — and `op_exec_immediate` was
+added for isql's one-shot SET/DDL path; the `SHOW` commands remain,
+running through the legacy BLR request API (`op_compile`) rather than
+DSQL — a named next piece.
 
 ## Conversion pointers: document → C++ → Rust
 
