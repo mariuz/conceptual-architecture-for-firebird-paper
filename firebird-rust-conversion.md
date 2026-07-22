@@ -158,27 +158,30 @@ fire-crab end-to-end (SELECT, parameterised DML, CREATE TABLE with a
 primary key the driver's own duplicate insert then hits, DROP TABLE,
 a reconnect reading the committed writes), which forced the protocol
 to answer the client's exact requested info-item template and to echo
-the transaction handle the way the engine does. What stands between
-here and *running the suite* was the plugin's session bootstrap, and
-its front door is now converted: the Services API
-(`op_service_attach`/`op_service_info`, from which the plugin reads the
-server version, home and lock directories, security database and
-architecture) and `op_create` (the driver's `create_database` — fire-crab
-materialises an empty database with the engine, then serves and mutates
-it) both work with the real python driver, engine-validated. What is
-left of the bootstrap is deeper server emulation: past these operations
-the plugin attaches to the `employee` sample database and probes
-`MON$ATTACHMENTS` and the ODS version to detect the server architecture
-— monitoring tables and the sample database itself — plus the remaining
-*breadth* of the SQL surface (select-list expressions and arithmetic,
-ALTER TABLE, foreign keys). Not the storage engine, the indexes, the
-statement protocol, the catalog, the constraints or the session
-handshake: every layer from pages to B-trees to the wire now both reads
-and writes files the real engine validates, the real driver drives it,
-and its session bootstrap gets its version and creates its databases
-through fire-crab — so firebird-qa remains a milestone, not yet a
-current coverage claim, but one whose last mile is now a short list of
-named server-emulation pieces.
+the transaction handle the way the engine does. **And the suite now runs.** The official firebird-qa pytest suite,
+pointed at `fcwire serve`, bootstraps fully — its banner reads
+`server: fc [v6.0.0.2076, Embedded, Firebird/Linux/ARM64]`, ODS 14.0 —
+collects the basic functional tests, runs them, and *seven to nine of
+them pass*: real tests from the real suite, green against a
+bottom-up Rust reimplementation of the storage engine. Reaching
+"tests pass" from the cleared session bootstrap took the Services API
+and `op_create` (converted last increment), then a handful of
+info-and-monitoring pieces: `op_info_database` breadth so
+`con.info.name`/`.id`/`.ods_version` answer, a distinct attachment id
+per connection, the `MON$ATTACHMENTS` virtual table reported as empty
+(fire-crab keeps no live monitoring state, so the architecture probe
+returns one all-NULL row and classifies it as an embedded server), and
+the service RUNNING info item so the isql-test fixtures' forced-writes
+step completes. The passing tests drive the whole stack — the real
+isql binary through fbclient, the python driver creating and querying
+databases, fire-crab serving and mutating the files, the engine
+validating them. This is no longer a milestone in prospect: firebird-qa
+*runs* against fire-crab, and the count of passing tests is now a number
+that grows with the SQL surface (the current failures are `SHOW
+DATABASE` and other surface gaps, and version- or architecture-gated
+skips — not the storage engine, the indexes, the statement protocol,
+the catalog, the constraints, the handshake or the session bootstrap,
+all of which the real suite now exercises end to end).
 
 ## Conversion pointers: document → C++ → Rust
 
