@@ -20,6 +20,8 @@ In this paper, we investigate the conceptual architecture for the Firebird datab
 * [Extensibility of Firebird](#extensibility-of-firebird)
 * [References](#references)
 
+**🏙️ [FBSimCity](https://mariuz.github.io/FBSimCity/)** — an explorable isometric city built from this paper's block structure ([source](https://github.com/mariuz/FBSimCity)): each building is one of the subsystems below, queries commute through the REMOTE → DSQL → JRD pipeline as glowing particles, and you can pin the OIT with a long-running transaction and watch record-version garbage pile up. Inspired by [PGSimCity](https://github.com/NikolayS/PGSimCity).
+
 **📚 [Reading Guide](READING-GUIDE.md) — start here for the full collection of forty-four companion documents, organized into themed tracks with reading paths.** Every subsystem document ends with a **Hands-on** section — a verified C++ and JavaScript sample pair (in [`samples/`](samples/)), things to try, and gdb breakpoints into the engine functions it discusses, backed by the shared **[debugging guide](debugging-firebird.md)**. The individual companions:
 
 * Companion document: [Architecture Comparison — Firebird, PostgreSQL, MySQL, SQLite](architecture-comparison.md)
@@ -382,6 +384,8 @@ Viewed against the extensibility argument of the previous section, the pattern h
 * [How Firebird transactions work](https://www.slideshare.net/ibsurgeon/3-how-transactionswork), by Alexey Kovyazin
 
 * [Firebird transaction Simulator](http://www.felix-colibri.com/papers/db/firebird_transaction_simulator/firebird_transaction_simulator.html), by Felix J. Colibri 
+
+* [FBSimCity](https://mariuz.github.io/FBSimCity/) — an interactive visualization of the architecture described in this paper ([source](https://github.com/mariuz/FBSimCity))
 
 * Firebird Release Notes: [3.0](https://firebirdsql.org/file/documentation/release_notes/html/en/3_0/rlsnotes30.html), [4.0](https://firebirdsql.org/file/documentation/release_notes/html/en/4_0/rlsnotes40.html), [5.0](https://firebirdsql.org/file/documentation/release_notes/html/en/5_0/rlsnotes50.html), [6.0 (draft, in the firebird-documentation repository)](https://github.com/FirebirdSQL/firebird-documentation/tree/master/src/docs/asciidoc/en/rlsnotes/rlsnotes60)
 
