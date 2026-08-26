@@ -105,6 +105,59 @@ The `UNICODE_CI_AI` column treats `Café`, `CAFE` and `cafe` as equal (3 matches
 
 Charset/collation inventory (also verified live): **52 character sets**, **149 collations**, including `UNICODE`, `UNICODE_CI`, `UNICODE_CI_AI`, and locale/legacy sets from `ASCII` and `WIN1252` to `BIG_5`, `GB18030` and `SJIS_0208`.
 
+## `OCTETS`: the character set whose space is a NUL
+
+`OCTETS` is not "text with the checks turned off" — it is a character
+set like any other, and every text law in the engine consults it. What
+makes it singular is one value: **its space character is a zero byte**,
+where every other set's is `0x20`. That single difference propagates
+through padding, comparison, trimming and pattern matching, and it is
+where binary columns surprise people. Each of the following was measured
+against a live Firebird 6 server and traced to the code that decides it:
+
+- **Padding.** A `CHAR(4) CHARACTER SET OCTETS` holding `x'6162'` reads
+  back `61620000`, not `61622020` — `CVT_move` fills the slot with the
+  charset's space ([`cvt.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/common/cvt.cpp)).
+- **Comparison.** As soon as *either* side is binary, the shorter side is
+  padded with `0x00` and neither side is transliterated
+  ([`CVT2_compare`](https://github.com/FirebirdSQL/firebird/blob/master/src/common/cvt2.cpp)).
+  So `x'4100' = 'A'` is TRUE while `x'4120' = 'A'` is FALSE, and
+  `x'41' < 'A '`.
+- **`UPPER`/`LOWER` are the identity.** The binary text type installs a
+  byte copy for both directions
+  ([`intl_builtin.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/intl/intl_builtin.cpp)),
+  where `NONE` and `ASCII` — which share the internal family — upcase the
+  ASCII range.
+- **`TRIM` strips NULs, not blanks.** Its default character is the
+  charset's space, so a trailing `0x20` survives a `TRIM` of a binary
+  value and a trailing `0x00` does not; `LPAD`/`RPAD` fill with the same
+  byte.
+- **`LIKE` over a binary left operand has no wildcards at all.** `%` and
+  `_` are converted *from Unicode* into the left operand's character set,
+  and the binary converter is a UTF-16 byte dump, so each wildcard
+  arrives as `{0x00,0x25}` / `{0x00,0x5F}`; the matcher reads the leading
+  byte and its `sql_match_any` guard reads a zero as "no wildcard"
+  ([`evl_string.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/evl_string.h)).
+  What remains is a literal byte match over the *full padded* value — a
+  `CHAR(4)` holding `61620000` matches `x'61620000'` and not `x'6162'`. A
+  `CHAR` left operand keeps its wildcards even when the *pattern* is
+  binary, and `SIMILAR TO`, a different matcher entirely, keeps them for
+  binary operands too.
+- **The result character set absorbs.** One `OCTETS` operand makes the
+  whole concatenation, `CASE`, `COALESCE` or `MIN` binary
+  ([`DataTypeUtil::getResultTextType`](https://github.com/FirebirdSQL/firebird/blob/master/src/common/DataTypeUtil.cpp)),
+  and a high byte then travels as one octet rather than its UTF-8 pair.
+
+The literal form follows the same logic: `x'48656C6C6F'` describes as
+`CHAR(5) CHARACTER SET OCTETS NOT NULL`, spaces inside it are ignored,
+whitespace-separated segments continue the same literal, and an odd or
+non-hex digit is a syntax error rather than a value error.
+
+Together these explain the classic UUID-column complaints — a
+`CHAR(16) CHARACTER SET OCTETS` compares against a 16-byte value
+exactly, against a shorter one only when the remainder is NULs, and
+never through a `LIKE` prefix.
+
 ## Comparison: PostgreSQL, MySQL, SQLite
 
 | Aspect | **Firebird** | **PostgreSQL** | **MySQL** | **SQLite** |
