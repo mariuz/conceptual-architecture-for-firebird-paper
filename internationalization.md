@@ -158,6 +158,51 @@ Together these explain the classic UUID-column complaints — a
 exactly, against a shorter one only when the remainder is NULs, and
 never through a `LIKE` prefix.
 
+## The character-set cast, and its three error classes
+
+`CAST(<value> AS VARCHAR(n) CHARACTER SET <cs>)` is the explicit way a
+value crosses between character sets — the SQL surface of the
+transliteration path above. What makes it worth studying is that it can
+fail in three *different* ways, and which one a value earns tells you
+where it came from:
+
+| what happens | when | SQLSTATE / message |
+|---|---|---|
+| the OCTETS travel unchanged | the destination is `NONE` or `OCTETS` — a byte carrier | — |
+| the bytes are validated | the SOURCE is a byte carrier and the destination is a real set | `22000` *Malformed string* |
+| the CHARACTERS are mapped | both sides are real character sets | `22018` *Cannot transliterate character between character sets* |
+
+So `x'41FF'` cast to `UTF8` is a **malformed string** (those bytes are
+not UTF-8), while a `UTF8` column holding `'Ω'` cast to `WIN1252` is a
+**transliteration failure** (the character has no image in that
+codepage) — two vectors for what looks like the same problem. A
+single-byte destination has an image for every octet, which is why
+`x'8182'` casts into `WIN1252` happily; and `ASCII`, though it carries
+bytes, rejects everything past `0x7F`.
+
+Three further rules, each measurable in one line of SQL:
+
+- **Transliteration happens before the width is looked at.** Five
+  untranslatable characters cast into a `VARCHAR(2)` raise the 22018,
+  not the 22001 the width alone would have earned.
+- **The width is counted in characters of the TARGET**, and the
+  overflow that may be silently dropped is the target's *pad*. So
+  `CAST(x'41202020' AS VARCHAR(2) CHARACTER SET OCTETS)` raises where
+  `CAST(x'41000000' AS ...)` fits — the blanks are data in a set whose
+  pad is a NUL, per the [OCTETS laws](#octets-the-character-set-whose-space-is-a-nul)
+  above.
+- **The declared width is bounded in BYTES**, not characters:
+  `VARCHAR(n)` tops out at 32765 bytes and `CHAR(n)` at 32767, so a
+  `UTF8` target refuses at 8192 characters where a `NONE` one accepts
+  four times as many.
+
+The describe follows the same logic: `CAST('ab' AS VARCHAR(3)
+CHARACTER SET UTF8)` announces 12 bytes at charset 4 where the WIN1252
+spelling announces 3 at charset 53 — and under a *real* connection
+charset the engine re-announces every result in the connection's set —
+`ASCII` included — with the two byte carriers, `OCTETS` and `NONE`, the
+exceptions that keep their own bytes.
+
 ## Comparison: PostgreSQL, MySQL, SQLite
 
 | Aspect | **Firebird** | **PostgreSQL** | **MySQL** | **SQLite** |
