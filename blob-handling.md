@@ -99,6 +99,61 @@ The last rule is the one that surprises people, and it follows from the
 first section of this chapter: the record holds an id, and the sort key
 is built from the record.
 
+## Assigning to a BLOB: every value becomes a blob of its own
+
+Reading a BLOB as an operand is one half of the story; the other is what
+happens when something is **stored into** a blob column, and here the
+engine's rule is short and easy to get wrong: *the destination decides,
+and nothing is ever shared.*
+
+- **Assignment COPIES, it never aliases.** `UPDATE D SET C = B` does not
+  put B's id into C — `BLB_move` (`blb.cpp`) creates a new blob and
+  copies the bytes into it, so the row ends with two independent blobs.
+  Aliasing would be cheaper and is exactly what a naive implementation
+  does; it is also a corruption waiting to happen, because the [garbage
+  collector](garbage-collection-and-sweep.md) frees a collected version's
+  blobs *by id* and would free an id another live version still points
+  at.
+- **The DESTINATION's subtype and character set win.** The new blob takes
+  `to_desc->getBlobSubType()` and the column's charset, not the source's
+  — a binary blob copied into a text column reads back as text, and a
+  `WIN1252` blob copied into a `UTF8` column is transliterated into UTF-8
+  on the way in. This is the same law that governs a `VARCHAR`
+  assignment, applied to a value that happens to live off-page.
+- **A scalar stores its RENDERING.** `INSERT INTO T VALUES (42)` into a
+  blob column reads back the two characters `42`; `3.14` reads `3.14`, a
+  `DATE` its ISO day, a `TIMESTAMP` its full `2020-06-15 10:20:30.0000`,
+  and `TRUE` the word in capitals. The assignment goes through the same
+  conversion a `CAST` to text does, so the blob's content is precisely
+  the string that `CAST(<v> AS VARCHAR(n))` would have produced.
+
+`CAST(<v> AS BLOB)` makes that conversion explicit, and its target names
+the blob's own type the same way a column declaration does:
+
+```sql
+CAST(x AS BLOB)                                   -- SUB_TYPE 0, binary
+CAST(x AS BLOB SUB_TYPE TEXT)                     -- SUB_TYPE 1, CHARACTER SET NONE
+CAST(x AS BLOB SUB_TYPE TEXT CHARACTER SET UTF8)  -- SUB_TYPE 1, charset 4
+CAST(x AS BLOB CHARACTER SET UTF8)                -- the same: a CHARACTER SET
+                                                  -- clause promotes it to TEXT
+CAST(x AS BLOB SUB_TYPE TEXT SEGMENT SIZE 100)    -- parses; decides nothing
+```
+
+`SEGMENT SIZE` is accepted and ignored — segment size is a declaration
+hint, never a constraint on what a blob may hold (see [Segmented and
+stream access](#segmented-and-stream-access)). A *user* subtype (any
+value other than 0 or 1) has no built-in filter to text, so casting to
+one raises `isc_nofilter` rather than inventing a conversion.
+
+One implementation consequence is worth naming because it is invisible
+from SQL: a statement like `INSERT INTO T SELECT UPPER(B) FROM S`
+**mints and stores a blob inside a single request**. A server that
+publishes newly minted temporary blobs only at statement boundaries —
+the natural place, since that is when the client can first ask for one —
+finds the id unresolvable at the store a few microseconds later. The
+mint has to be visible to the store *within* the statement, which is the
+same ordering constraint `BLOB_APPEND` lives under.
+
 ## Segmented and stream access
 
 BLOBs are not read or written as one monolithic value but in **segments** — chunks delivered one at a time, so a gigabyte BLOB never needs to be fully in memory. The [OO API](client-apis-and-drivers.md)'s `IBlob` exposes `getSegment`/`putSegment`, and the [wire protocol](firebird-wire-protocol.md#packet-model-opcodes-and-xdr) has dedicated opcodes (`op_get_segment`, `op_put_segment`, `op_open_blob`, `op_create_blob`). A BLOB is either **segmented** (the classic mode, remembering segment boundaries — `blh_count`, longest segment) or a **stream BLOB** (`rhd_stream_blob`, a flat byte stream with no segment structure, better for random access via seek). Firebird 5 also added **inline BLOBs** on the wire (`op_inline_blob`, protocol 19 — see the [wire-protocol version table](firebird-wire-protocol.md#protocol-versions)): small BLOBs are shipped *with* the result row instead of requiring a separate open/fetch round-trip, a meaningful latency win for rows with small blobs.
