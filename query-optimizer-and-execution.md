@@ -11,6 +11,7 @@ It closes the query-lifecycle arc: the [grammar document](grammar-and-parser.md)
 * [Access-path selection](#access-path-selection)
 * [Join order and join methods](#join-order-and-join-methods)
 * [The execution engine: a Volcano iterator tree](#the-execution-engine-a-volcano-iterator-tree)
+* [A subquery is a value, and it is a subtree](#a-subquery-is-a-value-and-it-is-a-subtree)
 * [Reading plans (validated output)](#reading-plans-validated-output)
 * [Comparison: PostgreSQL, MySQL, SQLite](#comparison-postgresql-mysql-sqlite)
 * [Discussion](#discussion)
@@ -111,6 +112,49 @@ flowchart TB
 _Figure 2: Firebird's execution operators (`src/jrd/recsrc/`) — scans at the leaves, joins in the middle, shaping/materializing operators above; the executor pulls rows up this tree_
 
 A plan like `SORT (JOIN (D NATURAL, E INDEX (EMP_DEPT)))` is exactly this tree: a `SortedStream` on top of a `NestedLoopJoin` whose outer is a `FullTableScan` of `D` and whose inner is an `IndexTableScan` of `E`. Reading a `PLAN` is reading the operator tree.
+
+## A subquery is a value, and it is a subtree
+
+A scalar subquery — `(SELECT MAX(V) FROM P)` — is a *value expression*, and
+SQL allows it wherever a value is allowed: a select-list item, a
+predicate operand, an `INSERT`'s `VALUES` list, an `UPDATE`'s `SET`
+right-hand side. Its rules are worth stating because they are not the
+rules of a query:
+
+- **No row is NULL.** A subquery that matches nothing does not produce an
+  empty result — it produces the value NULL. `SET N = (SELECT V FROM P
+  WHERE ID = 99)` writes NULL into `N`; it does not skip the assignment.
+- **More than one row is an error**, not a choice: `isc_sing_select_err`,
+  SQLSTATE 21000, *"multiple rows in singleton select"*. There is no
+  "first row" rule to fall back on, which is why `SELECT FIRST 1 ... ORDER
+  BY ...` is the idiom for "the one I mean".
+- **A correlated subquery is one answer per outer row.** `SET N = (SELECT
+  SUM(V) FROM P WHERE P.ID = D.ID)` is evaluated once per row of `D`, and
+  a key with no inner rows follows the aggregate's own empty-group rule:
+  `COUNT` answers 0 there where `SUM` and `MAX` answer NULL.
+
+All three rules are visible in the compiled form, and none of them is a
+special case bolted on at the edge:
+
+- The subquery compiles to `blr_via` over a **nested `blr_rse`** —
+  another subtree of the same operator tree
+  ([`SubQueryNode::genBlr`](extern/firebird/src/dsql/ExprNodes.cpp#L11394)),
+  opened and closed around the point where its value is needed.
+- The NULL comes from the operator itself: `dsqlPass` builds the node
+  with `NullNode::instance()` as its second operand, and `blr_via`'s
+  execute is `if (subQuery->fetch(...)) value1 else value2`. "No row" is
+  the *else* branch of a three-operand opcode, not a missing result.
+- The singleton check is an **operator**, not a check inside the value
+  code. `RseNode::isSingular()` makes the optimizer wrap the stream in a
+  [`SingularStream`](extern/firebird/src/jrd/recsrc/SingularStream.cpp#L117),
+  whose `process()` fetches one row and raises `isc_sing_select_err` if a
+  *second* one exists. It sits in the same pipeline position as
+  `FirstRowsStream` — which is exactly why `FIRST 1` displaces it.
+
+The structural fact underneath all three is the one the next section of
+[the statement-cache chapter](statement-cache.md#what-a-cached-plan-may-not-contain)
+depends on: the compiled statement holds a *program that will read those
+rows*, never the rows themselves.
 
 ## Reading plans (validated output)
 

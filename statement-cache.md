@@ -10,6 +10,7 @@
 * [The key: what makes two statements the same](#the-key-what-makes-two-statements-the-same)
 * [The second key: sharing across users without sharing privileges](#the-second-key-sharing-across-users-without-sharing-privileges)
 * [Active, inactive, evicted](#active-inactive-evicted)
+* [What a cached plan may not contain](#what-a-cached-plan-may-not-contain)
 * [Invalidation is a sledgehammer](#invalidation-is-a-sledgehammer)
 * [What MON$COMPILED_STATEMENTS is not](#what-moncompiled_statements-is-not)
 * [Live demonstrations](#live-demonstrations)
@@ -136,6 +137,76 @@ Taking from the front while hits splice entries to the back makes this a straigh
 **2 MB by default**, measured in bytes of cached statement rather than a statement count. The `false` in the third column is `is_global`, so unlike `ParallelWorkers` this one can be set per database in `databases.conf`. Setting it to zero disables the cache outright, since [`isActive()`](extern/firebird/src/dsql/DsqlStatementCache.h#L93) is just `maxCacheSize > 0`.
 
 ---
+
+## What a cached plan may not contain
+
+The key is `(text, dialect, charset, search path)` and the invalidation is
+"any DDL, everything". Put those two together and the cache is making one
+promise: **everything the compiled statement holds must be derivable from
+the schema and the text.** Anything else in there is a value frozen at the
+moment of first preparation, and nothing will ever un-freeze it, because
+data changes do not touch the cache.
+
+The engine keeps that promise by construction. A compiled statement is
+BLR — a *program*. A subquery inside it is a nested `blr_rse` (see [the
+optimizer chapter](query-optimizer-and-execution.md#a-subquery-is-a-value-and-it-is-a-subtree)),
+opened and fetched on each invocation; an aggregate is an
+`AggregatedStream` that counts when it is pulled; `CURRENT_TIMESTAMP` is
+an opcode, not a timestamp. Nothing that varies with the data is ever
+*computed* at prepare, so nothing that varies with the data can be
+cached by accident.
+
+The engine does memoise a subquery that references no outer stream —
+`SubQueryNode::execute` checks `FLAG_INVARIANT` and returns the value it
+already computed — but look at *where* that value lives. It is in the
+**request's impure area**, and `EXE_start` walks
+[`statement->invariants`](extern/firebird/src/jrd/exe.cpp#L1027) and
+clears every one of them at the start of each execution:
+
+```cpp
+// Set all invariants to not computed.
+for (ptr = statement->invariants.begin(), end = statement->invariants.end(); ptr < end; ++ptr)
+{
+    impure_value* impure = request->getImpure<impure_value>(**ptr);
+    impure->vlu_flags = 0;
+}
+```
+
+The split is the whole lesson: the *statement* is shared and cached and
+holds only the program; the *request* is per execution and holds every
+value. A memoised invariant is an optimisation inside one run of the
+statement, and it is deliberately thrown away before the next one.
+
+It is an easy promise to break in a reimplementation, and the break is
+silent. Anywhere a planner takes a shortcut — "this subquery does not
+reference the outer query, so I can evaluate it once and splice the
+answer in as a literal" — it has turned the plan into a function of the
+*data*, and the cache will then serve that literal to every later
+execution of the same text. The measured shape of the bug, from
+[fire-crab](firebird-rust-conversion.md), where exactly that fold existed:
+
+```sql
+SELECT COUNT(*) FROM D WHERE ID IN (SELECT ID FROM P);   -- 1
+INSERT INTO P VALUES (2, 200); COMMIT;
+SELECT COUNT(*) FROM D WHERE ID IN (SELECT ID FROM P);   -- 1, and the engine says 2
+```
+
+The outer table's rows were read fresh every time; only the *folded*
+inner list was frozen — so the query looked alive while answering from a
+snapshot taken minutes earlier. The same fold in an `UPDATE ... SET N =
+(SELECT MAX(V) FROM P)` stored the first execution's value for ever.
+
+Two lessons generalise past this one bug. First, the question to ask of
+every plan-time shortcut is **"what did the planner read that the schema
+does not decide?"** — a count, a row, a clock reading, a lookup table
+built from a scan. Second, the answer must be recorded *by the planner*,
+not inferred from the statement's text: a subquery can arrive from a
+[view](schemas-and-name-resolution.md) body, so a text carrying no
+`SELECT` of its own can still produce a plan that read rows. The fix that
+matches the cache's own contract is to let such a plan be built and then
+refuse to keep it — the statement re-plans on every execution, exactly as
+it did before the cache existed, and correctness stops depending on
+whether the cache happened to hold a hit.
 
 ## Invalidation is a sledgehammer
 
