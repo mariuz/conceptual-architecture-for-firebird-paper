@@ -55,6 +55,17 @@ A Firebird database has a **default character set** (chosen at `CREATE DATABASE`
 - **`OCTETS`** — binary data (`CHAR(n) CHARACTER SET OCTETS`), the idiom for fixed-length binary keys and the [UUID workaround](sql-dialect-and-types.md#firebird-data-types-in-depth).
 - **Single-byte** (`WIN1252`, `ISO8859_1`, `DOS437`, `CYRL`, …) and **multibyte** (`BIG_5`, `GB18030`, `SJIS_0208`, `EUCJ_0208`, `KSC_5601`, `UNICODE_FSS`) legacy encodings for interoperating with existing systems.
 
+**The database default is resolved at CREATE time, not at read time.**
+A column declared without a `CHARACTER SET` clause takes the database's
+default, and the engine writes the *resolved* id into the column's
+catalog row — so in a `DEFAULT CHARACTER SET UTF8` database a plain
+`VARCHAR(10)` is charset 4 and occupies **forty** bytes, exactly as if
+it had been spelled out. Two consequences follow: changing a database's
+default later does not retype existing columns, and any tool that
+writes catalog rows itself has to resolve the default the same way or
+its columns will disagree with the engine's on charset, on byte length
+and on every describe.
+
 ## Collations and ICU
 
 A collation belongs to a character set and names the comparison/sort rules. The live server has **149 collations**; the Unicode ones (backed by ICU) are the powerful ones:

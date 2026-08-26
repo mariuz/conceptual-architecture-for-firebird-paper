@@ -68,6 +68,37 @@ Unlike a plain "bag of bytes", a Firebird BLOB is **typed** by a subtype (`blh_s
 
 **Text BLOBs carry a character set** (`blh_charset`) just like a `VARCHAR` — so `SUBSTRING`, `UPPER`, and comparison work correctly on large text, tying into the [internationalization subsystem](internationalization.md). A **BLOB filter** is a pluggable converter between subtypes (registered with `DECLARE FILTER`); reading a BLOB "as" another subtype runs it through the filter — a small, unusual extensibility point for on-the-fly transformation.
 
+## A BLOB as an expression operand
+
+A text BLOB is not a value SQL keeps at arm's length: it is a **text
+operand**, and the engine filters it to a string and runs the ordinary
+text law over it. That has three consequences worth stating explicitly,
+each one measurable on a live server:
+
+- **Predicates read the CONTENT.** `B = 'x'`, `B > 'x'`, `B LIKE
+  '%value'`, `B STARTING WITH 'blob'`, `B SIMILAR TO ...`, `B BETWEEN
+  ...`, a blob against another blob, and a blob inside a join's `ON` all
+  compare the bytes the BLOB holds.
+- **A blob operand makes the whole expression a BLOB.** `B || '!'`,
+  `UPPER(B)`, `TRIM(B)`, `SUBSTRING(B FROM 1 FOR 4)`, `REPLACE(B, …)`
+  and a `CASE`/`COALESCE` with a blob branch all describe as `BLOB`
+  (sqltype 520) and hand back a blob id. The result's character set is
+  the operands' joined text type — the **first** real charset wins, so
+  `S || B` takes S's and `B || W` takes B's — and one *binary* (subtype
+  0) operand makes the whole result binary. Only the length functions
+  step out of the blob: `CHAR_LENGTH(B)` and `OCTET_LENGTH(B)` answer a
+  **BIGINT** where the same call over a `VARCHAR` answers an INTEGER.
+- **`ORDER BY`, `GROUP BY` and `DISTINCT` key the BLOB ID, not the
+  content.** Four rows holding `zzz`, `aaa`, `zzz`, `mmm` come back in
+  *id* order and group into **four** groups — sorting a blob column
+  sorts by where the blob lives, not by what it says. `MIN`/`MAX`, by
+  contrast, *do* compare content and return the winning row's id. If you
+  want content ordering, sort on `CAST(B AS VARCHAR(n))`.
+
+The last rule is the one that surprises people, and it follows from the
+first section of this chapter: the record holds an id, and the sort key
+is built from the record.
+
 ## Segmented and stream access
 
 BLOBs are not read or written as one monolithic value but in **segments** — chunks delivered one at a time, so a gigabyte BLOB never needs to be fully in memory. The [OO API](client-apis-and-drivers.md)'s `IBlob` exposes `getSegment`/`putSegment`, and the [wire protocol](firebird-wire-protocol.md#packet-model-opcodes-and-xdr) has dedicated opcodes (`op_get_segment`, `op_put_segment`, `op_open_blob`, `op_create_blob`). A BLOB is either **segmented** (the classic mode, remembering segment boundaries — `blh_count`, longest segment) or a **stream BLOB** (`rhd_stream_blob`, a flat byte stream with no segment structure, better for random access via seek). Firebird 5 also added **inline BLOBs** on the wire (`op_inline_blob`, protocol 19 — see the [wire-protocol version table](firebird-wire-protocol.md#protocol-versions)): small BLOBs are shipped *with* the result row instead of requiring a separate open/fetch round-trip, a meaningful latency win for rows with small blobs.
