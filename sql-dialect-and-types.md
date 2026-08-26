@@ -11,6 +11,7 @@ It is a companion to the [main paper](README.md) and the other comparison docume
 * [Firebird's type system](#firebirds-type-system)
 * [Firebird data types in depth](#firebird-data-types-in-depth)
 * [Procedural SQL and other language features](#procedural-sql-and-other-language-features)
+* [RETURNING: what a DML statement answers](#returning-what-a-dml-statement-answers)
 * [Data type mapping across the four systems](#data-type-mapping-across-the-four-systems)
 * [Typing philosophy: strict vs dynamic](#typing-philosophy-strict-vs-dynamic)
 * [Discussion](#discussion)
@@ -79,6 +80,46 @@ What Firebird lacks natively: a dedicated **JSON** type (JSON is stored as text 
 ## Procedural SQL and other language features
 
 Firebird's procedural language, **PSQL**, runs stored procedures, functions, triggers, packages and `EXECUTE BLOCK` anonymous blocks inside the engine. The `doc/sql.extensions/` set documents a modern feature list: common table expressions (including recursive), `MERGE`, window functions, `FILTER` on aggregates, `LISTAGG`, `OFFSET/FETCH`, boolean expressions, packages, computed/identity columns, global and (FB6) created local temporary tables, and — new in Firebird 6 — **SQL schemas** (every object now lives in a schema such as `PUBLIC`, visible in the [monitoring](monitoring-and-tuning.md) and [on-disk](on-disk-structure.md#inspecting-the-structure-validated-with-gstat) output; the namespace, the search path and the resolution rules are the subject of [Schemas and Name Resolution](schemas-and-name-resolution.md)). This puts Firebird's SQL surface broadly on par with the other server databases; the [architecture comparison](architecture-comparison.md) covers the execution engine behind it.
+
+## `RETURNING`: what a DML statement answers
+
+`INSERT`, `UPDATE`, `DELETE`, `UPDATE OR INSERT` and `MERGE` can all end
+in a `RETURNING` clause, and the clause is more interesting than "give me
+the generated id". Four rules, each measurable on a live server:
+
+- **It takes value EXPRESSIONS, not just columns.** `RETURNING ID`,
+  `RETURNING N * 2`, `RETURNING UPPER(S) AS U`, `RETURNING CAST(B AS
+  VARCHAR(30))`, `RETURNING 1` are all legal, and each is described
+  exactly as the same expression in a select list would be — including
+  the engine's operator names for an un-aliased one (`MULTIPLY`, `ADD`,
+  `CONCATENATION`, `CAST`, `CASE`). An alias overwrites the *alias* only:
+  `RETURNING N * 2 AS DOUBLED` describes with name `MULTIPLY` and alias
+  `DOUBLED`, because `DsqlAliasNode::setParameterName` touches
+  `par_alias` and leaves the source name the expression set.
+- **Every returned column is nullable** — even one the table declares
+  `NOT NULL`. `RETURNING ID` over an `ID INTEGER NOT NULL` describes
+  `Nullable` where the *same column in a `SELECT` does not*. The clause
+  answers the row a statement touched, and a statement that touched no
+  row answers nothing at all.
+- **Which row you get depends on the verb.** `INSERT` and `UPDATE`
+  return the row as it stands *after* the statement (the after-image,
+  defaults and `BEFORE` triggers included); `DELETE` returns the row as
+  it *was*. Since Firebird 5, a multi-row `UPDATE`/`DELETE` returns one
+  row per affected row — the clause is a cursor, not a singleton.
+- **`OLD.`/`NEW.` are PSQL trigger contexts, not DSQL.** `INSERT ...
+  RETURNING NEW.ID` is `Column unknown, "NEW"."ID"` at the SQL level, and
+  the statement does not run. (Inside a `MERGE`, where the target is
+  named by its alias, `NEW.` does resolve to that after-image.)
+
+There is a wire-level asymmetry worth knowing when writing a driver: an
+`INSERT ... RETURNING` announces itself as statement type
+`isc_info_sql_stmt_exec_procedure` (8), so a client executes it and reads
+the singleton row straight off the response packet without ever opening a
+cursor, while `UPDATE`/`DELETE ... RETURNING` announce a `SELECT`-shaped
+type and are fetched. A driver that dispatches on the announced type —
+which is what node-firebird and libfbclient both do — takes two different
+paths through the same clause, and a server implementing the protocol has
+to answer both.
 
 ## Data type mapping across the four systems
 
