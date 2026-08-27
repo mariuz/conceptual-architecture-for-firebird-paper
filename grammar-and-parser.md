@@ -9,6 +9,7 @@ It is a companion to the [main paper](README.md), whose [SQL translator (DSQL) s
 * [From SQL text to an execution tree](#from-sql-text-to-an-execution-tree)
 * [Firebird's grammar: BtYacc, not plain Yacc](#firebirds-grammar-btyacc-not-plain-yacc)
 * [Typing a ?: the parameter has no type of its own](#typing-a--the-parameter-has-no-type-of-its-own)
+* [Every predicate is also a value](#every-predicate-is-also-a-value)
 * [The grammar at the top level](#the-grammar-at-the-top-level)
 * [The full grammar diagram](#the-full-grammar-diagram)
 * [How to generate the diagram in Mermaid](#how-to-generate-the-diagram-in-mermaid)
@@ -91,6 +92,37 @@ around it.
 All of this is visible without writing a client: `SET SQLDA_DISPLAY ON`
 in isql prints the input message for a statement it cannot then execute,
 which makes every rule above directly measurable.
+
+## Every predicate is also a value
+
+Firebird's grammar has no separate "condition" category that only a
+`WHERE` may hold. A predicate is a **boolean expression**, so anywhere a
+value goes, a test can go:
+
+```sql
+SELECT id, CASE WHEN name STARTING WITH 'a' THEN 1 ELSE 0 END FROM t;
+SELECT id, (name CONTAINING 'ppl') AS matched FROM t;
+```
+
+This is easy to lose in a reimplementation, and
+[fire-crab](firebird-rust-conversion.md) lost it in an instructive way.
+It grew **two** expression parsers — a token-based one for predicates
+and a character-based one for the select list and the DML value surface
+— and only the first learned `STARTING WITH`, `CONTAINING` and
+`SIMILAR TO`. Every other predicate (comparisons, `LIKE`, `BETWEEN`,
+`IN`, `IS NULL`, `EXISTS`, `IS DISTINCT FROM`) had been taught to both,
+so the gap was invisible until someone wrote one of those three inside
+a `CASE`: the same test answered in a `WHERE` and refused as a value.
+
+Two things make the trap durable. The first is that the three keywords
+are not reserved — `STARTING`, `CONTAINING` and `SIMILAR` are all legal
+column names, which is why the parser has to recognise them by *text*
+rather than by token, and why an optional `NOT` before them needs its
+own lookahead. The second is that a duplicated grammar diverges
+silently: nothing fails to compile when one half of it knows a
+production the other does not. The lesson generalises past this engine
+— *if a language says predicates are values, one parser has to own that
+rule, or the two copies will drift.*
 
 ## The grammar at the top level
 
