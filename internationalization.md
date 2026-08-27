@@ -12,6 +12,9 @@ It is a companion to the [main paper](README.md) and pairs closely with the [SQL
 * [Collations and ICU](#collations-and-icu)
 * [What a collation decides — and why you cannot fake one](#what-a-collation-decides--and-why-you-cannot-fake-one)
 * [Two laws of an ICU collation, read off the engine](#two-laws-of-an-icu-collation-read-off-the-engine)
+  * [The collation a statement writes for itself](#the-collation-a-statement-writes-for-itself)
+  * [When two collations meet](#when-two-collations-meet)
+  * [A pattern match reads a different form entirely](#a-pattern-match-reads-a-different-form-entirely)
 * [Transliteration and the connection charset](#transliteration-and-the-connection-charset)
 * [Worked examples (validated on Firebird 6)](#worked-examples-validated-on-firebird-6)
 * [Comparison: PostgreSQL, MySQL, SQLite](#comparison-postgresql-mysql-sqlite)
@@ -184,17 +187,53 @@ exactly as well defined as a `GROUP BY` *count*: five spellings of
 apple, two accent classes and one banana come to 6 distinct values
 under `UNICODE`, 5 under `UNICODE_CI` and 4 under `UNICODE_CI_AI`.
 
+### A pattern match reads a different form entirely
+
+`LIKE` and `STARTING WITH` under a collation look like they need the
+sort key, and they cannot use it: a UCA key's levels are concatenated,
+so the key of `'app'` is no prefix of the key of `'apple'`. The engine
+does not try. It converts **both the value and the pattern to the
+collation's canonical form** and runs the ordinary matcher over that —
+`CanonicalConverter` in
+[`intl_classes.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/intl_classes.h),
+feeding `TextType::canonical`. For the ICU collations that conversion is
+six lines of
+[`unicode_util.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/common/unicode_util.cpp):
+
+```c
+if (attributes & TEXTTYPE_ATTR_CASE_INSENSITIVE)
+{
+    upper-case the string;
+    if (attributes & TEXTTYPE_ATTR_ACCENT_INSENSITIVE)
+        run the CiAi transliterator;
+}
+```
+
+So `UNICODE` — which has neither attribute — canonicalises to *itself*,
+and its `LIKE` is the plain code-point match any uncollated column gets.
+`UNICODE_CI` upper-cases. `UNICODE_CI_AI` upper-cases and then runs a
+transliterator the engine spells out literally:
+
+```
+::NFD; ::[:Nonspacing Mark:] Remove; ::NFC;  Ð > D;  Ø > O;  Ŀ > L;  Ł > L;
+```
+
+Decompose, drop every combining mark, recompose — plus four letters by
+hand, because their accent *is* the letter and no decomposition reaches
+it. Two consequences worth carrying: a pattern's wildcards survive
+canonicalisation (`%` and `_` are not letters), which is what lets an
+implementation canonicalise the pattern once and the value per row; and
+the canonical form may be *longer* than the value (`ß` upper-cases to
+`SS`), so `_` matches one **canonical** character, not one stored one.
+
 ### What a sort key still cannot answer
 
 Two things stay refusals even with the UCA in hand, and each is a
 property of the *problem*, not of the implementation:
 
-- **`LIKE`, `STARTING WITH`, `CONTAINING`, `SIMILAR TO`.** These match
-  through the collation's own matcher, prefix by prefix, and a UCA sort
-  key is not built prefix-wise: its levels are concatenated, so the key
-  of `'app'` is no prefix of the key of `'apple'`. Measured,
-  `ci STARTING WITH 'APP'` takes `'apple'` too — an answer no
-  byte-prefix test and no key comparison produces.
+- **`SIMILAR TO`.** Its pattern is a grammar, not a string:
+  canonicalising a character class is not the same operation as
+  canonicalising the text it matches, and the two can disagree.
 - **`GROUP BY` and `DISTINCT` over a case- or accent-insensitive
   column.** Not the *count* — that is well defined — but the surviving
   **spelling**, which follows the engine's own sort's internal order.
@@ -229,6 +268,74 @@ and 1 from a procedure, with no error on either side. The cheap, honest
 fix is a guard rather than a second implementation — if the BLR names a
 relation carrying a collated column, stand aside and let the
 descriptor-aware path serve the call.
+
+### The collation a statement writes for itself
+
+Everything above is about the collation a *column* carries. SQL also
+lets a *statement* name one, and the clause binds tighter than any
+operator — `A || B COLLATE X` collates `B`, not the concatenation:
+
+```sql
+SELECT id FROM t ORDER BY name COLLATE UNICODE_CI;   -- an uncollated column, collated
+SELECT id FROM t WHERE ci COLLATE UCS_BASIC = 'APPLE';  -- a collated column, by bytes
+SELECT min(name COLLATE UNICODE_CI) FROM t;          -- and the fold reads it too
+```
+
+The second line is the one worth noticing: `UCS_BASIC` (and a
+character set's own default collation) orders by the codepoint, which
+for every set here *is* the stored byte order — so the clause is how a
+statement asks a case-insensitive column for the exact answer. The
+three laws above hold unchanged for it; what changes is only *whose*
+collation decides.
+
+Three details a reimplementation will meet, all measured on Firebird 6:
+
+- **The projection is renamed.** `SELECT s COLLATE UNICODE_CI` describes
+  its column as **`CAST`**, name and alias both — the engine compiles
+  the clause into a `CastNode` — while the type, width and character set
+  stay the operand's, and the *value* is unchanged. A collation decides
+  comparisons, sorts and folds; it never decides what a projection
+  answers.
+- **A collation belongs to one character set**, and naming another set's
+  real collation is the same `-204` as naming nothing at all —
+  distinguishable only by the schema in the message: `COLLATION
+  "SYSTEM"."PXW_INTL" for CHARACTER SET "SYSTEM"."UTF8" is not defined`
+  for a built-in, `"PUBLIC"."NOSUCH"` for a name that exists nowhere.
+- **A `COLLATE` on a non-text operand is rejected before the name is
+  ever looked up**: `ORDER BY <integer col> COLLATE UNICODE` answers
+  `Data type unknown` / `Invalid use of CHARACTER SET or COLLATE`
+  (SQLSTATE HY004) even for a collation that exists.
+
+### When two collations meet
+
+SQL's answer to "which collation decides `a.x = b.y`?" is a
+coercibility lattice, and an unresolvable pair is an error. Firebird's
+answer is one line:
+
+```c
+TTypeId compare_type = MAX(t1, t2);   // YYY
+```
+
+— [`src/jrd/intl.cpp`](https://github.com/FirebirdSQL/firebird/blob/master/src/jrd/intl.cpp),
+`INTL_compare`, comment and all: *"YYY - by SQL II compare_type must be
+explicit in the SQL statement if there is any doubt"*. A text type id is
+`(collation << 8) | charset`, so within one character set the **higher
+collation id wins**, whichever side it is on. Measured, and then found
+in the source in that order: `UNICODE_CI` (3) decides against `UNICODE`
+(2) from either side, either decides against a charset's own default
+(0), and a column's `UNICODE_CI` even beats a literal's written
+`COLLATE UNICODE`. No error, no lattice — an ordering on ids that
+happens to put the looser collations last.
+
+When the two *character sets* differ the engine transliterates one side
+into the winner's set first, and its own comment there admits the
+awkwardness: converting for a `<` comparison "makes no sense if the
+string cannot be expressed".
+
+It is worth knowing this rule exists, because it is the difference
+between a join that pairs `apple` with `APPLE` and one that does not —
+decided by which of two columns happens to carry the higher-numbered
+collation.
 
 ## Transliteration and the connection charset
 
