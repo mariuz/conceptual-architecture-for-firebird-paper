@@ -8,6 +8,7 @@ It is a companion to the [main paper](README.md), whose [SQL translator (DSQL) s
 
 * [From SQL text to an execution tree](#from-sql-text-to-an-execution-tree)
 * [Firebird's grammar: BtYacc, not plain Yacc](#firebirds-grammar-btyacc-not-plain-yacc)
+* [Typing a ?: the parameter has no type of its own](#typing-a--the-parameter-has-no-type-of-its-own)
 * [The grammar at the top level](#the-grammar-at-the-top-level)
 * [The full grammar diagram](#the-full-grammar-diagram)
 * [How to generate the diagram in Mermaid](#how-to-generate-the-diagram-in-mermaid)
@@ -39,6 +40,57 @@ Firebird's entire SQL grammar is a single Bison/Yacc-style file, [`src/dsql/pars
 Why this matters: a plain LALR(1) parser must decide each reduction with only one token of lookahead, and SQL has constructs that genuinely need more context to disambiguate. `parse.y` carries **153 shift/reduce and 7 reduce/reduce conflicts** (recorded in the in-tree `parse-conflicts.txt`); backtracking lets the parser *try* an interpretation and unwind if it hits a dead end, so the grammar can express those constructs directly instead of being contorted to fit LALR(1). It is a pragmatic middle ground between a strict LALR(1) grammar (PostgreSQL, MySQL) and a hand-written recursive-descent parser (which some databases use for exactly this flexibility).
 
 The parser's actions build a tree of **DSQL node objects** (`src/dsql/`), which the code generator then lowers to **BLR** — Firebird's stable, stored intermediate language (see the [wire-protocol](firebird-wire-protocol.md) and [architecture comparison](architecture-comparison.md#firebird-recap) for BLR's role).
+
+## Typing a `?`: the parameter has no type of its own
+
+A placeholder carries no type. `?` is not "an integer" or "a string" —
+it is a hole, and the client must be told what to send before it can
+send anything. Firebird decides that during the DSQL pass over the parse
+tree (`PASS1_set_parameter_type`, `ExprNode::setParameterType`), and the
+rule is worth stating because the obvious guess is wrong:
+
+**the DESTINATION decides, not the neighbouring operand.** In `UPDATE t
+SET nm = ? * 2` over a `NUMERIC(9,2)` column, the parameter is described
+as that NUMERIC — not as the INTEGER the literal `2` would suggest.
+The assignment's target descriptor is pushed *down* the expression tree,
+through arithmetic, negation, function arguments and `CASE` branches
+alike, until it reaches the hole. `SET d = ? + 1` over a DATE column
+describes a DATE; `SET s = SUBSTRING(? FROM 1 FOR 2)` over a
+`VARCHAR(20)` describes a VARCHAR(20).
+
+Two nodes overrule what is pushed into them, and both are principled:
+
+- a **CAST** types its own operand — `CAST(? AS VARCHAR(5))` is a
+  VARYING(5) whatever it is assigned to, because the cast is the
+  writer's explicit answer to this very question;
+- **`COALESCE`** types its parameter from its *other arguments*, since
+  the node's own descriptor is computed from them: `SET nm =
+  COALESCE(?, 0)` describes a plain INTEGER even when `nm` is a
+  NUMERIC(9,2), where `SET nm = CASE WHEN … THEN ? ELSE 0 END` describes
+  the NUMERIC. The asymmetry is one line of code each:
+  [`ValueIfNode::setParameterType`](extern/firebird/src/dsql/ExprNodes.cpp#L14105)
+  forwards the pushed descriptor to both branches, while
+  [`CoalesceNode::setParameterType`](extern/firebird/src/dsql/ExprNodes.cpp#L3891)
+  simply `return false` — it declines what is offered, and the node's
+  own `make()` supplies the type instead.
+
+Where nothing can decide, the statement is rejected rather than guessed
+at: `SELECT ? + 1 FROM t` is `-804, Data type unknown`, and so is
+`COALESCE(?, ?)`. That refusal is the same instinct as the rest of the
+type system — [strict, not coercive](sql-dialect-and-types.md#typing-philosophy-strict-vs-dynamic).
+
+One more thing the input SQLDA carries: **a parameter inherits the
+nullability of the column that types it.** `WHERE id = ?` over an `id
+INTEGER NOT NULL` announces the parameter NOT NULL; the same `?` against
+a nullable column is nullable; one typed by a CAST — by no column at all
+— is nullable. Nullability is derived from the metadata rather than
+stored in the descriptor (`DSC_nullable` is explicitly "not stored",
+`dsc_pub.h`), which is why it follows the column and not the expression
+around it.
+
+All of this is visible without writing a client: `SET SQLDA_DISPLAY ON`
+in isql prints the input message for a statement it cannot then execute,
+which makes every rule above directly measurable.
 
 ## The grammar at the top level
 
