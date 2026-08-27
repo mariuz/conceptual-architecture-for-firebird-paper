@@ -10,6 +10,7 @@ It is a companion to the [main paper](README.md) and pairs closely with the [SQL
 * [The Firebird INTL subsystem](#the-firebird-intl-subsystem)
 * [Character sets in Firebird](#character-sets-in-firebird)
 * [Collations and ICU](#collations-and-icu)
+* [What a collation decides — and why you cannot fake one](#what-a-collation-decides--and-why-you-cannot-fake-one)
 * [Transliteration and the connection charset](#transliteration-and-the-connection-charset)
 * [Worked examples (validated on Firebird 6)](#worked-examples-validated-on-firebird-6)
 * [Comparison: PostgreSQL, MySQL, SQLite](#comparison-postgresql-mysql-sqlite)
@@ -77,6 +78,47 @@ A collation belongs to a character set and names the comparison/sort rules. The 
 - Locale-specific ICU collations can be added for language-correct ordering (e.g. German phonebook, Spanish, Turkish `i`).
 
 Collation is declared per column (`... COLLATE UNICODE_CI_AI`) or applied per expression (`ORDER BY name COLLATE UNICODE_CI`), so the same data can be compared different ways in different queries. This is the mechanism for accent-insensitive search, case-insensitive unique keys, and language-aware sorting.
+
+## What a collation decides — and why you cannot fake one
+
+It is worth being precise about *how much* of an answer a collation
+owns, because the list is longer than "sort order":
+
+| the operation | what the collation decides |
+|---|---|
+| `ORDER BY`, and a sort under `GROUP BY`/`DISTINCT` | the row order |
+| `=`, `<`, `BETWEEN`, `IN`, `LIKE`, `STARTING WITH` | which rows match |
+| `GROUP BY`, `DISTINCT`, `COUNT(DISTINCT …)`, a distinct `UNION` | which values are *the same value* |
+| `MIN`/`MAX` | which row wins |
+| a `UNIQUE` index or a primary key | whether an insert is a duplicate |
+| a `FOREIGN KEY` | whether a parent exists |
+| an index range scan | which keys the scan visits (index keys *are* collation keys) |
+
+So a case-insensitive collation is not a display convenience: under
+`UNICODE_CI`, `'apple'` and `'APPLE'` are one value everywhere in that
+table — one group, one distinct row, one duplicate-key violation.
+
+Mechanically, the engine does none of this by comparing characters. Each
+texttype exposes a **key builder** (`INTL_string_to_key`) that turns a
+string into a byte string whose plain `memcmp` order *is* the
+collation's order, and the same keys are what an index stores. The
+narrow (single-byte) collations carry small tables — a weight per byte,
+with a few expansions (`ä` → `ae`) — while the Unicode ones call **ICU**
+and get UCA sort keys, whose ordering is a large published table:
+`'apple' < 'Ápple' < 'banana'`, because the accented `Á` shares a
+primary weight with `A` and the accent only breaks ties.
+
+That last point is the one worth carrying away for anyone reimplementing
+this engine, and [fire-crab](firebird-rust-conversion.md) learned it the
+expensive way: **a collation you cannot key is an answer you cannot
+give.** Comparing the bytes instead looks like it works — the query
+returns rows, in an order, with no error anywhere — and it is wrong in
+whichever direction the data happens to fall: over one six-row fixture,
+byte order answered `5,2,1,6,3,4` where the engine answers
+`1,5,4,6,2,3`, `WHERE ci = 'APPLE'` found one row where the engine finds
+two, and `GROUP BY ci` made six groups where the engine makes four. The
+honest options are to carry the tables or to refuse the operation; there
+is no third one, and "it is only the sort order" is not true.
 
 ## Transliteration and the connection charset
 
