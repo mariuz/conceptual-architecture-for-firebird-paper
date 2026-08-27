@@ -11,6 +11,7 @@ It is a companion to the [main paper](README.md) and pairs closely with the [SQL
 * [Character sets in Firebird](#character-sets-in-firebird)
 * [Collations and ICU](#collations-and-icu)
 * [What a collation decides — and why you cannot fake one](#what-a-collation-decides--and-why-you-cannot-fake-one)
+* [Two laws of an ICU collation, read off the engine](#two-laws-of-an-icu-collation-read-off-the-engine)
 * [Transliteration and the connection charset](#transliteration-and-the-connection-charset)
 * [Worked examples (validated on Firebird 6)](#worked-examples-validated-on-firebird-6)
 * [Comparison: PostgreSQL, MySQL, SQLite](#comparison-postgresql-mysql-sqlite)
@@ -119,6 +120,115 @@ byte order answered `5,2,1,6,3,4` where the engine answers
 two, and `GROUP BY ci` made six groups where the engine makes four. The
 honest options are to carry the tables or to refuse the operation; there
 is no third one, and "it is only the sort order" is not true.
+
+## Two laws of an ICU collation, read off the engine
+
+Carrying the tables turns out to be the smaller job, because the tables
+are not yours to write: they are the UCA's, and there is a Rust
+implementation of them ([ICU4X](https://docs.rs/icu/latest/icu/)). What
+is *not* in any table is how Firebird uses them, and two rules decide
+every answer. Both were measured against a live Firebird 6 server over
+one four-row fixture — `apple`, `APPLE`, `Ápple`, `ápple` — held in
+three columns collated `UNICODE`, `UNICODE_CI` and `UNICODE_CI_AI`:
+
+**A sort is full strength, whatever the column's collation is.**
+
+```sql
+SELECT id FROM t ORDER BY u,  id;   -- 1 2 4 3
+SELECT id FROM t ORDER BY ci, id;   -- 1 2 4 3
+SELECT id FROM t ORDER BY ai, id;   -- 1 2 4 3
+```
+
+All three agree, and none of them is byte order (`APPLE` sorts *after*
+`apple`, and both before the accented pair). A case-insensitive
+collation does not make a sort unstable or arbitrary; it makes an
+*equality* loose, which is a different thing.
+
+**Equality and grouping read the collation's own strength.**
+
+```sql
+SELECT id FROM t WHERE u  = 'APPLE';   -- 2          (tertiary: exact)
+SELECT id FROM t WHERE ci = 'APPLE';   -- 1 2        (secondary: case folds)
+SELECT id FROM t WHERE ai = 'APPLE';   -- 1 2 3 4    (primary: accent folds too)
+SELECT count(*) FROM t GROUP BY ci;    -- 2, 2       (two groups)
+SELECT count(*) FROM t GROUP BY ai;    -- 4          (one group)
+```
+
+Both laws are the *same sort key* cut at a different level, which is why
+one key builder answers both: sort at tertiary, compare at the
+collation's strength. In ICU4X terms that is one `Collator` per strength
+and `write_sort_key_to`; the resulting bytes compare with `memcmp`,
+exactly as `INTL_string_to_key`'s do, so an engine's existing key-based
+comparison machinery needs no new shape to hold them. Two details are
+not optional: **trailing blanks are the pad and are not keyed**
+(`'apple' = 'apple  '`, and the two land in one group), while a
+*leading* blank is part of the value and weighs as a real collation
+element — `' apple'` sorts before `'app le'` on the live engine, which
+is the root table's non-ignorable variable weighting.
+
+### The third law: a fold reads the collation's own strength
+
+Ordering is full strength and equality is not, and a **fold** — `MIN`,
+`MAX`, `COUNT(DISTINCT …)` — sits on the equality side of that line,
+which is easy to get backwards. `MIN` over a `UNICODE_CI` column
+holding `APPLE` and `apple` answered *whichever row came first*,
+measured both ways round: to the fold the two are equal, so the
+ordinary "keep unless strictly less" rule decides and the first one
+seen wins. Had the fold used the sort's full-strength key instead, it
+would have answered `'apple'` either way — the same key, cut at the
+wrong level, gives a different answer to a question that looks like
+pure ordering.
+
+`COUNT(DISTINCT …)` is the same law from the other side, and it is
+exactly as well defined as a `GROUP BY` *count*: five spellings of
+apple, two accent classes and one banana come to 6 distinct values
+under `UNICODE`, 5 under `UNICODE_CI` and 4 under `UNICODE_CI_AI`.
+
+### What a sort key still cannot answer
+
+Two things stay refusals even with the UCA in hand, and each is a
+property of the *problem*, not of the implementation:
+
+- **`LIKE`, `STARTING WITH`, `CONTAINING`, `SIMILAR TO`.** These match
+  through the collation's own matcher, prefix by prefix, and a UCA sort
+  key is not built prefix-wise: its levels are concatenated, so the key
+  of `'app'` is no prefix of the key of `'apple'`. Measured,
+  `ci STARTING WITH 'APP'` takes `'apple'` too — an answer no
+  byte-prefix test and no key comparison produces.
+- **`GROUP BY` and `DISTINCT` over a case- or accent-insensitive
+  column.** Not the *count* — that is well defined — but the surviving
+  **spelling**, which follows the engine's own sort's internal order.
+  Three measurements, no rule between them: over {`apple`, `APPLE`},
+  `GROUP BY ci` kept whichever row was inserted *second* (`'APPLE'` one
+  way round, `'apple'` the other); over four spellings — `aPPle`,
+  `APPLE`, `apple`, `ApPlE` — it kept `'apple'`, which is neither the
+  first record nor the last, and went on keeping it after that row was
+  deleted and re-inserted at the end; and `SELECT DISTINCT` answers a
+  *different* survivor from `GROUP BY` over the same rows. A
+  reimplementation can reproduce the group count exactly and the group
+  *value* not at all.
+
+Note how narrow the second one is. It is not the *count* that is
+unanswerable, and it is not grouping in general: a **full-strength**
+collation never calls two different strings one value, so `UNICODE`
+groups and deduplicates as exactly as a binary collation does — and its
+groups come back in the *collation's* order, which is its own trap. A
+grouped result is sorted by its keys, so `GROUP BY name` under any
+collation answers rows in that collation's sequence: `ae`, `ä`,
+`apple`, `APPLE`, `banana` where the bytes would have said something
+else entirely.
+
+One more trap is not in that list, because it is not about keys at all
+— and it is the subtlest of the family. A converted engine tends to grow
+*two* execution paths — a query planner that knows column descriptors, and a
+BLR interpreter for stored procedures that works on values. Text values
+do not carry their collation. So the same statement answers correctly at
+the prompt and incorrectly inside a procedure body: measured,
+`SELECT count(*) FROM t WHERE ci = 'APPLE'` answered 2 typed directly
+and 1 from a procedure, with no error on either side. The cheap, honest
+fix is a guard rather than a second implementation — if the BLR names a
+relation carrying a collated column, stand aside and let the
+descriptor-aware path serve the call.
 
 ## Transliteration and the connection charset
 

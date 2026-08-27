@@ -221,6 +221,16 @@ rules) are documented with their rationale in
 including what the first slice taught the hard way (benchmark metrics that
 flatter, tools that must do comparable work to be comparable).
 
+Those rules included carrying **no dependencies at all**, and there is now
+exactly one deliberate exception: `icu_collator`. Firebird's `UNICODE`,
+`UNICODE_CI` and `UNICODE_CI_AI` collations are ICU-backed, and the Unicode
+Collation Algorithm's table is not something to convert — it is data, and
+without it those three collations could only ever be *refused*. The
+exception buys back `ORDER BY`, the whole comparison family and the
+semi-join rewrites over them; what it does not buy is discussed in
+[internationalization](internationalization.md#two-laws-of-an-icu-collation-read-off-the-engine),
+along with the two laws that decide how the keys are used.
+
 ## Trying it
 
 ```sh

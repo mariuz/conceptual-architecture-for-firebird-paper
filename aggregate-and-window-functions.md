@@ -85,6 +85,8 @@ Analytics map onto three of the [record-source operators](query-optimizer-and-ex
 
 So both `GROUP BY` and `OVER` are, underneath, a **sort followed by a group-wise pass** — which is exactly what the query plans show: `PLAN SORT (SALES NATURAL)` for both an aggregate and a window query (verified live). The sort is the shared cost of analytics, and an index that already provides the required order can sometimes avoid it.
 
+**A text group key drags its collation into all of this**, and not always at the same strength. Two things follow from the sort-then-collapse shape. First, the groups come back in the *collation's* order, not the bytes': `GROUP BY name` under a Paradox or ICU collation answers `ae`, `ä`, `apple`, `APPLE`, `banana` where a byte sort would have said something quite different — a `GROUP BY` has an output order whether or not you asked for one. Second, `MIN`, `MAX` and `COUNT(DISTINCT …)` are *folds*, not sorts, and they read the collation at its own strength: under a case-insensitive collation `MIN` over `APPLE` and `apple` finds the two **equal** and keeps whichever row it met first (measured both ways round on Firebird 6), where the full-strength order the `SortedStream` uses would have picked `apple` either way. See [internationalization](internationalization.md#two-laws-of-an-icu-collation-read-off-the-engine) for the collation laws these rest on.
+
 ## Analytics in action (validated)
 
 Real output from a live Firebird 6 server (a `sales` table, regions East/West). **Window functions** — ranking, a framed running total, and `LAG`:
