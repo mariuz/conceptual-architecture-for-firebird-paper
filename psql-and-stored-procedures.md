@@ -10,6 +10,7 @@ It is a companion to the [main paper](README.md) and pairs with the [SQL dialect
 * [The PSQL module types](#the-psql-module-types)
 * [Selectable procedures: SUSPEND](#selectable-procedures-suspend)
 * [Triggers: DML, DDL and database](#triggers-dml-ddl-and-database)
+* [What firing a trigger actually costs the writer](#what-firing-a-trigger-actually-costs-the-writer)
 * [Exception handling and other features](#exception-handling-and-other-features)
 * [Worked examples (validated on Firebird 6)](#worked-examples-validated-on-firebird-6)
 * [Side-by-side: the same procedure in four systems](#side-by-side-the-same-procedure-in-four-systems)
@@ -93,6 +94,51 @@ _Figure 2: Firebird trigger kinds — row-level DML (with universal multi-action
 - **DML triggers** — `BEFORE`/`AFTER` `INSERT`/`UPDATE`/`DELETE`, with the `NEW.` and `OLD.` context records. **Universal triggers** (`INSERT OR UPDATE OR DELETE`) handle several actions in one body using the `INSERTING`/`UPDATING`/`DELETING` booleans, and **`POSITION n`** orders multiple triggers on the same event.
 - **DDL triggers** ([`README.ddl_triggers.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.ddl_triggers.txt)) — fire on `CREATE`/`ALTER`/`DROP` of objects, for schema-change auditing or policy enforcement.
 - **Database triggers** ([`README.db_triggers.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.db_triggers.txt)) — fire `ON CONNECT`, `ON DISCONNECT`, and on transaction `START`/`COMMIT`/`ROLLBACK` — e.g. to set up session context or log connections. PostgreSQL has DDL/event triggers but not connection triggers in core; MySQL and SQLite have neither.
+
+## What firing a trigger actually costs the writer
+
+The trigger *list* above is the easy part. What a DML implementation has
+to get right is the **order things happen in around one row**, and it is
+tighter than it looks:
+
+1. the statement's own values are placed, then the column **DEFAULTs**
+   for anything omitted;
+2. **BEFORE** triggers run, in `RDB$TRIGGER_SEQUENCE` order, each seeing
+   what the previous one left. A `BEFORE` body may assign `NEW.<col>`,
+   and that assignment *is* the stored value — it overwrites what the
+   client sent;
+3. the **CHECK constraints** and then the per-field validations
+   (`NOT NULL`, domain checks) run over the row as the triggers left it —
+   which is why a `BEFORE` trigger can satisfy a `NOT NULL` column the
+   client never mentioned;
+4. the row is **stored** and its index entries written;
+5. **AFTER** triggers run, with the row in place. `NEW` is read-only
+   here; what an AFTER body can still do is act — write another table —
+   or raise.
+
+A raise anywhere in that sequence takes the whole statement back, and it
+carries a stack item naming the trigger and the position *in the original
+`CREATE TRIGGER` text*: `At trigger "PUBLIC"."T_BI3" line: 1, col: 82`.
+Those numbers do not come from the stored source (which starts after
+`AS`) — they come from the trigger's **`RDB$DEBUG_INFO`** blob, which maps
+each statement to a line and column in the text as written.
+
+Two consequences worth stating for anyone reimplementing this:
+
+- **A trigger changes what a write means.** A server that stores the row
+  without firing the triggers has not "skipped an extension" — it has
+  written different data, and no error anywhere says so. Refusing the
+  statement is the only honest alternative to firing it.
+- **A trigger body is a statement of its own.** A body that writes
+  another table needs the same machinery a client's `INSERT` does, in the
+  middle of an already-running write. In [fire-crab](firebird-rust-conversion.md)
+  that split the problem in two: a body that only computes over `NEW`/`OLD`
+  runs inline, while one that touches the database can only be an
+  `AFTER` trigger and runs once the statement's own writes are applied —
+  still inside the statement's undo window, so a raise there takes the
+  rows back with it. The case that cannot be faked is a deferred body
+  that reads *the table it fires for*: by then that table holds every row
+  the statement wrote, where per-row firing would have shown it a prefix.
 
 ## Exception handling and other features
 
