@@ -15,6 +15,7 @@ It is a companion to the [main paper](README.md) and pairs closely with the [SQL
   * [The collation a statement writes for itself](#the-collation-a-statement-writes-for-itself)
   * [When two collations meet](#when-two-collations-meet)
   * [A pattern match reads a different form entirely](#a-pattern-match-reads-a-different-form-entirely)
+  * [The one predicate that folds case everywhere](#the-one-predicate-that-folds-case-everywhere)
 * [Transliteration and the connection charset](#transliteration-and-the-connection-charset)
 * [Worked examples (validated on Firebird 6)](#worked-examples-validated-on-firebird-6)
 * [Comparison: PostgreSQL, MySQL, SQLite](#comparison-postgresql-mysql-sqlite)
@@ -225,6 +226,31 @@ canonicalisation (`%` and `_` are not letters), which is what lets an
 implementation canonicalise the pattern once and the value per row; and
 the canonical form may be *longer* than the value (`ß` upper-cases to
 `SS`), so `_` matches one **canonical** character, not one stored one.
+
+### The one predicate that folds case everywhere
+
+`CONTAINING` is Firebird's own: a literal substring test with no
+wildcards, and the only predicate that is case-insensitive whatever the
+column's character set or collation. Its matcher says why in its type:
+
+```cpp
+ContainsMatcher<UCHAR, UpcaseConverter<>>                          // direct collation
+ContainsMatcher<CharType, CanonicalConverter<UpcaseConverter<>>>   // canonical collation
+```
+
+Upper-case *first*, then the collation's canonical form, then search.
+Compare its sibling on the line above it in the same file:
+`StartsMatcher<UCHAR, NullStrConverter>` — no conversion at all, so
+`STARTING WITH` is case-**sensitive** on a plain column while
+`CONTAINING` is not. Two predicates, one family, opposite defaults, and
+nothing in the SQL says so.
+
+The rest follows from "no wildcards": `%` and `_` are ordinary
+characters in the pattern, an empty pattern matches every non-NULL row,
+and a NULL on either side is UNKNOWN whether or not the test is
+negated. An integer operand renders to its decimal text, and a `CHAR`
+operand's padding is irrelevant — it is a substring test, not a
+comparison.
 
 ### What a sort key still cannot answer
 
