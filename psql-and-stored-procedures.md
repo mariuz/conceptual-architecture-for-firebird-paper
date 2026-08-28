@@ -96,6 +96,19 @@ _Figure 2: Firebird trigger kinds — row-level DML (with universal multi-action
 - **DDL triggers** ([`README.ddl_triggers.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.ddl_triggers.txt)) — fire on `CREATE`/`ALTER`/`DROP` of objects, for schema-change auditing or policy enforcement.
 - **Database triggers** ([`README.db_triggers.txt`](https://github.com/FirebirdSQL/firebird/blob/master/doc/sql.extensions/README.db_triggers.txt)) — fire `ON CONNECT`, `ON DISCONNECT`, and on transaction `START`/`COMMIT`/`ROLLBACK` — e.g. to set up session context or log connections. PostgreSQL has DDL/event triggers but not connection triggers in core; MySQL and SQLite have neither.
 
+  Three of their rules are worth knowing before you rely on one.
+  **`ON CONNECT` is a gate, not a notification**: if its body raises, the
+  attach is refused and the client gets that exception, which is how a
+  database locks itself against logins. It runs *before* the client's
+  first transaction, in a transaction of its own — so its work is
+  committed independently of anything the session goes on to do, and it
+  fires no `ON TRANSACTION START` of its own. And **the transaction
+  triggers fire inside the transaction they are firing for**, which has a
+  sharp consequence for the rollback one: everything an `ON TRANSACTION
+  ROLLBACK` body writes is rolled back with it, so such a body must use
+  `IN AUTONOMOUS TRANSACTION` to leave any trace. (A generator it drew
+  from has still moved: a draw is not transactional.)
+
 ## What firing a trigger actually costs the writer
 
 The trigger *list* above is the easy part. What a DML implementation has
