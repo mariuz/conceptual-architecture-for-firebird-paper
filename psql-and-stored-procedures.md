@@ -11,6 +11,7 @@ It is a companion to the [main paper](README.md) and pairs with the [SQL dialect
 * [Selectable procedures: SUSPEND](#selectable-procedures-suspend)
 * [Triggers: DML, DDL and database](#triggers-dml-ddl-and-database)
 * [What firing a trigger actually costs the writer](#what-firing-a-trigger-actually-costs-the-writer)
+* [A generator draw is not a value, it is a write](#a-generator-draw-is-not-a-value-it-is-a-write)
 * [Exception handling and other features](#exception-handling-and-other-features)
 * [Worked examples (validated on Firebird 6)](#worked-examples-validated-on-firebird-6)
 * [Side-by-side: the same procedure in four systems](#side-by-side-the-same-procedure-in-four-systems)
@@ -139,6 +140,51 @@ Two consequences worth stating for anyone reimplementing this:
   rows back with it. The case that cannot be faked is a deferred body
   that reads *the table it fires for*: by then that table holds every row
   the statement wrote, where per-row firing would have shown it a prefix.
+
+## A generator draw is not a value, it is a write
+
+The commonest trigger body in Firebird is four words long:
+
+```sql
+IF (NEW.ID IS NULL) THEN NEW.ID = GEN_ID(G, 1);
+```
+
+and it hides two properties that make it much less ordinary than it
+looks. The first: **generators are not transactional.** A draw is a page
+write that outlives the transaction that made it, so a row rejected
+after its trigger fired still consumed a value — `INSERT` a row that
+violates a constraint and the sequence has moved anyway. The second: the
+draw happens *inside* a statement that is already holding its working
+copy of the very page the generator lives on. A trigger interpreter that
+tries to perform the draw itself writes into a copy the outer statement
+is about to overwrite.
+
+[fire-crab](firebird-rust-conversion.md) settles both by running such a
+body **twice**. The first pass answers 0 for every draw, over a copy of
+the row, and records what the body *would* draw; the statement — which
+holds the page — performs exactly those draws; the second pass replays
+the values in order. Two passes are sound because a trigger body that is
+otherwise pure starts from the same row both times, and the design falls
+out of the two cases that decide it:
+
+- a **conditional** draw must consume nothing when its branch is
+  skipped, which rules out simply pre-drawing a value per draw site at
+  prepare time;
+- a body that **raises after drawing** must still consume the value,
+  which the recorded-then-performed order gives for free.
+
+What it cannot do is let a *drawn value* decide a branch — the first
+pass sees 0 there and could take a different path than the second — so
+that shape is refused. The distinction is finer than it sounds and worth
+stating precisely, because the classic trigger above is *not* an
+instance of it: it reads `NEW.ID` before anything has assigned to it.
+`NEW.ID = GEN_ID(G,1); IF (NEW.ID > 100) THEN ...` is.
+
+One more detail for anyone reading the BLR: `NEXT VALUE FOR seq` is not
+sugar for `GEN_ID(seq, 1)`. They are different verbs — `blr_gen_id2`
+carries the counted name alone, `blr_gen_id` carries a name and a step
+expression — and the sequence form advances by the sequence's own
+`INCREMENT BY`, which the two-argument form overrides.
 
 ## Exception handling and other features
 
