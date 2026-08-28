@@ -106,10 +106,27 @@ the generated id". Four rules, each measurable on a live server:
   defaults and `BEFORE` triggers included); `DELETE` returns the row as
   it *was*. Since Firebird 5, a multi-row `UPDATE`/`DELETE` returns one
   row per affected row — the clause is a cursor, not a singleton.
-- **`OLD.`/`NEW.` are PSQL trigger contexts, not DSQL.** `INSERT ...
-  RETURNING NEW.ID` is `Column unknown, "NEW"."ID"` at the SQL level, and
-  the statement does not run. (Inside a `MERGE`, where the target is
-  named by its alias, `NEW.` does resolve to that after-image.)
+- **`OLD.` and `NEW.` are available exactly where there are two rows to
+  tell apart.** An `UPDATE` has a before-image and an after-image and
+  names them both: `RETURNING OLD.N, NEW.N, N` over `SET N = N + 1`
+  answers `10, 11, 11` — a bare name is `NEW`, and so is the target's
+  own name or alias. They compose like any other value, so
+  `RETURNING NEW.N - OLD.N` is the delta and `RETURNING UPPER(OLD.S)`
+  the old string upper-cased. The describe does *not* distinguish them:
+  all three columns above come back named `N` against the target table.
+
+  An `INSERT` and a `DELETE` have **one** row, and there the qualifiers
+  do not exist at all — `INSERT ... RETURNING NEW.ID` is
+  `Column unknown, "NEW"."ID"` even though the column plainly exists,
+  and the statement does not run. (Inside a `MERGE`, where the target is
+  named by its alias, `NEW.` resolves to that after-image.)
+
+  This is worth stating carefully because the natural generalisation
+  from the `INSERT` case — "`OLD.`/`NEW.` are PSQL trigger contexts, not
+  DSQL" — is wrong, and wrong in the direction that makes a
+  reimplementation refuse working SQL. [fire-crab](firebird-rust-conversion.md)
+  carried exactly that sentence, in a code comment, citing exactly that
+  probe.
 
 There is a wire-level asymmetry worth knowing when writing a driver: an
 `INSERT ... RETURNING` announces itself as statement type
