@@ -132,14 +132,43 @@ Two consequences worth stating for anyone reimplementing this:
   statement is the only honest alternative to firing it.
 - **A trigger body is a statement of its own.** A body that writes
   another table needs the same machinery a client's `INSERT` does, in the
-  middle of an already-running write. In [fire-crab](firebird-rust-conversion.md)
-  that split the problem in two: a body that only computes over `NEW`/`OLD`
-  runs inline, while one that touches the database can only be an
-  `AFTER` trigger and runs once the statement's own writes are applied —
-  still inside the statement's undo window, so a raise there takes the
-  rows back with it. The case that cannot be faked is a deferred body
-  that reads *the table it fires for*: by then that table holds every row
-  the statement wrote, where per-row firing would have shown it a prefix.
+  middle of an already-running write. What makes that hard is not the
+  writing but the *reading*: the moment a body asks the database a
+  question, the answer pins exactly when it ran.
+
+  The engine's answer is per-row, and it is observable. Under an
+  `INSERT ... SELECT` of three rows, a `BEFORE INSERT` body running
+  `SELECT COUNT(*)` on its own table answers **0, 1, 2** — it sees every
+  earlier row of the same statement and not the one being written. An
+  `AFTER` body counts itself in. A `BEFORE UPDATE` body reads the sum
+  *before* this row's update and a `BEFORE DELETE` body still counts the
+  row it is about to remove. So a body can be run neither before the
+  statement nor after it: batching the rows and firing the bodies around
+  the batch answers 3, 3, 3, and is wrong in a way no error reports.
+
+  In [fire-crab](firebird-rust-conversion.md) this is the reason a
+  statement hands its working copy of the file *back* around every such
+  body and takes a fresh one after. Publishing is what puts the body's
+  read on the file the engine would show it, and it forces two things
+  that are easy to miss: the statement's rows must already carry an
+  adopted transaction id (an un-adopted id is another transaction's
+  uncommitted work to every reader, the body included), and the rows must
+  be written as they are read rather than in a final pass.
+
+- **A loop takes its rows when it starts.** A `FOR SELECT` whose own body
+  writes the table it is iterating still walks only the rows that were
+  there when it opened — on a two-row table inserting one row per
+  iteration, the loop runs twice and leaves four rows. A declared cursor
+  behaves the same between `OPEN` and `CLOSE`. This is the difference
+  between a loop that terminates and one that does not, and it is a
+  property of the *statement*, not of the transaction: the body's own
+  inserts are perfectly visible to the next statement.
+
+- **A statement that fails takes the body's writes with it**, however far
+  the body got — a trigger that logged a row whose own `INSERT` then
+  violates a `CHECK` leaves the log empty. That is one undo window around
+  the whole statement, and it is why a body's write cannot simply be
+  applied and forgotten.
 
 ## A generator draw is not a value, it is a write
 
