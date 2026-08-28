@@ -128,6 +128,26 @@ the generated id". Four rules, each measurable on a live server:
   carried exactly that sentence, in a code comment, citing exactly that
   probe.
 
+- **The star is a whole production, not a column.** `RETURNING *`
+  answers the affected row, and every *qualified* star works too:
+  `T.*`, `NEW.*`, `OLD.*`, an alias's `x.*`, and `OLD.*, NEW.*`
+  together — the before-image's columns first, then the after-image's,
+  each described against the target table. A qualified star may share
+  the list with ordinary columns (`RETURNING OLD.*, N`); a **bare** one
+  may not, because the grammar takes `*` as an alternative to the whole
+  list rather than as an item in it, so `RETURNING *, OLD.N` is a
+  syntax error rather than a wider row.
+- **A `MERGE` has three rows, and names all three.** The target's
+  after-image and before-image as above, and the SOURCE row under the
+  source's own alias: `MERGE INTO T t USING O o ON ... WHEN MATCHED
+  THEN UPDATE SET t.N = o.K RETURNING o.ID, o.K, t.N` is legal, `o.*`
+  expands the source, and a source column *describes against the source
+  table* — the only place in the language where a `RETURNING` column
+  does not name the DML target. On a row taken by `WHEN NOT MATCHED`,
+  `OLD.` is null rather than an error. A bare `*` there is the one
+  shape that fails: it names both contexts at once and the engine
+  raises 42702 on whatever column they share.
+
 There is a wire-level asymmetry worth knowing when writing a driver: an
 `INSERT ... RETURNING` announces itself as statement type
 `isc_info_sql_stmt_exec_procedure` (8), so a client executes it and reads
