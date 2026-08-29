@@ -158,6 +158,96 @@ which is what node-firebird and libfbclient both do — takes two different
 paths through the same clause, and a server implementing the protocol has
 to answer both.
 
+## The describe is half the answer
+
+A client does not read a result row; it reads a row *under a
+description*. The describe says the type, the width, the scale and the
+sub-type, and the value on the wire is only a raw integer or a run of
+bytes until that description tells the client what to do with it. A
+server can therefore hand back the correct bytes and still be wrong —
+and the failure is invisible from either side alone, because the row
+looks fine and the describe looks plausible. Four rules, each of which
+this project got wrong first and measured afterwards.
+
+**A computed length is still a length.** `SUBSTRING(V FROM 1 FOR 5)`
+narrows the describe to five characters; `SUBSTRING(V FROM 1 FOR 5+0)`
+cannot be narrowed statically, and the engine falls back to the source's
+own width — a substring can only ever shrink its source, so the source's
+width is always a safe announcement. `LPAD` and `RPAD` are the
+interesting opposite: a pad can grow *past* its source, so a computed
+pad length falls back to the widest `VARCHAR` the character set admits —
+65533 bytes for `NONE` and `WIN1252`, 65532 for `UTF8`, which is 16383
+characters times four bytes. That the byte figures differ per charset is
+the tell that the cap is applied to the *character* count and the
+multiplication happens afterwards.
+
+The reason this matters more than a width usually does: a fallback that
+loses the width tends to lose the *character set* with it, and a UTF-8
+`straße` announced as `CHARACTER SET NONE` travels one byte per
+character. The client renders `stra\xDF`. Nothing errors, no row is
+missing, and the text is simply corrupt.
+
+**A `UNION` describes one column and every branch answers under it.**
+This is the rule with the sharpest teeth, because taking the first
+branch's description and letting the other branches ride it produces a
+number that is wrong rather than absent:
+
+```sql
+SELECT CAST(1.50 AS NUMERIC(9,2)) FROM RDB$DATABASE
+UNION ALL
+SELECT 100 FROM RDB$DATABASE
+```
+
+The second branch's raw `100` read under the first branch's scale of two
+renders as **1.00**. The error is not cosmetic and does not stay put —
+it flows into `SUM` over the union and into the row count of a `UNION
+DISTINCT`, where two values that should differ collapse into one.
+
+What the engine does instead is take **the widest branch, on each axis
+independently**. The type climbs a ladder — `SMALLINT` beside `INTEGER`
+answers `LONG` whichever comes first, `INTEGER` beside `BIGINT` answers
+`INT64`, `NUMERIC(9,2)` beside `NUMERIC(30,4)` answers `INT128` — the
+scale takes the widest of the branches', and one *approximate* branch
+makes the whole column a `DOUBLE` regardless of what the exact branches
+carried. Then every branch's value is converted to that column before it
+goes on the wire.
+
+**The sub-type is reconciled too, and by a different rule.** Scale takes
+the widest; sub-type takes the *maximum of the family codes* — 0 plain
+integer, 1 `NUMERIC`, 2 `DECIMAL`. `DECIMAL` beats `NUMERIC` whichever
+branch it appears in, a third all-integer branch does not pull the
+result back down, and — the case that reveals it is a genuinely separate
+rule — an `INTEGER` beside a `NUMERIC(9,0)` agrees on both type and
+scale and *still* announces sub-type 1.
+
+**A fold keeps its source's family.** `SUM`, `AVG`, `MIN` and `MAX` over
+a `NUMERIC` all answer sub-type 1 and over a `DECIMAL` sub-type 2,
+grouped or not, and through a wrapping expression: `SUM(N * 2)` over a
+`NUMERIC(9,2)` is `INT128`, scale −2, sub-type 1. `COUNT` is the one
+fold with no source type to keep. And `MIN`/`MAX` keep the source's
+*width* as well, because unlike `SUM` they select an existing value
+rather than accumulating one — `MIN` over a `NUMERIC(9,2)` stays a
+four-byte `LONG`, where `SUM` widens to `INT64`.
+
+The trap in implementing that ladder is worth stating plainly, because
+it is not in the arithmetic. The announced type and the *wire form the
+encoder writes* are two different pieces of state, and they must move
+together. An attempt here that set the describe's type and length while
+leaving the encoder's form alone returned **6442450944.66** for 1.50 —
+the four-byte value landing in the high half of an eight-byte slot,
+which is 1.5 × 2³². The same trap has a quieter version: an approximate
+union announces scale 0, so an exact branch that skips the conversion
+hands the encoder a scaled integer it cannot read as a float, and the
+column silently answers `0.0`. A width you announce but do not write is
+worse than a refusal, because it looks like an answer.
+
+One reconciliation is left unimplemented here rather than guessed at: a
+number beside `TEXT`, which the engine resolves by *rendering* the
+number into the text column. That needs the value side to render exactly
+as the engine does, digit for digit, so it refuses. Refusing is a
+limitation; answering 6442450944.66 is a lie, and only one of the two is
+safe to build on.
+
 ## Data type mapping across the four systems
 
 A practical cross-reference (core types; each system has more):
