@@ -241,6 +241,44 @@ hands the encoder a scaled integer it cannot read as a float, and the
 column silently answers `0.0`. A width you announce but do not write is
 worse than a refusal, because it looks like an answer.
 
+The same law governs more than `UNION`. A `CASE`, a `COALESCE`, an
+`IIF`, a `DECODE` and the anchor/recursive pair of a recursive CTE all
+describe one column that several branches answer under, and each needs
+both halves — reconcile the description from every branch, then bring
+every branch's value to it. Having only the first half is the worst
+possible split, because it fails silently in a very specific way:
+
+```sql
+SELECT SUM(CASE WHEN <false> THEN CAST(1.50 AS NUMERIC(9,2))
+                ELSE 100 END) FROM T
+```
+
+The engine answers 200.00. A server that announces scale 2 and hands
+back the integer branch's raw `100` answers **2.00** — every row
+contributing 1.00 instead of 100.00. `SUM(CASE WHEN ... THEN <amount>
+ELSE 0 END)` is a workhorse idiom, so this is money, silently short by a
+factor of a hundred.
+
+What makes it worth dwelling on is *where it hides*. The direct
+projection of that same conditional is correct, because the encoder
+renders the value's own scale — the two errors cancel exactly as long as
+nobody looks. The defect appears only once something **consumes** the
+datum: an aggregate, or a `CAST` to text. So the expression tests clean
+and the report built on it is wrong. The cure is to align the value
+where the node is *built* rather than where it is read, which is also
+the only place a reconciled description is available at all.
+
+A few smaller rules fall out of the same family, each measurable: a
+conditional's sub-type is the max family code of its branches, while
+`NULLIF` takes its *first* operand's alone, because its value simply is
+that operand. `MIN` and `MAX` describe whatever their source describes —
+`MAX(ID+0)` is `INT64` not because folds widen expressions but because
+`ID+0` is already `INT64`, the arithmetic having widened it before the
+fold ever saw it. And a `UNION` of text branches takes the widest
+length, which must be maxed in *characters*: a column carries its width
+in the bytes of its own charset, so the same six-character union is 6
+bytes under `WIN1252` and 24 under `UTF8`.
+
 One reconciliation is left unimplemented here rather than guessed at: a
 number beside `TEXT`, which the engine resolves by *rendering* the
 number into the text column. That needs the value side to render exactly
