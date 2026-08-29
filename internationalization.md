@@ -454,6 +454,47 @@ Together these explain the classic UUID-column complaints — a
 exactly, against a shorter one only when the remainder is NULs, and
 never through a `LIKE` prefix.
 
+## Concatenating across character sets
+
+`||` is where the three concepts meet, and it has one rule that decides
+everything: **a byte carrier is bytes.** `CHARACTER SET NONE` and
+`OCTETS` do not hold text that happens to be untagged — they hold
+octets, and a conversion to or from one is a *byte copy*, never a
+transliteration. So `<NONE> || <WIN1252>` is simply the two operands'
+stored octets, one run after the other, read back as WIN1252.
+
+Which set the result takes is the engine's own `DataTypeUtil` rule, and
+it is worth memorising because it is not symmetric: **OCTETS absorbs**
+from either side, **NONE is the weakest** and yields to anything, and
+ASCII yields to everything but NONE. Two different real sets take the
+first operand's.
+
+The width follows from the same fact. Every other charset announces its
+width as characters times bytes-per-character, but a carrier's character
+*is* a byte — so an operand wider than one byte per character has to
+contribute its **byte** width to a carrier result. A `VARCHAR(32)` in
+UTF8 concatenated with a `VARCHAR(32)` in OCTETS is 160 bytes, not 64:
+32 × 4 for the UTF8 side, plus 32.
+
+There is a failure mode here worth describing in full, because it is the
+one that does not look like a character-set bug at all. Suppose a server
+carries a NONE column's octets one-per-character — a reasonable internal
+representation — and then announces the concatenation as WIN1252 without
+converting. At emission it faces a string containing U+009F and a
+destination of WIN1252, and it does the apparently correct thing: it
+transliterates. But WIN1252 has no U+009F; that byte position holds
+U+0178. The transliteration fails — *after* the row's earlier bytes have
+already gone onto the wire. The client does not get a wrong string or an
+error about character sets. It gets `SQLSTATE 08006`, "error reading
+data from the connection", and a dead session, because the wire is now
+desynchronised from the description that preceded it.
+
+That is the practical argument for treating the announcement and the
+bytes as one decision rather than two. A width or a charset you announce
+but do not write is not a cosmetic divergence; it is a protocol error
+that surfaces somewhere else entirely, and it will be debugged as a
+network problem.
+
 ## The character-set cast, and its three error classes
 
 `CAST(<value> AS VARCHAR(n) CHARACTER SET <cs>)` is the explicit way a
