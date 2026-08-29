@@ -68,6 +68,56 @@ Firebird 4 added the SQL-standard conversion and extraction operators:
 - **Arithmetic** via `DATEADD(n <part> TO t)`, `DATEDIFF(<part> FROM a TO b)`, `EXTRACT(<part> FROM t)`, and helpers `FIRST_DAY`/`LAST_DAY` (`README.builtin_functions.txt`).
 - The **`RDB$TIME_ZONE_UTIL`** package and **`RDB$TIME_ZONES`** table expose the zone database (transitions, offsets) to SQL.
 
+## What zoned arithmetic is actually arithmetic on
+
+`DATEADD` and `DATEDIFF` over a `WITH TIME ZONE` value raise a question
+the zoneless types never pose: is the arithmetic done on the *instant*
+or on the *local fields*? For fixed offsets the two models agree on
+every input, which is why the question is easy to get wrong and hard to
+notice — you can implement either one and pass every test you thought
+to write.
+
+A ruled zone across a DST boundary separates them. `DATEADD(DAY, 1,
+TIMESTAMP '2024-03-30 12:00 Europe/Berlin')` answers `2024-03-31 13:00`.
+The wall clock moved by twenty-five hours; the *instant* moved by
+twenty-four. Local-field arithmetic cannot produce that answer. Firebird
+adds to the UTC representation and carries the zone through unchanged.
+
+`DATEDIFF` is the same law seen from the other side: it measures the UTC
+instant, never the wall clock. Two checks pin it, and they are worth
+running against any implementation, because each alone is ambiguous:
+
+```sql
+-- same wall clock, different offsets: NOT zero
+DATEDIFF(HOUR FROM TIMESTAMP '2026-01-31 12:00:00 +02:00'
+                TO TIMESTAMP '2026-01-31 12:00:00 +05:00')   -- -3
+
+-- same instant, different zones: zero
+DATEDIFF(HOUR FROM TIMESTAMP '2026-01-31 12:00:00 +02:00'
+                TO TIMESTAMP '2026-01-31 15:00:00 +05:00')   --  0
+```
+
+A related trap sits one level down, in how a *missing* zoned value gets
+rendered. A `TIMESTAMP WITH TIME ZONE` is stored as UTC halves plus a
+zone id, and zone id 0 decodes to the offset `-23:59`; day zero of the
+Modified Julian Day epoch is 1858-11-16. So an all-zero buffer renders
+as `1858-11-16 00:01:00.0000 -23:59` — which looks like a timestamp
+rather than like the absence of one. A server that returns NULL for a
+zoned operand while its describe says NOT NULL will ship no bytes, and
+the client will decode that plausible-looking date. The lesson
+generalises past time zones: when a type's zero value is a legal-looking
+value, "wrong answer" and "no answer" become indistinguishable at the
+client, and only a differential against a real engine will tell them
+apart.
+
+The shape of a temporal *difference* is worth stating too, since it is
+not uniform: `DATE - DATE` is days as a 4-byte `LONG` at scale 0,
+`TIME - TIME` is seconds as a 4-byte `LONG` at scale −4 with sub-type
+`NUMERIC`, and any pair involving a `TIMESTAMP` is days as an 8-byte
+`INT64` at scale −9. The width matters beyond the describe: it seeds
+every downstream promotion, so getting `DATE - DATE` wrong by four bytes
+makes `(DATE - DATE) * 2` an `INT128` where the engine stays `INT64`.
+
 ## DST, equality and edge cases
 
 Time-zone support is only as good as its handling of the hard cases, and Firebird defines them:
