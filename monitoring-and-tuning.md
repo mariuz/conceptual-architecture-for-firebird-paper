@@ -42,6 +42,21 @@ _Figure 1: The monitor/tune loop — observe with MON$/trace/profiler/gstat, adj
 
 Firebird's primary monitoring surface is a set of **virtual tables** (`MON$*`) that you query with ordinary SQL. The key architectural property, from [`doc/README.monitoring_tables`](https://github.com/FirebirdSQL/firebird/blob/master/doc/README.monitoring_tables): the data does not exist until you select it, and the first select in a transaction takes a **stable snapshot** that is preserved until the transaction ends — so a master/detail set of queries always sees a consistent picture, regardless of the host transaction's isolation level. To refresh, commit and re-query. Access is privilege-gated (see the [security document](security-architecture.md)): SYSDBA and the database owner see everything; a regular user sees only their own attachments.
 
+A consequence worth stating for anyone reimplementing this: **the
+`MON$` tables are ordinary catalog relations that happen to be filled
+from live state.** `MON$DATABASE` is relation 33 with 28 fields, defined
+in `RDB$RELATION_FIELDS` like any user table — so a server describes a
+`MON$` query from the catalog exactly as it describes `SELECT * FROM
+CUSTOMERS`, and only the *rows* are special. That has a sharp practical
+edge: a server that cannot fill them must still answer with the right
+shape. Returning nothing is a defensible divergence — "this server has
+no attachments to report" is at least a statement a client can read —
+while returning one all-NULL row is not, because `SELECT COUNT(*) FROM
+MON$ATTACHMENTS` then answers NULL, and `COUNT` never answers NULL.
+[fire-crab](firebird-rust-conversion.md) made exactly that mistake, and
+the fix was to stop special-casing the prefix and let the tables be what
+the catalog already says they are.
+
 ```mermaid
 flowchart TB
     DB["MON$DATABASE<br/>page size, cache, OIT/OAT/OST, sweep"]
