@@ -279,6 +279,36 @@ length, which must be maxed in *characters*: a column carries its width
 in the bytes of its own charset, so the same six-character union is 6
 bytes under `WIN1252` and 24 under `UTF8`.
 
+There is a sharper version of the same mistake, worth stating on its
+own because it breaks a promise the protocol makes rather than merely
+getting a number wrong. A scalar subquery — `SELECT (SELECT price FROM
+items WHERE id = 7) FROM ...` — can be answered by running the inner
+query once at prepare time and splicing its value into the statement as
+a literal. That is a legitimate optimisation. What is not legitimate is
+then describing the column from that literal, because the description
+becomes a property of *the row that happened to be read*: the same
+statement announces `INTEGER` when the stored value is small and
+`BIGINT` when it is large. A client caches what `PREPARE` told it. A
+describe that varies with the data is wrong even when every value it
+returns is right.
+
+The engine's rule is the simple one: a scalar subquery describes exactly
+as its inner column does, down to the character set — a `CHAR(10)` stays
+fixed-width text padded to the field, a `VARCHAR` stays varying, and a
+`WIN1252` column keeps its charset under a `NONE` attachment while
+rescaling to the attachment under `UTF8`, precisely as the bare column
+would. Lose that and the value goes with it: text announced as
+`CHARACTER SET NONE` but carrying UTF-8 bytes gets re-expanded by the
+client into mojibake.
+
+That last symptom is also a small lesson in how to localise a bug.
+Comparing the two servers only tells you they disagree. Comparing the
+*wrapped* read against the *unwrapped* read of the same column, on the
+same server, tells you the wrapper is at fault — and checking the raw
+bytes under three different attachment charsets showed that two of the
+three were already correct, which proved the value round-trip was clean
+and the entire defect lived in the description.
+
 One reconciliation is left unimplemented here rather than guessed at: a
 number beside `TEXT`, which the engine resolves by *rendering* the
 number into the text column. That needs the value side to render exactly
