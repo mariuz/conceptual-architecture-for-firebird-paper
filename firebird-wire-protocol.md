@@ -168,6 +168,50 @@ Once authenticated, the client sends `op_crypt` naming a wire-crypt plugin and t
 
 The security relationship is worth stating plainly: the strength of the *encrypted channel* rests on the secrecy of `K`, and `K` is derived from the SRP exchange. That is the whole reason the SHA-1-in-the-proof issue was treated as important — a break in the proof threatens `K`, and a break in `K` threatens every byte of the session.
 
+## The fetch batch, and the bugs that only exist past it
+
+`op_fetch` carries a row count. The server answers at most that many
+rows and then a zero-count marker, and the client asks again. It is the
+protocol's flow control, and it has a property worth dwelling on: a
+server that ignores the count is *correct on any result small enough to
+fit one batch*.
+
+That makes the batch boundary a place where bugs hide with unusual
+effectiveness. A test with a handful of rows exercises exactly one
+fetch, so the count never binds and the defect never shows. This project
+found one that way — a windowed `SELECT` returning 5000 rows delivered
+its entire result **six times over**, once per fetch, with no error at
+all. Eighty-three window checks passed throughout, because every one of
+them used a small fixture.
+
+Two of its symptoms are worth separating, because they are what different
+clients see:
+
+- **A tolerant client sees duplicates.** `isql` prints whatever arrives,
+  so the result was simply six concatenated copies — a wrong answer that
+  looks like a working query.
+- **A strict client hangs.** A driver that tracks the count it asked for
+  against what arrived can deadlock instead, waiting for a boundary the
+  server never sends. That is the same defect presenting as an
+  infrastructure problem, and it will be debugged as one.
+
+The general lesson is about test *shape* rather than test count. A suite
+of many small cases and a suite of many large ones cover different
+protocol surface, and the fetch boundary is invisible to the first no
+matter how many cases it has. Anything that materialises a result — a
+window fold, a sort, a grouped aggregate — should be tested past a batch
+boundary at least once, and the assertion has to be the *multiplicity of
+a row*, not the row count: a count check passes a duplicating server on
+its first batch.
+
+There is a related design point for a reimplementation. A materialised
+result and a streamed one are two paths through the same protocol, and
+whichever one a plan takes must still honour the count. When the two
+paths compute something as order-sensitive as a window fold, they should
+share one implementation rather than two that are kept in step by
+review — because "fold, then sort" and "sort, then fold" give different
+answers, and only one of them matches the engine.
+
 ## Protocol comparison: PostgreSQL and MySQL
 
 Firebird, PostgreSQL and MySQL all put a binary request/response protocol over a raw TCP socket, but they made different decisions at every layer — framing, who speaks first, how authentication works, and (most tellingly) whether confidentiality is part of the database protocol or delegated to TLS underneath it. This section compares the three, so the Firebird handshake above has a frame of reference. It complements the storage-and-engine comparison in [architecture-comparison.md](architecture-comparison.md); here the subject is strictly *the bytes on the wire*.
