@@ -212,6 +212,41 @@ share one implementation rather than two that are kept in step by
 review — because "fold, then sort" and "sort, then fold" give different
 answers, and only one of them matches the engine.
 
+## A cursor is consumed by its fetch
+
+The batch section above is about a server that ignores the client's row
+count. There is a second, subtler failure in the same place: a server
+that answers a fetch *after* the cursor has already finished.
+
+`op_fetch` can arrive once more than you expect. A client that has been
+told "end of cursor" may still send another fetch — fbclient does, from
+around 500 rows upward — and the server has to answer it. The correct
+answer is zero rows and the same end status again. The dangerous answer
+is to notice there is no active cursor, conclude the statement has not
+started, and begin the scan afresh. The client then receives the entire
+result a second time, with no error anywhere.
+
+What makes this worth stating as a protocol point rather than an
+implementation detail is the piece of state it turns on. "No cursor"
+must not mean "not started". A cursor has three states, not two:
+unopened, open, and **drained** — and the third has to survive until the
+statement is re-executed or freed. Collapsing drained into unopened is
+an easy thing to do when the natural implementation is to remove an
+exhausted cursor from a map.
+
+The same distinction has a mirror image, and a fix for one can create
+the other. If instead you *keep* the exhausted cursor to remember it
+finished, then a re-execute of the same statement must reset it — or the
+second execution returns nothing at all. Both errors are silent, and
+they are one line apart.
+
+A practical note for anyone testing this: the two failure modes are not
+equally visible to every client. A client that stops at the end status
+never sends the extra fetch and so cannot see the duplication at all; a
+client that sends it sees every row twice. Checking with the first kind
+and concluding the server is correct is a mistake that is very easy to
+make, because the row count comes back exactly right.
+
 ## Protocol comparison: PostgreSQL and MySQL
 
 Firebird, PostgreSQL and MySQL all put a binary request/response protocol over a raw TCP socket, but they made different decisions at every layer — framing, who speaks first, how authentication works, and (most tellingly) whether confidentiality is part of the database protocol or delegated to TLS underneath it. This section compares the three, so the Firebird handshake above has a frame of reference. It complements the storage-and-engine comparison in [architecture-comparison.md](architecture-comparison.md); here the subject is strictly *the bytes on the wire*.
