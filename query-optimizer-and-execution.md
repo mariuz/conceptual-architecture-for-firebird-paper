@@ -156,6 +156,67 @@ The structural fact underneath all three is the one the next section of
 depends on: the compiled statement holds a *program that will read those
 rows*, never the rows themselves.
 
+### ...and its description comes from the inner value, never from the row
+
+The rules above are about what a subquery *answers*. What it is
+*described as* has its own rule, and it is short:
+
+```cpp
+void SubQueryNode::make(DsqlCompilerScratch* dsqlScratch, dsc* desc)
+{
+	// Set the descriptor flag as nullable. The select expression may or may not return this row
+	// based on the WHERE clause. Setting this flag warns the client to expect null values.
+	// (bug 10379)
+
+	DsqlDescMaker::fromNode(dsqlScratch, desc, value1, true);
+}
+```
+
+([`ExprNodes.cpp`](extern/firebird/src/dsql/ExprNodes.cpp#L11405), and
+`getDesc` at [`:11472`](extern/firebird/src/dsql/ExprNodes.cpp#L11472)
+does the same at compile time) — the descriptor is the **inner value
+expression's**, with nullability forced on, because a subquery that
+matches nothing yields NULL whatever the column says. The row is never
+consulted. It cannot be: `PREPARE` happens before any row is read, and
+the client caches what prepare returned.
+
+That is worth stating because a conversion can easily arrange for the
+opposite. A tempting way to answer an uncorrelated scalar subquery
+without an executor that can nest one is to **run it at prepare and
+splice its value back into the statement text** as a literal, then plan
+the rewritten statement. It gives right answers, and it is how
+[fire-crab](firebird-rust-conversion.md) does it. But the describe then
+follows the *value*, because by planning time the value **is** the
+statement — and that produces two failures the engine's rule makes
+impossible:
+
+- **The description depends on the data.** The same statement text
+  announced `LONG len 4` when the stored `BIGINT` was small and `INT64
+  len 8` when it was large. No value comparison catches this: both
+  describes render the right number. It is caught only by asking whether
+  one statement describes identically over two different rows — which is
+  a property worth testing directly, because a client that cached the
+  first SQLDA is entitled to reuse it.
+- **The value's character set is lost the moment it is an operand.** A
+  spliced literal is typed like any other literal — in the attachment's
+  character set (see [the wire chapter's note on statement
+  text](internationalization.md#the-statement-text-is-bytes-too)) — so
+  the inner column's set survives only where something patches it back.
+  Patching the whole-select-item case is easy and looks complete;
+  `OCTET_LENGTH((SELECT <WIN1252 column> FROM T))` then still answers the
+  UTF-8 length of those characters, and — the tell — the answer *moves
+  with the connection charset* while the engine's stays put.
+
+The fix that matches the engine's shape is to make the spliced literal
+carry its own type rather than inherit the statement's: splice
+`CAST(x'<bytes>' AS VARCHAR(n) CHARACTER SET <set>)`, so the re-plan
+types it from the inner column in every context instead of only where a
+patch pass reaches. The general form of that lesson: **if you erase a
+construct into another construct, everything the original knew has to
+travel in the replacement** — otherwise it survives only in the places
+you remembered to restore it, and those are exactly the places your tests
+already cover.
+
 ## `LATERAL` is one bit, and everything after it is an ordinary source
 
 A `LATERAL` derived table may reference the `FROM` items written before
