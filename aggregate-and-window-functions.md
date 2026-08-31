@@ -66,6 +66,70 @@ _Figure 1: A Firebird window specification — partition, order, frame (FB4) and
 
 This is a complete, standard-conforming window-function implementation, on par with PostgreSQL.
 
+## A window function is a value, and the grammar says so twice
+
+Two facts about window functions matter more to an implementer than the
+list above, and both are visible in the grammar.
+
+The first is that a window call is an ordinary **value expression**. In
+the engine it is produced by the same `value` rule as any other term, so
+`ROW_NUMBER() OVER (ORDER BY id) + 1`, `COALESCE(SUM(v) OVER (), 0)` and
+`CAST(RANK() OVER (ORDER BY v) AS VARCHAR(4))` need no special grammar —
+they are addition, `COALESCE` and `CAST` over a value that happens to be
+computed by a window.
+
+The second is that the same *name* can be two different functions:
+
+```
+	| PERCENT_RANK '(' value_list ')' within_group_specification
+	    { $$ = newNode<RankAggNode>(RankAggNode::TYPE_PERCENT_RANK, $3, $5); }
+...
+	| PERCENT_RANK '(' ')'
+```
+
+([`parse.y:9156`](extern/firebird/src/dsql/parse.y#L9156) and
+[`:9168`](extern/firebird/src/dsql/parse.y#L9168)) — with arguments and a
+`WITHIN GROUP`, `PERCENT_RANK` is a *hypothetical-set aggregate* asking
+where a proposed value would rank; with empty parentheses and an `OVER`,
+it is the window ranking of the row it is evaluated on. Same token, two
+nodes.
+
+### What "a window is a value" costs a conversion that reads it as an item
+
+A conversion naturally starts by recognising a window where it first
+meets one: as a whole select-list item, `<func>(args) OVER (<spec>)`,
+matched by requiring the `OVER`'s parentheses to close at the end of the
+item. That is a complete and correct implementation of the common case,
+and it silently defines the feature as *"a window may be a column"*
+rather than *"a window is a value"*. In
+[fire-crab](firebird-rust-conversion.md) every composition then refused —
+including `ROW_NUMBER() OVER (ORDER BY id) + 1`, which is an everyday
+idiom.
+
+The cure is the same trick the engine gets for free from its grammar:
+lift each window call out of the expression, compute it as its own
+column, and leave behind a reference to that column. The expression is
+then ordinary and nothing downstream needs to know a window was involved.
+Two details are worth passing on, because both produce a *partial* fix
+that looks complete:
+
+- **The `OVER` is not always at the top level.** In `COALESCE(SUM(v)
+  OVER (...), 0)` it sits inside the enclosing call's parentheses, so a
+  scan that only looks at parenthesis depth zero finds nothing and those
+  shapes go on refusing while the top-level ones work.
+- **Alias parsing depends on the expression parser.** A bare trailing
+  alias — `expr X`, no `AS` — is usually recognised by checking that the
+  head parses as an expression. A head containing `OVER` does not parse,
+  so `... + 1 AS R` succeeds and `... + 1 R` refuses: the same query,
+  two spellings, two answers.
+
+Finally, `PERCENT_RANK` and `CUME_DIST` are defined over the **peer
+group** rather than the row — every row tying on the `ORDER BY` keys
+answers the same value, which is exactly what separates them from
+`ROW_NUMBER`. They are also the two rankings that answer a `DOUBLE`
+rather than a whole number. A test of either that uses distinct ordering
+values checks neither property.
+
 ## Ordered-set and hypothetical-set aggregates
 
 Two SQL:2016 aggregate families depend on ordering the group:
