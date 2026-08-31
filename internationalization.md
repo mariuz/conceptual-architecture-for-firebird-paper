@@ -540,6 +540,90 @@ charset the engine re-announces every result in the connection's set —
 `ASCII` included — with the two byte carriers, `OCTETS` and `NONE`, the
 exceptions that keep their own bytes.
 
+## The statement text is bytes too
+
+Everything above is about the *values* crossing the wire. The **statement
+text** crosses it as well, and it obeys the same rule — which is easy to
+miss, because SQL looks like text in a way a `VARCHAR` does not.
+
+A prepare is handed the attachment's character set:
+
+```cpp
+const auto charSetId = database->dbb_attachment->att_charset;
+```
+
+([`dsql.cpp`](extern/firebird/src/dsql/dsql.cpp#L595)) — so a literal in
+that text is `CHARACTER SET <lc_ctype>`, and **its bytes are the
+attachment's bytes**. Under a `NONE` attachment `'a<0xE9>b'` is a
+three-byte string, not a malformed one; under a `UTF8` attachment the
+same three bytes are not a string at all, and the engine refuses the
+whole statement with `SQLSTATE 22000`, *Dynamic SQL Error / -SQL error
+code = -104 / -Malformed string*. The same bytes, two answers, decided
+entirely by `lc_ctype`.
+
+The second half of the rule is visible in the BLR generator, as an
+exception list:
+
+```cpp
+if (texttype || desc->getTextType() == ttype_binary || desc->getTextType() == ttype_none)
+{
+    dsqlScratch->appendUChar(blr_varying2);
+    dsqlScratch->appendUShort(desc->getTextType());
+}
+else
+{
+    dsqlScratch->appendUChar(blr_varying2);	// automatic transliteration
+    dsqlScratch->appendUShort(ttype_dynamic);
+}
+```
+
+([`gen.cpp`](extern/firebird/src/dsql/gen.cpp#L348)) Every text
+descriptor is emitted as `ttype_dynamic` — "automatic transliteration" —
+*except* `ttype_binary` and `ttype_none`, which keep their own type. The
+byte carriers are not a special case handled somewhere downstream; they
+are the two names on an exception list in the code generator, and that is
+the whole of "NONE and OCTETS are never transliterated."
+
+### The failure this produces in a conversion
+
+Both halves are easy to state and easy to skip, and skipping them
+produces a family of bugs that looks like four unrelated defects. In
+[fire-crab](firebird-rust-conversion.md) the statement text was decoded
+with a lossy UTF-8 decode before the tokenizer ever saw a literal, and
+the value paths then read a literal as Unicode text. Measured against the
+engine, on the same database, under `-ch NONE`:
+
+| | engine | before the fix |
+|---|---|---|
+| `CAST('a<E9>b' AS … WIN1252)` | `61E962` | 22018, "cannot transliterate" |
+| `INSERT` of that literal, read back | `61E962` | stored `61C3A962` |
+| six bytes into `VARCHAR(4)` | 22001, truncation | silently accepted |
+| `N \|\| ''` over a `NONE` column | `73747261C39F65` | `73747261C383C29F65` |
+
+The last row is the one worth dwelling on. `C3 9F` became `C3 83 C2 9F`:
+each byte of the original was read as a Latin-1 codepoint and re-encoded
+as UTF-8 — a byte carrier transliterated, which the exception list above
+says never happens. And the same statement reported `OCTET_LENGTH` 7
+while writing 9 bytes, so the value disagreed with its own announced
+width *without reference to the engine at all*. For `CHARACTER SET NONE`,
+characters **are** bytes, so `CHAR_LENGTH` and `OCTET_LENGTH` must agree;
+when they do not, the server is announcing one width and writing another,
+which is how this surface desynchronises a connection.
+
+Two properties of that bug family are worth carrying to any conversion:
+
+- **The direction of the error flips.** The same UTF-8 assumption turned
+  engine-accepted data into a hard refusal (row 1) *and* an engine error
+  into a silent success (row 3). A test that only asks "did both servers
+  fail?" scores the third row green.
+- **The safe-looking attachment hides it.** Rows 3 and 4 agree under
+  `-ch UTF8` and diverge under `-ch NONE`, because a literal whose bytes
+  happen to be valid UTF-8 round-trips through a lossy decode *by
+  accident*. Any test of this surface has to run every vector under a
+  byte-carrier attachment, a multi-byte one and a tabled single-byte one,
+  and record the expected result per attachment — including the cases
+  where agreement is what is expected.
+
 ## Comparison: PostgreSQL, MySQL, SQLite
 
 | Aspect | **Firebird** | **PostgreSQL** | **MySQL** | **SQLite** |
