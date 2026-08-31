@@ -156,6 +156,99 @@ The structural fact underneath all three is the one the next section of
 depends on: the compiled statement holds a *program that will read those
 rows*, never the rows themselves.
 
+## `LATERAL` is one bit, and everything after it is an ordinary source
+
+A `LATERAL` derived table may reference the `FROM` items written before
+it — `FROM T a, LATERAL (SELECT ... WHERE k = a.id) x` — so its subquery
+is answered once per outer row. It reads like a new kind of join, and in
+the engine it is not one. The grammar is the whole story:
+
+```
+lateral_derived_table
+	: LATERAL derived_table
+		{ $$ = $2; $$->dsqlFlags |= RecordSourceNode::DFLAG_LATERAL; }
+```
+
+([`parse.y`](extern/firebird/src/dsql/parse.y#L7020)) — a lateral derived
+table *is* a derived table, plus a flag. The flag becomes `CTX_lateral`
+on the context ([`pass1.cpp`](extern/firebird/src/dsql/pass1.cpp#L460)),
+and across the whole source that flag has one definition
+([`dsql.h`](extern/firebird/src/dsql/dsql.h#L564)), one write, and one
+read: the rule that a derived table may not see other streams at the
+same scope level.
+
+```cpp
+// Change context, because the derived table cannot reference other streams
+// at the same scope_level (unless this is a lateral derived table).
+if ((context->ctx_flags & CTX_lateral) ||
+    (local_context->ctx_scope_level < dsqlScratch->scopeLevel) ||
+    (local_context->ctx_flags & CTX_system))
+{
+    temp.push(local_context);
+}
+```
+
+([`pass1.cpp`](extern/firebird/src/dsql/pass1.cpp#L1077)) `LATERAL` is a
+**name-resolution relaxation**. It admits the sibling contexts into the
+stack the derived table resolves against, and then stops. The record
+source, the nested loop that drives it, the plan it prints, and every
+operator that may sit above it are what a derived table already had.
+
+### What the describe carries
+
+The two spellings differ in exactly one observable, and it is not a row:
+
+| form | an outer row with no lateral match | the lateral column's describe |
+|---|---|---|
+| `T a, LATERAL (...) x` | dropped | the inner column's own nullability |
+| `T a LEFT JOIN LATERAL (...) x ON TRUE` | kept, NULL-padded | always nullable |
+
+Validated differentially against the engine: a comma lateral over a `NOT
+NULL` column announces `sqltype: 496 LONG` with the nullable bit *clear*,
+and so does one over a literal `SELECT 7 AS Z`; the same query under
+`LEFT JOIN LATERAL` announces `496 LONG Nullable`. The difference between
+the two forms is a describe-time fact about padding, and it propagates
+through expressions the way any nullability does — `x.W + 1` over a fixed
+column is fixed, `COALESCE(x.W, 0)` over the LEFT form is not.
+
+### What "an ordinary source" costs to fake
+
+A conversion that models `LATERAL` as its own plan node — rendering each
+outer row's columns into the subquery text and re-planning it, which is a
+reasonable way to get the rows without an executor that can bind an outer
+context — inherits an obligation the flag never created. Everything that
+composes with a *source* now has to be taught about a node that is not
+one. In [fire-crab](firebird-rust-conversion.md) that came due twice:
+
+- **The wraps stopped composing.** The generic row-source path had no arm
+  for the new node, so `DISTINCT`, `FIRST`/`SKIP`, an outer aggregate,
+  and a derived table over the lateral all failed. The refusals were not
+  even uniform: the direct spellings refused at prepare, while the
+  derived spellings **prepared successfully and then died at fetch** —
+  handing the client a valid SQLDA it caches before the statement turns
+  out to be unrunnable. A prepare that describes a statement the server
+  cannot run is worse than a refusal, because the client has already
+  committed to the answer's shape.
+- **The rows ignored flow control.** With no materialising arm, control
+  fell through to the streaming emit, which writes every row it has into
+  one response and never consults the count `op_fetch` asked for. Under
+  one batch that is indistinguishable from correct. Past one batch it
+  hangs any client that honours the protocol: measured at 2340 rows
+  returned in 1.0s and 2370 rows never returning at all, against an
+  engine that answered 3000 in 0.39s. `isql` buffers whatever arrives and
+  printed all 3000 from both servers, so the defect was invisible to the
+  client the shape was most often tested with — the same blindness
+  described in [the wire chapter](firebird-wire-protocol.md).
+
+Both failures have one shape: the engine spends a *flag* where the
+conversion spent a *node*, and a new node owes the system every
+composition the old one already provided. The cure was to give the node a
+way to become an ordinary materialised source before anything above it
+runs, at the one point that still holds what re-planning needs — after
+which `DISTINCT`, `FIRST`, a derived table, `GROUP BY` and `HAVING` over
+a lateral all work through the machinery that was already there, and no
+part of it knows what a lateral is.
+
 ## Reading plans (validated output)
 
 All of the following are **real `PLAN` output** from a live Firebird 6 server (an `emp`/`dept` schema, 5,000 employees across 20 departments, statistics refreshed):
