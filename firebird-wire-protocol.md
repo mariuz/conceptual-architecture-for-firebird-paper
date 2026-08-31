@@ -247,6 +247,119 @@ client that sends it sees every row twice. Checking with the first kind
 and concluding the server is correct is a mistake that is very easy to
 make, because the row count comes back exactly right.
 
+## Every object on a connection shares one id space
+
+The protocol names things with small integers: a statement handle, a
+transaction handle, a blob handle, a request handle. It is natural to
+read those as four namespaces — a statement 5 and a request 5 being as
+unrelated as house number 5 on two different streets. They are not. On a
+Firebird connection there is **one** id space, and every kind of object
+draws from it.
+
+The engine allocates every id the same way, by scanning a single array
+for the first free slot:
+
+```cpp
+template <typename T>
+OBJCT get_id(T* object)
+{
+    // Reserve slot 0 so we can distinguish something from nothing.
+    unsigned int i = 1;
+    for (; i < port_objects.getCount(); ++i)
+    {
+        if (port_objects[i].isMissing())
+            break;
+    }
+    port_last_object_id = setHandle(object, static_cast<OBJCT>(i));
+    return port_last_object_id;
+}
+```
+
+([`remote.h`](extern/firebird/src/remote/remote.h#L1602)) — and
+`port_objects` is one array per port
+([`remote.h:1356`](extern/firebird/src/remote/remote.h#L1356)) whose
+element is an **untagged union** of every object kind, with typed access
+guarded at read time:
+
+```cpp
+union { Rdb* rdb; Rtr* rtr; Rbl* rbl; Rrq* rrq; Rsr* rsr; } ptr;
+
+template <typename R>
+R* get(R* r)
+{
+    if (!r || !r->checkHandle())
+        Firebird::status_exception::raise(Firebird::Arg::Gds(R::badHandle()));
+```
+
+([`remote.h:813`](extern/firebird/src/remote/remote.h#L813)) The client
+keeps the same table, filling slot *n* with whatever the server said has
+id *n*. So the id does not merely name an object — it **owns a slot**,
+and the kind stored there is whatever most recently claimed it. The
+engine can never produce a collision, because `get_id` skips occupied
+slots regardless of kind. A server that allocates each kind from its own
+counter can, and the client has no way to notice until it uses the slot.
+
+### The failure this produces, and why it looks like the server's fault
+
+[fire-crab](firebird-rust-conversion.md) minted request ids from their
+own counter starting at 5, while statement ids ran 3, 4, 5, …. Nothing
+goes wrong until both kinds are live at once. `isql`'s `SET
+SQLDA_DISPLAY ON` supplies the occasion: to print a `CHARACTER` column's
+charset *name*, the client compiles a BLR request over
+`RDB$CHARACTER_SETS` and walks it. When that request was handed id 5
+while the session's third statement held id 5, the client's slot 5 —
+holding an `Rsr` — was overwritten with the walk's `Rrq`.
+
+What happens next is worth following, because the symptom points at the
+wrong machine. The next `op_execute` for statement 5 is encoded by
+`xdr_sql_blr`, and the order of operations there is decisive:
+
+```cpp
+if (!xdr_cstring(xdrs, blr))     // the input-BLR length goes on the wire FIRST
+    return FALSE;
+...
+statement = port->port_objects[statement_id];   // ...and the typed lookup comes after
+```
+
+([`protocol.cpp:1910`](extern/firebird/src/remote/protocol.cpp#L1910))
+The lookup raises `isc_bad_req_handle` — the slot holds a request, not a
+statement — and the encoder returns FALSE having *already written part
+of the packet*. The client abandons its half-written send, and the
+application sees:
+
+```
+Statement failed, SQLSTATE = 08006
+Error writing data to the connection.
+-send_packet/send
+```
+
+Every later statement on that connection fails the same way. The text
+says "error writing data", and the failing write belongs to the
+**client** — the server neither sent anything wrong nor failed to send
+anything. A conversion reading that message will look at its own send
+path, which is exactly where the bug is not.
+
+Three properties of this defect class are worth carrying:
+
+- **The trigger is arithmetic, not shape.** The rule is not "the third
+  statement" or "a character result" — it is *"the first request id
+  lands on a slot a live statement holds."* Prepending a `SHOW TABLES`,
+  which compiles a request of its own, moves the failure one statement
+  later. Any explanation that does not predict that shift is wrong.
+- **The safe cases are safe for an asymmetric reason.** If the request
+  takes the slot *before* a statement is allocated there, the statement
+  simply overwrites a dead request and nothing breaks. Only
+  request-after-statement is fatal, so the defect is invisible whenever
+  the character-typed result comes first.
+- **Only some clients can reach it at all.** A driver that never issues
+  `op_compile` — node-firebird among them — cannot observe this
+  whatever the server does. A test suite built on such a driver reports
+  green on a server that destroys connections.
+
+The correction is to treat the handle namespace as what it is: a
+protocol-level contract rather than a server-internal detail. Whatever
+the server hands out, of any kind, has to be unique per connection.
+
 ## Protocol comparison: PostgreSQL and MySQL
 
 Firebird, PostgreSQL and MySQL all put a binary request/response protocol over a raw TCP socket, but they made different decisions at every layer — framing, who speaks first, how authentication works, and (most tellingly) whether confidentiality is part of the database protocol or delegated to TLS underneath it. This section compares the three, so the Firebird handshake above has a frame of reference. It complements the storage-and-engine comparison in [architecture-comparison.md](architecture-comparison.md); here the subject is strictly *the bytes on the wire*.
