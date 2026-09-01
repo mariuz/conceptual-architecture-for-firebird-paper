@@ -99,6 +99,78 @@ _Figure 2: A record and its back-version chain on a data page — old versions a
 
 This is why `gstat` below reports an **average version length of 9 bytes against a 37-byte record**: the back-versions really are small deltas. Records too big for a page are split into **fragments** (`rhd_fragment`) chained across pages; very large objects and BLOBs spill to blob pages.
 
+## A record remembers the format it was written under
+
+`rhd_format` is the field that makes `ALTER TABLE` cheap. Adding a
+column, widening one, dropping one — none of these touch a single data
+page. The statement writes a new row into `RDB$FORMATS` (the table's
+column layout, serialised as a descriptor list) and bumps the relation's
+current format number; every record already on disk keeps the number it
+was written under, along with the byte layout that number describes. A
+table that has been maintained for a few years holds records of several
+shapes at once, and that is its ordinary, healthy state — `gstat -r`
+reports the mix.
+
+The cost is paid on the way past. A record is never read with the
+relation's *current* descriptors; it is read with **its own**, and the
+values are moved field by field into the newest format
+(`jrd/vio.cpp`'s update path, via `MOV_move`). Two consequences follow,
+and they are easy to get wrong in opposite directions:
+
+* **The offsets are not portable.** Widening `INTEGER` to `BIGINT`
+  moves every field after it by four bytes. Reading an older record at
+  the newer offsets does not fail — it succeeds, and returns whatever
+  bytes happen to live there, read as the new type.
+* **The values are not raw bytes either.** A field whose descriptor
+  changed cannot be copied across; it has to be *converted*. `ALTER
+  TABLE ... ALTER ... TYPE` only ever widens (the engine refuses a
+  narrowing that could lose data), so the conversion is always
+  well-defined — which is exactly why dropping the field instead, and
+  calling it NULL, is not a conservative choice but a wrong answer.
+
+An update is where both consequences land at once, because an update
+reads the row twice. The **after** image is the old record patched with
+the SET list, and the SET offsets were resolved in the newest format —
+so the record has to be upgraded before it is patched. But the **before**
+image is read too, in six more places: the SET expressions' old values
+(`SET B = B + 1` reads the `B` it replaces), a `BEFORE UPDATE` trigger's
+`OLD` context, the foreign-key parent check, `RETURNING OLD`, an `AFTER
+UPDATE` trigger's `OLD`, and the old index key that index maintenance
+compares against the new one.
+
+The [Rust conversion](firebird-rust-conversion.md) had the upgrade in
+exactly one of those seven places — the one it was written for. The
+other six decoded the raw stored bytes with the newest descriptors, and
+the failure was not subtle:
+
+```sql
+CREATE TABLE T (A INTEGER, B INTEGER);
+INSERT INTO T VALUES (1, 7);
+COMMIT;
+ALTER TABLE T ALTER A TYPE BIGINT;   -- mints a format, rewrites nothing
+COMMIT;
+
+UPDATE T SET B = B + 1 RETURNING OLD.A, OLD.B, NEW.A, NEW.B;
+COMMIT;
+SELECT A, B FROM T;
+```
+
+The engine answers `1, 7, 1, 8` and then `(1, 8)`. The conversion
+answered `0, 0` for `OLD`, `NULL, NULL` for `NEW`, and committed
+`(NULL, NULL)` over the row — silently, with no error and no refusal.
+Elsewhere the same misreading produced a plain wrong number rather than a
+NULL: reading `A` out of a stale record after the widening gave
+`7088947297047805959`, which is the neighbouring fields' bytes gathered
+into a `BIGINT` at the new offset — a value with no relation to anything
+ever stored. One `ALTER TABLE` — the most routine schema change there
+is — was enough to reach both failures, and nothing in either answer
+said so.
+
+Two laws, then, and a system has to hold both: *read a record through
+the format it was written under*, and *convert a changed field rather
+than dropping it*. The second is the one that hides, because a system
+that only checks NULL-vs-not-NULL on fresh tables never sees it.
+
 ## MVCC on disk: the transaction inventory
 
 Firebird decides which version a transaction may see using state kept entirely on disk, not in a separate log. The **header page** holds four 64-bit markers (`ods.h`, `struct header_page`):
