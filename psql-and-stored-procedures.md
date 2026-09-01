@@ -287,6 +287,21 @@ not — 0 is `OLD`, 1 is `NEW`, anything else is not this row's business —
 so an unqualified name refuses to fold and travels into the rendered
 text as itself, for the target table's own planner to resolve.
 
+There is a sting in the tail of that repair, and it is worth more than
+the repair itself. Naming the contexts broke a *second* piece of code
+that had been encoding the same law differently. Not every nested
+statement is rebuilt from a parsed expression tree — values the body
+grammar cannot hold (a `CASE`, a concatenation, a function call) are
+kept as written, and the row references are substituted into that
+*text*; a body query's `WHERE` is handled the same way. That
+substitution used its own numbering: 1 for `NEW` and **2** for `OLD`,
+which worked only for as long as the reader treated everything that was
+not 1 as `OLD`. The moment the reader started naming its contexts, every
+`OLD.` reference travelling through the text path became a refusal — and
+a full 361-gate differential sweep stayed green, because no test covered
+that path. One law, two encodings, one of them updated: the same shape
+as the bug being fixed, one level up.
+
 The rendering design has a second demand, less obvious: **a value that
 cannot be spelled as a literal cannot be folded.** `psql_literal` had
 forms for integers, exact numerics, strings, booleans and the temporal

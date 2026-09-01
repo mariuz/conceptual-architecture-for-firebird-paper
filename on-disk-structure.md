@@ -166,6 +166,56 @@ ever stored. One `ALTER TABLE` — the most routine schema change there
 is — was enough to reach both failures, and nothing in either answer
 said so.
 
+There is a third thing the format carries, and it is the one that makes
+`ALTER TABLE` cheap *and* correct at the same time. Adding a column with
+a default to a populated table cannot rewrite the rows — that would
+forfeit the whole point — so the value goes **into the format**:
+
+```text
+  u16 count, count * 12 descriptor bytes,     <- the layout
+  u16 default_count,
+  per default:  u16 field_index
+                12 bytes of the DEFAULT's own descriptor
+                that descriptor's worth of value bytes
+```
+
+Dumped from an engine-built database, the entire 46-byte format written
+by `ALTER TABLE MIN1 ADD B INTEGER DEFAULT 7 NOT NULL` reads:
+
+```text
+  0200                          two fields
+  0900 0400 0000 0000 0400 0000   ID  LONG len 4 at offset 4
+  0900 0400 0000 0000 0800 0000   B   LONG len 4 at offset 8
+  0100                          ONE default
+  0100                            for field 1
+  0900 0400 0000 0000 0000 0000   its own descriptor
+  0700 0000                       the value: 7
+```
+
+Three details in those bytes decide whether a re-implementation gets
+this right. The default is named by **field id**, not by position — and
+ids are never reused, so `DROP X` leaves a zeroed descriptor in its slot
+and the next `ADD` takes the next id. The default carries **its own
+descriptor**, which need not match the field's: a `VARCHAR(5)` field is
+`VARYING` of 22 bytes while its default is `TEXT` of 2, so the value has
+to be *converted* into the field rather than copied over it — and a text
+default must not be read with the CHAR width rule, because two bytes
+divided by UTF8's four-bytes-per-character is zero characters and an
+empty string. Finally, and most usefully for testing: a **nullable**
+`ADD C INTEGER DEFAULT 5` writes *no entry at all*, and the engine duly
+reads NULL for `C` on the old rows while reading 5 on rows stored after.
+The law is exactly "apply what the section lists", with no `NOT NULL`
+special case — and a test that only checks the `NOT NULL` column would
+pass a system that materialised every default.
+
+The conversion had this section documented as ignorable, "as are
+defaults by the engine's readers of old rows". The first clause was a
+choice; the second was false, and it cost every historical row of every
+altered table: a plain `SELECT` wrong, `INSERT ... SELECT` persisting
+the wrong value, and a routine `UPDATE` of some *other* column answering
+`validation error for column "B", value "*** null ***"` — for a column
+the statement never mentioned.
+
 Two laws, then, and a system has to hold both: *read a record through
 the format it was written under*, and *convert a changed field rather
 than dropping it*. The second is the one that hides, because a system
