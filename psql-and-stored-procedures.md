@@ -230,6 +230,83 @@ carries the counted name alone, `blr_gen_id` carries a name and a step
 expression — and the sequence form advances by the sequence's own
 `INCREMENT BY`, which the two-argument form overrides.
 
+## A body's nested statement names columns in two languages
+
+A trigger body reaching another table is the workhorse of every schema
+that keeps an audit trail:
+
+```sql
+CREATE TRIGGER LOG_IT FOR ORDERS AFTER UPDATE AS
+BEGIN
+  DELETE FROM ORDER_LOG WHERE ID = OLD.ID;
+  UPDATE ORDER_LOG SET SEEN = SEEN + 1 WHERE ID = OLD.ID;
+END
+```
+
+Read that `ID` on the left of each `WHERE` and the `OLD.ID` on the
+right. They are spelled with the same letters and they come from
+different worlds: the bare name is a column of `ORDER_LOG`, resolved per
+row as the nested statement scans it, while `OLD.ID` is a single value
+belonging to the row that fired the trigger. `SEEN + 1` is likewise
+`ORDER_LOG`'s own `SEEN`, one value per row, not the fired row's. In the
+BLR the distinction is explicit: every field reference carries a
+*context number*, and the engine's `blr_store`/`blr_modify` nodes open a
+new context for the statement's target while the trigger's `OLD` and
+`NEW` keep contexts 0 and 1.
+
+That numbering is the whole safety of the construct, and it is easy to
+lose in a re-implementation that runs a body by rendering each nested
+statement back to SQL text — a reasonable design, because the rendered
+statement then goes down the ordinary planner and picks up index
+maintenance, defaults, `NOT NULL`, `CHECK` and foreign keys for free
+instead of through a second, divergent write path. Rendering means
+folding what is known to a literal, and *what is known* is exactly the
+question. [fire-crab](firebird-rust-conversion.md) answered a field
+reference by checking whether its context was 1 — `NEW` — and treating
+everything else as `OLD`. A bare column's context is neither, so the
+plain name was answered with the fired row's value and baked in as a
+constant:
+
+```
+DELETE FROM LG WHERE ID = OLD.ID          →  DELETE FROM LG WHERE 2 = 2
+UPDATE LG SET V = V + 1 WHERE ID = OLD.ID →  UPDATE LG SET V = 21 WHERE 2 = 2
+DELETE FROM LG WHERE V > 1000             →  DELETE FROM LG WHERE 20 > 1000
+```
+
+The first emptied the log table. The second wrote the *fired* row's
+value over every row of it. The third never consulted `LG` at all. No
+error, no exotic column type — plain `INTEGER` reaches all three — and
+the one shape that stayed correct was `INSERT INTO LG (ID, V) VALUES
+(OLD.ID, NEW.V)`, where every value genuinely *is* a row reference. That
+is also the shape the test suite covered, which is how it survived: a
+log table with a single row cannot tell a statement that hits the right
+row from one that hits all of them.
+
+The repair is to say what the contexts mean rather than what they are
+not — 0 is `OLD`, 1 is `NEW`, anything else is not this row's business —
+so an unqualified name refuses to fold and travels into the rendered
+text as itself, for the target table's own planner to resolve.
+
+The rendering design has a second demand, less obvious: **a value that
+cannot be spelled as a literal cannot be folded.** `psql_literal` had
+forms for integers, exact numerics, strings, booleans and the temporal
+types, and none for `DOUBLE PRECISION`, `FLOAT`, 128-bit numerics or
+`DECFLOAT`. When the fold failed, the same code path emitted the field's
+bare *name* — so `UPDATE LG SET AMT = NEW.AMT` became `SET AMT = AMT`,
+which stores nothing and reports success. Two different bugs with one
+cause: a fallthrough that silently changes what a name means.
+
+Spelling an approximate numeric is its own small trap. The display
+renderer prints a `DOUBLE` to sixteen significant digits, the way `%g`
+does, and a binary64 needs seventeen in the worst case — a literal built
+from the display form stores a value one unit in the last place from the
+one it came from, silently and forever. What is needed is the *shortest
+text that parses back to identical bits*, in exponent form so that SQL
+reads it as approximate rather than as an exact numeric with a scale.
+The check is arithmetic, not visual: store `1.0000000000000002`, read it
+back, and compute `(x - 1) * 1e16`. Both Firebird and the conversion
+answer `2.220446049250313`. The display form would have answered `0`.
+
 ## Exception handling and other features
 
 - **Custom exceptions** — `CREATE EXCEPTION name 'message'`, raised with `EXCEPTION name` (optionally with a runtime message), and caught with `WHEN <condition> DO` blocks that can match a named exception, a SQLCODE/GDSCODE/SQLSTATE, or `ANY`. `WHEN ... DO` can retry, log, or re-raise.
