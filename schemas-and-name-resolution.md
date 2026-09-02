@@ -444,6 +444,108 @@ What remains exposed is ad-hoc SQL and any tooling that queries the catalog by u
 
 ---
 
+## A quoted identifier is a name, decided in the lexer
+
+`CREATE TABLE TQ (ID INTEGER, A INTEGER, "a" INTEGER)` is a table with
+three columns, and `UPDATE TQ SET "a" = 5` touches the third. That is
+the whole of the delimited-identifier rule, and the engine settles it
+before the parser sees a token. An unquoted word is copied to the
+token buffer one character at a time through `UPPER`:
+
+```cpp
+	if (tok_class & CHR_LETTER)
+	{
+		char* p = string;
+		check_copy_incr(p, UPPER (c), string);
+		for (; lex.ptr < lex.end && (classes(*lex.ptr) & CHR_IDENT); lex.ptr++)
+		{
+			...
+			check_copy_incr(p, UPPER (*lex.ptr), string);
+		}
+```
+
+([`Parser.cpp`](extern/firebird/src/dsql/Parser.cpp#L1204).) A
+double-quoted one, in dialect 3, becomes a `MetaName` of exactly the
+bytes between the quotes — length-checked, charset-converted, never
+folded:
+
+```cpp
+			else if (client_dialect >= SQL_DIALECT_V6)
+			{
+				...
+				const MetaName name(attachment->nameToMetaCharSet(tdbb, MetaName(buffer, p - buffer)));
+				...
+				yylval.metaNamePtr = FB_NEW_POOL(pool) MetaName(pool, name);
+```
+
+([`Parser.cpp`](extern/firebird/src/dsql/Parser.cpp#L495).) From that
+point on there is only one kind of name. `RDB$FIELD_NAME` holds `a`
+next to `A`; every catalog lookup compares the token's bytes to the
+stored bytes; the describe announces `name: a`. Nothing downstream
+knows which spelling the client used, because nothing downstream
+needs to: the fold happened once, at the boundary, and only for the
+unquoted kind.
+
+The corollaries all follow from "one kind of name after the lexer".
+`"A"` and `A` are the same column, because folding `A` gives `A`. A
+quoted name can be a keyword (`"select"`), can contain a space
+(`"Mixed Col"`), can differ from its neighbour only by case (`"tq"`
+beside `TQ`), and can carry a doubled quote (`"say ""hi"""`). A
+quoted alias keeps its case in the describe. And a name written in the
+wrong case is simply unknown — `"id"` on a table with `ID` is `-206`,
+not a near miss.
+
+### One fold, one place — and what a half-converted boundary costs
+
+[fire-crab](firebird-rust-conversion.md) had no such boundary. Its
+parsers stripped the quotes (`trim_matches('"')`) and handed a bare
+string on; every lookup then compared it case-insensitively —
+about ninety-five column lookups and thirty relation matches, plus a
+metadata cache whose keys were upper-cased and DDL writers that stored
+every name folded. The predicate tokenizer did not even have a `"`
+arm, so any `WHERE` naming a quoted column was refused outright. The
+result was the whole spectrum at once: `UPDATE TQ SET "a" = 5` wrote
+column `A`; `SELECT ID, X FROM "tq"` read table `TQ`; `UPDATE "Order"
+SET "value" = 'x'` silently updated nothing; a select list naming
+`"Mixed Col"` refused.
+
+The repair is the engine's own shape — canonicalise once, at the parse
+boundary (a quoted name keeps its bytes, a bare one folds), and compare
+with `==` everywhere after. What made it a two-part job, and what the
+reviews caught between the parts, is the more transferable half:
+
+- **A fallback kept "for callers not yet converted" is a wrong-write
+  generator.** The first part made `resolve_relation` try an exact match
+  and *then* fall back to the old case-insensitive one, so that
+  unconverted callers would keep working. `UPDATE "order" SET ...` had
+  been a clean refusal; with the fallback it found `"Order"` and wrote
+  to it. A fallback does not preserve the old behaviour — it converts
+  refusals into wrong answers on exactly the inputs the change is about.
+- **An exact matcher on one side of a boundary and a raw spelling on
+  the other is a regression.** The on-disk layer's index builder was
+  made exact while the statement parser still handed it the text as
+  written, so `CREATE INDEX ix ON t (dept)` — an ordinary unquoted
+  lower-case column — stopped working. Both sides of a boundary have to
+  move in the same commit.
+- **Every internal re-render must re-quote.** A conversion that answers
+  a statement by *rewriting it and planning the rewrite* — `UPDATE OR
+  INSERT` becoming an `UPDATE` plus an `INSERT`, `INSERT ... SELECT`
+  becoming one `INSERT` per row, `MERGE` becoming branches, a view's DML
+  becoming base-table DML, a trigger body's nested statement — must
+  write each canonical name back in a form that survives the *second*
+  parse. A canonical `a` printed bare re-parses as `A`, and three of
+  those paths wrote the folded twin column.
+- **A catalog name is not a parsed reference.** Grouping split every
+  column name on `.` to strip a qualifier, which is right for text that
+  came from the statement and wrong for a name that came from the
+  catalog: a column actually called `"x.y"` was described as `y`.
+
+None of these is about quoting. They are what happens when one rule —
+"the name is decided at the boundary" — is enforced in most of a system
+instead of all of it. The engine spends one `UPPER` in the lexer and is
+done; a conversion that folds at each use has as many places to be
+wrong as it has uses.
+
 ## Comparison: PostgreSQL, MySQL, SQLite
 
 | | **Firebird 6** | **PostgreSQL** | **MySQL** | **SQLite** |
