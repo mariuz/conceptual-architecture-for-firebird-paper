@@ -587,6 +587,80 @@ fraction of that. The equality fast path is unchanged. That ratio is
 the price of not having the outer row in scope, and it is paid only
 where the engine itself would open a cursor per row.
 
+## A derived table is a source, and a source answers its own columns
+
+`SELECT t.ID, d.S FROM TQ t JOIN (SELECT ID, G AS S FROM J1) d ON d.ID = t.ID`
+names two things called `S`: nothing. `d.S` is the second column of the
+derived table's select list, and what it happens to read from `J1` is
+the derived table's business. The engine never has to say so, because a
+derived table becomes a record source and a source is addressed by its
+own stream — the rename is resolved once, when the derived context is
+built, and no code below it knows a rename happened.
+
+A conversion that instead *optimises* the derived side has to say it.
+[fire-crab](firebird-rust-conversion.md) recognised the one shape where
+a derived side's rows simply are a base table's records — a projection
+of one relation, no filter, no ordering — and, rather than materialise
+the inner plan, handed the join the base table's records directly so
+the `ON` equality could drive a real index. That is a sound
+optimisation. What it lacked was the mapping that makes it honest:
+having decided to deliver base *records*, it delivered them at the
+side's own column positions. Output column one became base field one.
+For `(SELECT ID, G AS S FROM J1)` that made `d.S` answer `J1.A`.
+
+The failure is invisible in exactly the cases people write first. When
+a derived select list is the base's columns in the base's order, the two
+orders coincide and every answer is right; a gate suite can carry
+dozens of derived-table and view checks — this one carried a hundred and
+twenty-three index checks alone — without once separating them. It takes
+a rename, a reordering, a subset or an expression to pull the orders
+apart, and then the wrongness is silent: no error, plausible values, and
+`COUNT(*)` over a predicate on that column quietly answering zero. The
+same side feeds semi-joins and DML row sources, so `INSERT INTO TQ (ID, A)
+SELECT t.ID + 10, d.S FROM ...` persisted the wrong column's values.
+
+**Two orders, one number.** The repair is a per-output-column map to the
+base field it projects, built completely or not at all: a derived list
+carrying an expression, a literal or a scalar subquery has no such map,
+and that side is materialised instead. The rule that matters is the
+second half — *not at all*. An optimisation that cannot express a case
+must decline it, not approximate it, because the approximation here was
+indistinguishable from an answer.
+
+Three consequences arrived with the repair, and each is a general shape:
+
+- **The same confusion lived one layer up.** The describe's NOT NULL flag
+  computed a side's output position and tested it against the base
+  table's not-null *field ids*. That is not cosmetic: this server
+  deliberately announces output columns nullable because the client
+  library ignores the null indicator on a column announced NOT NULL and
+  renders the raw buffer instead, so a NULL in a mis-flagged column
+  reaches the client as `0`. When you introduce a mapping to separate two
+  orders, every other place that used one number for both is now wrong
+  and was wrong before — the describe, the hash keys, the null flags.
+- **Making one approximation correct exposed its neighbour.** The
+  lateral join's nullability pass "only ever clears bits", which was safe
+  only while the join pass beside it was mis-reading derived sides.
+  Correct one and the pair stops cooperating; the lateral gate caught it
+  the same afternoon.
+- **"Cannot optimise" must fall back to the next-best correct path, not
+  the worst one.** Declining the flatten also dropped the side's hash
+  key, so the join degraded from an index probe to a scan per driving
+  row — quadratic. A side that cannot be read as base records can still
+  be materialised once and hashed on its own column, which is what the
+  engine's own hash join does. Measured over five thousand rows against
+  five thousand: the declining shape went from 3.18 seconds to 0.007,
+  faster than the original wrong-but-indexed path.
+
+And one boundary the episode drew sharply. A guard added to stop a
+joined view falling through to scanning its own empty storage asked "is
+any relation with this name a view", where it had to ask "is the relation
+this side resolves to a view". A name is not an object; the guard
+over-fired on a plain table shadowed by a same-named view in another
+schema, and because the shape appears inside `UPDATE ... WHERE ID IN
+(SELECT ... JOIN ...)`, an over-refusal did what a wrong answer does —
+it lost the write.
+
 ## Reading plans (validated output)
 
 All of the following are **real `PLAN` output** from a live Firebird 6 server (an `emp`/`dept` schema, 5,000 employees across 20 departments, statistics refreshed):
