@@ -441,6 +441,152 @@ same blindness the [wire chapter](firebird-wire-protocol.md) records for
 fetch sequences: a client that never exercises the path is not a check
 of it.
 
+## A correlated subquery is a cursor opened once per outer row
+
+`SELECT ID, (SELECT MAX(x.A) FROM T x WHERE x.ID < T.ID) FROM T` asks,
+for every row of `T`, a question about the other rows of `T`. The
+engine compiles the inner `SELECT` as its own record-selection
+expression, and the value node that wraps it does exactly what the
+sentence says:
+
+```cpp
+dsc* SubQueryNode::execute(thread_db* tdbb, Request* request) const
+{
+	...
+	if (nodFlags & FLAG_INVARIANT)
+	{
+		invariant_flags = &impure->vlu_flags;
+
+		if (*invariant_flags & VLU_computed)
+		{
+			// An invariant node has already been computed.
+			return (*invariant_flags & VLU_null) ? nullptr : desc;
+		}
+	}
+	...
+	subQuery->open(tdbb);
+	...
+	while (subQuery->fetch(tdbb))
+```
+
+([`ExprNodes.cpp`](extern/firebird/src/dsql/ExprNodes.cpp#L11656).) Each
+evaluation opens the inner cursor and fetches it to exhaustion; the
+current outer record is simply *there*, in the request's stream
+buffers, and a `FieldNode` inside the subquery that names an outer
+stream reads it like any other field. There is no substitution, no
+copy, no second plan: the inner RSE was compiled against a scope in
+which the outer streams exist, and name resolution walked outward from
+the innermost context to find each one.
+
+Two optimisations sit on top of that, and both are decided at compile
+time. A subquery whose RSE does not reference any outer stream is
+marked invariant in `pass2` ([`ExprNodes.cpp`](extern/firebird/src/dsql/ExprNodes.cpp#L11609)) and computed once per request — the
+`VLU_computed` early return above. And a correlated `EXISTS` or `IN`
+that sits as an `AND`ed boolean over an inner join is a candidate for
+conversion into a semi- or anti-join
+([`RecordSourceNodes.cpp`](extern/firebird/src/jrd/RecordSourceNodes.cpp#L133),
+`findPossibleJoins`), which is how the common equality idiom runs
+without a cursor per row. Everything else — a non-equality
+correlation, a scalar aggregate keyed on `<`, a correlation two levels
+deep, a subquery inside `CASE` — runs as written: once per outer row.
+
+The law a re-implementation has to carry is therefore not about
+subqueries at all. It is about **scope**: a name inside the subquery
+resolves innermost-first, an alias hides the relation name it stands
+for at that level, and whatever the inner relations cannot supply is
+the enclosing row's, re-read every time that row changes.
+
+### What folding a subquery at plan time costs
+
+[fire-crab](firebird-rust-conversion.md) had no cursor to open per row.
+It lifted every `(SELECT ...)` out of the text and folded it at *plan*
+time into one of three things: a constant, an `IN`-list for an
+equality-correlated `EXISTS` (the semi-join the engine also chooses),
+or a per-key lookup table built from exactly one `inner = outer`
+conjunct. Anything that fitted none of those shapes refused. That is a
+defensible boundary — until the fold's own scoping is wrong, and it was
+wrong twice, in opposite directions:
+
+- **The inner strip took the table's name as an inner qualifier even
+  when the inner `FROM` had aliased it.** `FROM T x WHERE x.ID < T.ID`
+  became `WHERE ID < ID`, which is never true, so `MAX(x.A)` over the
+  empty set was `NULL`, folded, and announced as a constant for every
+  row: the ranking idiom answered `NULL` for all six rows, `WHERE A >
+  (SELECT MAX(x.A) ...)` answered no rows, and `DELETE FROM T t WHERE
+  t.A < (SELECT MAX(x.A) FROM T x WHERE x.ID <> t.ID)` deleted two of
+  the four rows the engine deletes. An alias is exclusive: after
+  `FROM T x` the name `T` is not in that scope, and the engine says so
+  with `-206`.
+- **A bare name that both tables have was classified as the outer
+  column** whenever the other side was inner-qualified.
+  `EXISTS (SELECT 1 FROM D WHERE D.ID = ID)` is, innermost-first,
+  `D.ID = D.ID` — true for every outer row, six of them; the fold read
+  it as `D.ID = T.ID` and answered two.
+
+Both are the same mistake seen from two sides: resolving names by
+*membership in a column list* instead of by *scope*. The repair keeps
+the equality fast paths — they are what makes the common idiom cheap,
+and a gate that reads the server's own access-path trace depends on
+them — with their scoping corrected, and adds the general case as an
+expression: the outer references are replaced by typed literals for
+the current row, the now-uncorrelated inner statement is planned and
+run under a thread-local database scope, and the answer is memoised
+per literal tuple for the duration of one execute. That is `LATERAL`'s
+substitute-and-re-plan mechanism from the previous section, generalised
+from a source to a value, so it composes wherever an expression does:
+projection, `WHERE` in every quantifier, `SET`, `RETURNING`, `ORDER
+BY`, `HAVING`, a join's `ON`, inside `CASE`, two levels deep, over a
+view or a derived table.
+
+What the reviews caught before it shipped is the more useful record,
+because every item is a consequence of "text substitution" rather than
+"a cursor with the outer row in scope":
+
+- **A prefix rewrite ran before the lift.** `RETURNING (SELECT COUNT(*)
+  FROM E WHERE E.TID = NEW.ID)` had `NEW.` stripped by the RETURNING
+  planner's own `NEW`/`OLD` pass before the subquery was lifted, so the
+  bare `ID` bound innermost — to `E` — and the count was wrong. Any
+  rewrite that touches text has to know where a nested scope begins.
+- **A literal is not a value.** Rendering an outer text column as
+  `'café'` loses its character set; under a UTF8 attachment a WIN1252
+  column's `OCTET_LENGTH` came back 5 instead of 4. The literal has to
+  carry the column's own charset and length — `CAST(x'...' AS
+  VARCHAR(20) CHARACTER SET WIN1252)` — because the engine never
+  converted anything: it read the field.
+- **Memoising rows is not memoising answers.** An `EXISTS` that keeps
+  every matching inner row per outer row is quadratic in memory: a
+  5,000-row self-`EXISTS` took 12.5 seconds and 420 MB where the engine
+  took 0.13 seconds, and the memory stayed resident after the client
+  disconnected. `EXISTS` wants a bool and the first row; `IN` wants one
+  column; a scalar wants one value; and the memo wants a ceiling.
+- **A per-row subquery must not run at prepare.** An aggregate whose
+  `WHERE` carried one was materialised at prepare — the pre-existing
+  aggregate design — and again at fetch, so `SET PLANONLY` ran 700
+  inner statements and a 20,000-row outer took 44 seconds.
+- **The stand-in type is the describe.** The inner statement is planned
+  once at prepare over `CAST(NULL AS <type>)` stand-ins to learn its
+  shape; a stand-in with the wrong type is a wrong describe on the
+  wire, and for `INT128` it was a *malformed row* — 64 bytes announced,
+  16 delivered.
+- **`RETURNING` reads the image before the statement.** A subquery
+  over the target table in `RETURNING` saw the row the statement had
+  just written; the engine evaluates it against the pre-statement
+  image, and if it raises, nothing is written at all. The scope the
+  per-row evaluation runs under has to be a snapshot taken before the
+  first write.
+- **A shortcut is a fold.** "An aggregate without `GROUP BY` always
+  yields one row, so `EXISTS` over it is `TRUE`" is a true law — and
+  answering `TRUE` without planning the inner turned an unknown column
+  into six rows and an `UPDATE ... WHERE EXISTS (...)` over that
+  column into six writes. The law holds for an inner that plans and
+  runs; the fold may only be the result of running it.
+
+The general path costs about a millisecond per outer row — a plan and
+a run of the inner statement — against the engine's cursor open of a
+fraction of that. The equality fast path is unchanged. That ratio is
+the price of not having the outer row in scope, and it is paid only
+where the engine itself would open a cursor per row.
+
 ## Reading plans (validated output)
 
 All of the following are **real `PLAN` output** from a live Firebird 6 server (an `emp`/`dept` schema, 5,000 employees across 20 departments, statistics refreshed):
