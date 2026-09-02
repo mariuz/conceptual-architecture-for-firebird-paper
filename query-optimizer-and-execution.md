@@ -310,6 +310,137 @@ which `DISTINCT`, `FIRST`, a derived table, `GROUP BY` and `HAVING` over
 a lateral all work through the machinery that was already there, and no
 part of it knows what a lateral is.
 
+## A view is what it stands for, on the write side too
+
+`UPDATE V SET A = A + 1 WHERE ID = 1` names a relation that has a
+relation id, a format, columns in `RDB$RELATION_FIELDS` — and no records.
+On the read side the engine merges the view's stored `RDB$VIEW_BLR` into
+the request and the question of "what a view is" never arises. On the
+write side it has to decide, and the whole decision is one function:
+
+```cpp
+	// a view with triggers is always updatable
+
+	if (triggers)
+	{
+		for (auto* t : triggers)
+		{
+			if (t->sysTrigger == fb_sysflag_user)
+			{
+				csb->csb_rpt[updateStream].csb_flags |= csb_view_update;
+				return NULL;
+			}
+		}
+	}
+
+	// we've got a view without triggers, let's check whether it's updateable
+
+	if (rse->rse_relations.getCount() != 1 || rse->rse_projection || rse->rse_sorted ||
+		rse->rse_relations[0]->getType() != RelationSourceNode::TYPE)
+	{
+		ERR_post(Arg::Gds(isc_read_only_view) << relation->getName().toQuotedString());
+	}
+
+	// for an updateable view, return the view source
+
+	csb->csb_rpt[updateStream].csb_flags |= csb_view_update;
+
+	return static_cast<RelationSourceNode*>(rse->rse_relations[0].getObject());
+```
+
+([`StmtNodes.cpp`](extern/firebird/src/dsql/StmtNodes.cpp#L12699),
+`pass1Update`.) Three outcomes, in that order. A view with a *user*
+trigger for the event returns **no source at all**: the statement runs
+the triggers over the view's own rows and writes nothing, whether or not
+the body would have been updatable. A view whose body is one plain
+relation without `DISTINCT` (`rse_projection`) or `ORDER BY`
+(`rse_sorted`) returns that relation, and the statement is rewritten
+onto it — the view's columns become the base columns through
+`RDB$BASE_FIELD`, its `WHERE` is conjoined, and a chain of views resolves
+level by level. Anything else is `cannot update read-only view`, raised
+at prepare with the quoted name and nothing in front of it. A column the
+view computes (`A * 2 AS A2`) has no base field; naming it in `SET` or an
+`INSERT` list is `attempted update of read-only column <unknown>`
+([`StmtNodes.cpp`](extern/firebird/src/dsql/StmtNodes.cpp#L260) — the
+`<unknown>` is the literal argument the engine ships, not a rendering
+gap), while reading it in `WHERE` or `RETURNING` is fine.
+
+`WITH CHECK OPTION` is not a fourth outcome. It is two system triggers
+the DDL creates on the view (`RDB$SYSTEM_FLAG` 5, BLR only, named from
+a database-wide `CHECK_n` sequence), so the rule above already covers
+it: the new row must *satisfy* the view's predicate — `NULL` is a
+violation here, unlike a table `CHECK`, because the trigger tests
+`WHERE`, not `NOT WHERE` — and the vector names an empty constraint,
+the view, and `At trigger "PUBLIC"."CHECK_1"`. Two consequences follow
+from "it is a trigger" and were measured before they were believed.
+Because it is a trigger, it runs *after* the user's `BEFORE` triggers
+and tests the row they left behind; and because the update-side trigger
+first locates the row equal to `OLD`, a write-through trigger that has
+already moved the base row leaves it nothing to test, and an
+out-of-view `SET` passes. And because the write itself happens inside
+the trigger, `RETURNING` through such a view answers zeros or no row on
+the engine — the statement's own contexts never saw a store.
+
+### What a relation id without records costs
+
+[fire-crab](firebird-rust-conversion.md) resolved the target of an
+`UPDATE` or `DELETE` by name, took the relation id and the format the
+lookup returned, and walked the relation's data pages. A view has both
+and no pages, so the walk found nothing and the statement answered
+`Records affected: 0` — a silent no-op over a base table it never
+touched, indistinguishable from an `UPDATE` whose `WHERE` matched no
+row. `INSERT` through a view at least refused, because one helper on
+that path declined to qualify a view's name. Every gate that wrote
+through a view had recorded the refusal as a boundary; none had written
+through one and read the base back.
+
+The repair follows the engine's three outcomes, and each step of it
+was caught doing something the law forbids before it shipped:
+
+- **A rename is a single simultaneous substitution.** `CREATE VIEW
+  VS (A, ID) AS SELECT ID, A FROM T` swaps two names; renaming one at a
+  time turns `SET ID = 1000 WHERE A = 3` into nonsense. And a name that
+  is *not* a view column is not passed through: `DELETE FROM VH WHERE
+  A > 50`, where `VH` hides `A`, is `-206 Column unknown` on the engine
+  and deleted a row on the first draft, because the untouched `A`
+  resolved against the base. The rewrite now refuses what it cannot
+  name — the engine's `-206` has no equivalent vector in the conversion,
+  and a refusal is the honest shape of that gap.
+- **Scope survives the rewrite or the statement does not.** Inside
+  `WHERE A >= (SELECT MAX(T.A) FROM T WHERE T.ID <> V.ID)` the `V.ID` is
+  the outer row; rewriting it to `T.ID` binds it to the subquery's own
+  `T` and the statement silently updates nothing. A view-qualified
+  reference inside a subquery is left alone when the subquery names the
+  view, rewritten to the base when it can be, and refused when the
+  subquery also names the base.
+- **A resolver's "I cannot" must not mean "not a view".** The first
+  resolver returned the same nothing for "this is a table" and "this
+  view is too deep, or its body has a shape I cannot split" — and the
+  second nothing fell straight back into the walk over empty storage.
+  The outcome is now three-valued, and every planner refuses a view it
+  did not rewrite. A body the conversion cannot parse is a generic
+  refusal, never the engine's typed `read-only` vector, which would be
+  a false fact about the view.
+- **A check written in the table's dialect passes what the view's
+  rejects.** Reusing the table `CHECK` machinery encoded `NOT (A > 15)`
+  as the violation, so `SET A = NULL` through the checked view stored
+  a `NULL` the engine refuses. The view check keeps the positive
+  predicate and treats anything but `TRUE` as the violation.
+
+Two of the laws in the trigger paragraph above were pinned wrong in the
+first gate and corrected by a reviewer, and the reason is worth more
+than the laws. The gate asserted "the check fires before the view's
+trigger" by counting the rows a log-only trigger wrote — but the
+violation undoes those rows on both servers, so the count was zero
+whichever ran first. A **generator** survives the undo, and a trigger
+that draws one showed the engine running the user trigger first. And
+the bound-parameter path through a trigger-backed view prepared,
+described, and then failed at execute — invisible to every gate,
+because `isql` cannot bind a parameter and re-prepares every text. The
+same blindness the [wire chapter](firebird-wire-protocol.md) records for
+fetch sequences: a client that never exercises the path is not a check
+of it.
+
 ## Reading plans (validated output)
 
 All of the following are **real `PLAN` output** from a live Firebird 6 server (an `emp`/`dept` schema, 5,000 employees across 20 departments, statistics refreshed):
