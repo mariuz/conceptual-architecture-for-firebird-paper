@@ -190,6 +190,62 @@ added for isql's one-shot SET/DDL path; the `SHOW` commands remain,
 running through the legacy BLR request API (`op_compile`) rather than
 DSQL — a named next piece.
 
+### The current front: metadata, constraints and referential integrity
+
+The work since has moved from *can it answer* to *does it write what the
+engine would have written*, which turns out to be a different and harder
+question. Three examples, each converted the same way — measure the
+engine differentially, pin the law in a gate, then make the code match.
+
+**The names the engine invents.** A relation id, an auto-domain, an
+index name, `INTEG_<n>` for an unnamed constraint: all are drawn from
+system generators that only move forward, not derived by surveying what
+exists. fire-crab surveyed, which agrees exactly until the first `DROP`
+and diverges permanently after it — and on a file both servers write, the
+survey hands out the very number the engine's counter is about to issue.
+Harder than the source was the *order* the numbers are drawn in, which is
+not the order the constraints are written: the engine walks a parsed
+column list and a separate constraint list, so a clause attached to a
+column is numbered before a table-level one written earlier in the text.
+This is documented, with the shape that proves it, in
+[catalog-bootstrap](catalog-bootstrap.md#the-order-a-counter-is-drawn-in-is-not-the-order-you-wrote).
+
+**A name must fit, and a foreign key must fit.** An identifier over 63
+*characters* — not bytes — is a lexical refusal in the engine; without
+that check a longer name was silently truncated, two names differing only
+past the limit collided in the catalog, and the resulting database passed
+`gfix` while failing to restore. Likewise a foreign key whose column
+count or column types do not match its partner index: the engine refuses
+the `CREATE TABLE`, and accepting it produced a file whose rows one
+server called valid and the other called orphans.
+
+**Referential actions.** `ON DELETE CASCADE` and its five siblings are
+carried out by a system trigger the engine synthesises on the parent.
+fire-crab wrote that trigger correctly — byte-identical BLR — but never
+ran it, and refused the parent's DML rather than write data the engine
+would have decorated differently. Executing them — the increment in review as
+this is written — means reading the rules from `RDB$REF_CONSTRAINTS` and
+driving the child statements through the ordinary planner, so a cascade
+maintains the child's indexes, fires its triggers, evaluates its
+constraints and cascades onward with no second write path.
+
+That increment also produced the sharpest methodological lesson of the
+series. An early round replaced a recorded observation about which of
+several children the engine checks with a sharper-sounding rule, and
+offered seven measured shapes as proof. All seven had the deciding child
+in the same position, so not one of them could tell the new rule from the
+old — and the engine turned out to follow neither. **A rule that fits
+every case you measured is not yet a law**; what separates candidate laws
+is a shape chosen *because* their answers differ, and the discipline is
+to write the candidates down first and then build that shape.
+
+The QA shape that makes this possible is worth naming, because it is the
+whole method: every claim is a differential against the live engine over
+the same transport, and a gate is only trusted once it has been shown to
+*fail* on the code it was written to catch. The suite is at 367 gates and
+about 10,700 checks, run against a server whose files the engine then
+reads, validates with `gfix` and round-trips through `gbak`.
+
 ## Conversion pointers: document → C++ → Rust
 
 The full five-phase map is
@@ -208,7 +264,7 @@ the reading order for anyone joining the effort:
 | Page cache and careful writes | [page-cache-coherency.md](page-cache-coherency.md), [careful-writes-and-crash-safety.md](careful-writes-and-crash-safety.md) | `cch.cpp` | **wired** — the server flushes in the precedence order (every write prefix is a database the engine can open), and the pages of a file live **once per process** in the buffer pool rather than once per attachment, with writers serialized over them: two attachments now see each other's committed rows and neither loses the other's. Per-page fetch and eviction are still to come |
 | Lock manager | [lock-manager.md](lock-manager.md) | `src/lock/lock.cpp` | **wired** — the lock table decodes cell-for-cell against `fb_lock_print`, and fire-crab's own attachments now arbitrate through it: a writer that meets a version belonging to another transaction waits on the lock that transaction holds over its own id (`LCK_tra`) and then re-reads the row, and two transactions waiting on each other are denied by the wait-for scan with the engine's `isc_deadlock` — matching the engine probe-for-probe on visibility, waiting and deadlock |
 | BLR decode | [blr-intermediate-language.md](blr-intermediate-language.md) | `par.cpp`, `blp.h`, `gds.cpp` | **done** — 171-verb walker; every decodable BLR blob matches the engine's own `SET BLOB ALL` printer token-for-token |
-| DSQL, execution, optimizer | [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `src/dsql/`, `exe.cpp` | planned |
+| DSQL, execution, optimizer | [grammar-and-parser.md](grammar-and-parser.md), [query-optimizer-and-execution.md](query-optimizer-and-execution.md) | `src/dsql/`, `exe.cpp` | **in progress, and the laws are being read off the engine one at a time** — views (including DML through them), correlated subqueries, derived tables and CTEs, LATERAL, MERGE, joins with index and hash access paths, and PSQL bodies with their own nested DML. The recurring finding is that an optimisation which cannot express a case must DECLINE it rather than approximate it: the approximations were indistinguishable from answers |
 | Wire protocol — client (`src/remote/`, `src/auth/`) | [firebird-wire-protocol.md](firebird-wire-protocol.md), [security-architecture.md](security-architecture.md) | `src/remote/`, `src/auth/` | **fire-crab runs general SELECTs** — login (SRP-256/Arc4/attach) plus prepare/execute/batched-fetch of integer+text columns, matching isql row-for-row. This is a wire *client* that validates the codec against the real engine |
 | Wire protocol — server (the firebird-qa milestone) | [firebird-wire-protocol.md](firebird-wire-protocol.md) | `src/remote/` server side | **accepts real clients and answers real filtered/sorted/aggregated queries** — a third-party driver (node-firebird) negotiates protocol 20, authenticates via the *server* half of SRP-256, arms Arc4 encryption, and runs column projections (`SELECT <cols>` / `SELECT *`), `WHERE` filtering (comparisons, `AND`/`OR`, `IS [NOT] NULL`, three-valued logic), `ORDER BY` (columns/ordinals, ASC/DESC, engine NULL ordering), `MIN`/`MAX`/`SUM`/`COUNT` aggregates, `GROUP BY` (grouped aggregates, NULL keys bucketing together, multi-aggregate global queries) and `HAVING` (evaluated on the computed group rows, aggregates in the predicate resolved to output items — hidden ones when not selected) and INNER + LEFT/RIGHT/FULL OUTER equi-joins (qualified/bare column resolution, multi-key `ON`, NULL keys never matching, pad-insensitive text keys; outer kinds NULL-pad partnerless rows and WHERE runs on the padded row — the anti-join) end-to-end — returning native wire types (SHORT/LONG/INT64, scaled numerics the client divides per the describe, IEEE float/double, raw-unit date/time/timestamp, boolean, INT128 and DECFLOAT(16/34) — DPD-decoded via the engine's own decNumber tables, rendered per decNumberToString with cohort preserved, serialized exactly as xdr.cpp does — the TIME ZONE types (UTC + zone id, offset zones converted exactly, named zones honest, ORDER BY by UTC instant), and blobs served as real blobs (the 8-byte id in the row, content through `op_open_blob`/`op_get_segment`, first content-level blob differential incl. a multi-page level-1 blob and a system blob): the server opens the attached file, resolves table and columns through `RDB$RELATIONS`/`RDB$RELATION_FIELDS`, decodes records from the pages, evaluates/groups/sorts/accumulates, and returns typed rows matching isql value-for-value on user tables (incl. NULLs and mixed-width tables where field id ≠ column position) AND on system relations — their formats, absent from `RDB$FORMATS`, computed from the database's own catalog by the ini.epp bootstrap walk, anchored to the differentially-established offsets before being trusted. DML covers all three verbs: INSERT writes real records into the pages, UPDATE/DELETE write real version chains (old version copied out as `rhd_chain`, primary rewritten with a back pointer — a deleted stub for DELETE), with the engine as oracle three ways — isql prints the identical table the engine itself produces from the same statements, `gfix -v -full` accepts the chains, and `gfix -sweep` (the engine's own GC) collects them exactly. The write path is complete for the common shapes — records, version chains, page allocation and B-tree index maintenance all engine-validated — and prepared statements take real `?` parameters: the bind section describes each target, the client's value-derived input BLR is decoded, values bind with engine-CVT coercions (NULL params = UNKNOWN, mismatches = SQL errors), all driven by node-firebird's genuine encoders with the engine printing the identical table from literal equivalents; what stands before firebird-qa runs is breadth (select-list expressions/arithmetic, ALTER TABLE, foreign keys; the WHERE predicate surface is done, compound + descending indexes maintained, and CREATE TABLE/PK/NOT NULL/CREATE INDEX/DROP TABLE are engine-adopted and engine-ENFORCED — the engine refuses duplicate keys through fire-crab's indexes, naming fire-crab's constraint rows) |
 | Services, events, security | [services-api.md](services-api.md), [firebird-events.md](firebird-events.md), [security-architecture.md](security-architecture.md) | `svc.cpp`, `event.cpp`, `src/auth/` | planned |
