@@ -123,6 +123,151 @@ SYS_FIELDS   = 598      ← with 598 columns
 
 Then `CREATE TABLE t1 (a INTEGER); ALTER TABLE t1 ADD b VARCHAR(10);` — and `RDB$FORMATS` gains exactly two rows, both for relation 128 (the first user id), formats 1 and 2. User tables version their shapes in the catalog; system tables version theirs in `INI_init`'s ODS loop.
 
+## The names the engine invents for you come from counters, not from a survey
+
+Declare `CREATE TABLE T (ID INTEGER NOT NULL PRIMARY KEY)` and the
+engine writes several names you never chose: a relation id, an
+auto-domain `RDB$1` for the column's type, `RDB$PRIMARY1` for the index
+behind the key, `INTEG_1` and `INTEG_2` for the two constraints. None of
+them is derived by looking at what already exists. Each is drawn from a
+system generator — `RDB$RELATIONS`, `RDB$FIELD_NAME`, `RDB$INDEX_NAME`,
+`RDB$CONSTRAINT_NAME`, `RDB$GENERATOR_NAME` — and those counters only
+ever go up.
+
+The distinction is invisible until something is dropped, and then it is
+total. Drop the exception that took number two and the next one is still
+three. Drop a table and its relation id is never re-issued. The
+counters are the database's memory of what it has *ever* named, not an
+index of what it currently holds, and the two diverge permanently at the
+first `DROP`.
+
+There is a second detail worth probing rather than assuming, because
+the two families differ: `RDB$RELATIONS` reads 128 in a fresh database
+and the first user table *is* 128 — it holds the id to use next — while
+`RDB$INDEX_NAME` and its siblings read zero and the first name is one,
+so they hold the number last issued. One counter also feeds all three
+generated index spellings: four primary keys take `RDB$PRIMARY1`
+through `RDB$PRIMARY4`, and the next unnamed unique index is `RDB$5`.
+
+### The order a counter is drawn in is not the order you wrote
+
+Knowing that `INTEG_<n>` comes from a counter still leaves the harder
+half of the question: in what order does one `CREATE TABLE` draw its
+numbers? The obvious answer is the order the constraints are written,
+and it is wrong.
+
+```sql
+CREATE TABLE M (A INTEGER, UNIQUE (A), B INTEGER UNIQUE);
+```
+
+The engine gives the *second* unique constraint — `B`'s, written last —
+the lower number. It walks the statement in two passes: every
+constraint attached to a column first, taking the columns in
+declaration order, and only then every clause standing on its own in
+the column list. Within one column the clauses do go in the order
+written, so `A INTEGER UNIQUE NOT NULL` and `A INTEGER NOT NULL UNIQUE`
+produce opposite pairs. But no left-to-right reading of the text
+produces the answer above, because the text is not what the engine
+walks. It walks a parsed column list and a separate constraint list, in
+that order — exactly the separation `CREATE TABLE`'s own syntax makes.
+
+The passes turn on where a clause is *attached*, not on what kind of
+constraint it is. An inline `REFERENCES` is a column clause, so in
+`(A INTEGER, UNIQUE (A), B INTEGER REFERENCES P)` the foreign key takes
+the lower number and the unique constraint the higher one, the same
+inversion as before on a different constraint kind. A table-level
+`FOREIGN KEY` written between two columns still lands after the second
+column's `NOT NULL`.
+
+This is a law that is cheap to measure and expensive to guess, and
+[fire-crab](firebird-rust-conversion.md) guessed twice. Its first rule
+was "every `NOT NULL` first, then every key", which is right for a
+table whose columns carry only `NOT NULL` and whose keys all stand on
+their own, and wrong for one whose constraints are inline. Replacing it
+with "declaration order" fixed the inline table and broke the other.
+Both rules pass a suite that only ever tests one shape.
+
+The third variant of the same mistake was structural rather than
+algorithmic, and it survived the fix: the parser collected foreign keys
+into a *separate list* from the other constraints, so however carefully
+the rest were ordered, a foreign key was always issued the last numbers.
+That is correct exactly when the foreign key happens to be written last.
+A representation that separates two orders will keep being wrong at
+every site that reads it, and the fix is never to special-case the
+straggler but to put it back into the one ordering.
+
+The cost of being wrong is not cosmetic. On a file both servers write,
+`INTEG_4` names one constraint to the engine and a different one to
+fire-crab, so a `DROP CONSTRAINT INTEG_4` through either removes
+something the other did not mean. A generated name is a real identifier
+the moment it is written down, and the only way to agree on one is to
+reproduce the algorithm that invented it.
+
+### Why a survey is not a substitute
+
+[fire-crab](firebird-rust-conversion.md) derived every one of these by
+scanning the catalog for the highest number in use and adding one. On a
+database where nothing has been dropped the two agree exactly, which is
+why a suite with four hundred index checks never saw it. After one
+`DROP`, every later object is named differently — and on a file both
+servers write, the survey hands out precisely the number the engine's
+counter is about to issue. Two relations sharing one id share pointer
+pages, `RDB$PAGES` rows and format records; two indices sharing a name
+break the foreign-key partner lookup and `DROP INDEX`.
+
+Four lessons generalise past this catalog.
+
+**A gate that compares names is not comparing identity.** The gate
+written for this chunk compared relation *names*, index names and row
+contents, and passed a binary whose relation *ids* were wrong by
+several — the headline case. It took adding `RDB$RELATION_ID` to the
+query to make the two files differ at all. The reviewer who found this
+went further than argument and measured it: they broke four of the five
+allocators by hand and confirmed the extended gate then failed, which
+is the only way to know a check has teeth.
+
+**A rule that fits every case you measured is not yet a law.** All
+three of the constraint-ordering rules above fit every shape in front
+of them at the time they were written. What separated them was a shape
+chosen *because* it would tell them apart — a table-level constraint
+declared before a column-level one, so that text order and pass order
+must disagree. More cases of the same shape would never have found it,
+however many were run.
+
+**Teaching a parser a new spelling routes it into code that was never
+reached.** Firebird accepts a foreign key written inline on a column,
+`B INTEGER REFERENCES P`, and fire-crab refused every form of it. Making
+it parse was a plainly good change, and it was: the shape is ordinary
+SQL and the law above needed it. But it delivered those statements to a
+foreign-key writer that had never checked whether the key it was writing
+*fit* — whether the child's column count matched the parent's key, or
+whether the types were compatible at all. On the table-level spelling
+that gap had always been there and had always been reachable. On the
+inline spelling it was new, and it turned a clean refusal into a
+`BIGINT` foreign key onto an `INTEGER` key: rows fire-crab accepted that
+the engine, reading the same file, called orphans, a `gfix -v -full`
+that returned clean, and a backup that would not restore.
+
+The lesson is not "be careful with parsers". It is that the reachable
+surface and the validated surface are two different sets, and widening
+the first does not widen the second. Whenever a conversion makes
+something newly expressible, the question is not whether the new path
+works but what it now reaches that nothing reached before — and a
+refusal turning into a wrong write is the worst direction any change can
+move, because it is the direction in which the client stops being told.
+
+**An audit must follow the data to where it lands.** The same chunk
+audited every catalog writer for a path that could return success
+without writing, and found none — correctly. But every write reaches
+disk through a commit, and there the result of the flush was discarded
+behind a diagnostic print. A commit whose write failed answered the
+client success: an `INSERT` and a `CREATE TABLE` both returned without
+error, the server's own next query read zero rows, and the engine
+confirmed nothing had been written. The invariant is worth stating
+plainly, because it is the one a storage engine exists to keep — a
+statement either does what it says and reports success, or reports an
+error.
+
 ## Comparison: PostgreSQL, MySQL, SQLite
 
 Every engine with a self-hosted catalog faces the same regression and cuts it the same two ways — compiled-in shape knowledge plus a fixed disk anchor — but the engineering idioms differ tellingly:
