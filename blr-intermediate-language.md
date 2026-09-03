@@ -203,6 +203,90 @@ The `RDB$VALID_BLR` columns are the counterpart to name-based binding: a flag re
 
 That third home is the strongest argument for BLR's design. A single execution machinery serves user SQL, stored procedures, and the engine's own bootstrap, because all three arrive as the same bytes.
 
+## A fourth home: BLR the engine writes for you
+
+The three homes above are all BLR somebody wrote, in SQL or in embedded
+SQL, and had compiled. There is a fourth, and it is the one most likely
+to surprise: BLR the engine *synthesises* from a clause that contains no
+code at all.
+
+Write `ON DELETE CASCADE` on a foreign key and nothing in the catalog
+records "cascade" as a rule the executor consults at delete time — or
+rather, `RDB$REF_CONSTRAINTS` records the word, but the word is not what
+acts. What acts is a **system trigger on the parent table**, compiled at
+`CREATE TABLE` time and stored like any other:
+
+```
+trigger CHECK_1 on P   type 6   system_flag 4      <- AFTER DELETE
+trigger CHECK_4 on P   type 4   system_flag 4      <- AFTER UPDATE
+```
+
+Three details are worth pausing on. The trigger sits on the **parent**,
+not on the table whose constraint it belongs to — so dropping a child's
+constraint has to refresh the parent's runtime. Its name comes from the
+same `CHECK_<n>` sequence that names check-constraint triggers, so a
+table carrying both a referential action and a `CHECK` interleaves them.
+And its `RDB$SYSTEM_FLAG` is 4, `fb_sysflag_referential_constraint`,
+which is how the engine tells its own generated triggers apart from
+yours.
+
+The bodies are what you would write by hand:
+
+```
+delete:  FOR (child WHERE child.fk = OLD.pk) ERASE
+update:  IF OLD.pk <> NEW.pk THEN
+           FOR (child WHERE child.fk = OLD.pk) MODIFY SET child.fk = NEW.pk
+```
+
+### The guard is where the semantics live
+
+That `IF OLD.pk <> NEW.pk` is not a micro-optimisation, and reading it as
+one costs you the actual rule. It is ordinary SQL comparison, which means
+ordinary **three-valued logic**, which means `<>` against a NULL is
+UNKNOWN and not TRUE. So the guard fails — and the action does not fire —
+whenever the new key is NULL, and the statement falls through to the
+restrict path the engine would have taken with no action declared at all.
+
+Measured on Firebird 6, one parent and one child, `ON UPDATE CASCADE`:
+
+```sql
+UPDATE P SET U = NULL WHERE ID = 1;   -- children reference U = 10
+  23000  violation of FOREIGN KEY constraint "INTEG_4" on table "PUBLIC"."C"
+         -Foreign key references are present for the record
+         -Problematic key value is ("U" = 10)
+```
+
+The same statement with a non-NULL new value cascades normally. And on a
+compound key the guard is a disjunction, so the rule is neither "any NULL
+refuses" nor "all NULLs refuse" but exactly what the generated code says:
+**the action fires when some key column's new value is non-NULL and
+differs from its old one.** With `UNIQUE (U1, U2)` over a parent holding
+`(10, 20)`, setting `U1 = 11, U2 = NULL` cascades — `U1` differs and is
+non-NULL — while `U1 = 10, U2 = NULL` refuses, because no column both
+differs and is non-NULL.
+
+None of that is a special case anyone implemented. It is the semantics of
+the generated program, and you can read it off the program's own text.
+This is the payoff of the design the rest of this document argues for: a
+declarative clause becomes code in the one language the engine executes,
+and the code's behaviour at the edges is then *derivable* rather than
+documented separately — which is exactly what makes it convertible. A
+re-implementation that treats "cascade" as a rule and writes its own
+edge-case handling will get the NULL cases wrong, because it is answering
+a question the engine never asks.
+
+### And the row that ties it back
+
+One more catalog row completes the loop: an `RDB$CHECK_CONSTRAINTS` entry
+linking the generated trigger's name to the foreign key's constraint
+name. That link is what makes `ALTER TABLE ... DROP CONSTRAINT` take the
+trigger with it. Omit it and both catalogs still look right — the
+constraint is gone from `RDB$RELATION_CONSTRAINTS`, `gfix -v -full`
+returns clean — while the orphaned `AFTER DELETE` trigger survives and
+goes on cascading, silently deleting rows that should have been kept. A
+generated artifact needs a generated back-reference, or it outlives the
+thing that generated it.
+
 ## BLR is not a plan
 
 This is the distinction most likely to be misread, so it is worth stating flatly: **BLR is pre-optimization.** It records *what* is wanted, not *how* to get it.
