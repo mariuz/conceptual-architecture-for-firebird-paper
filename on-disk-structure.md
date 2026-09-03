@@ -221,6 +221,54 @@ the format it was written under*, and *convert a changed field rather
 than dropping it*. The second is the one that hides, because a system
 that only checks NULL-vs-not-NULL on fresh tables never sees it.
 
+### And a third, which is the other half of the first
+
+Reading a record through its own format gets the right *number*. It does
+not get the right *value*, because an exact numeric is stored as a bare
+mantissa and its scale lives in the descriptor. Store `700` in an
+`INTEGER` column, `ALTER` the column to `NUMERIC(9,2)`, and the record
+still holds the mantissa `700` under a format whose scale is zero, while
+the column now declares scale two. Decode it under its own format and you
+have `700`; hand that to a client reading the *current* describe and it
+renders `7.00`. The row is off by a factor of a hundred, and the row
+beside it — written after the `ALTER`, holding mantissa `70000` — is
+right, so the table disagrees with itself.
+
+```
+ALTER TABLE M6 ALTER N TYPE NUMERIC(9,2);   -- rows 1,2 predate it
+
+ID   engine     a reader that decodes but does not convert
+ 1   700.00     7.00
+ 2     7.00     0.07
+ 3     7.00     7.00      <- written after: correct
+ 4   700.00   700.00      <- written after: correct
+```
+
+So the third law: **having read a record through the format it was
+written under, present it through the format that describes it now.**
+That conversion is what the engine's `CVT` does on the way past, and
+skipping it is easy to miss precisely because the decode looks correct
+— every field lands in the right place, with the right byte count.
+
+The failure is also unusually good at hiding behind a *correct* fix.
+[fire-crab](firebird-rust-conversion.md) had a second defect, in the
+comparison used for grouping, which treated an integer and a scaled
+value as never equal. While that was broken, an old-format row and a
+new-format row went into different `GROUP BY` buckets, so the correctly
+rendered one stayed in the answer. Repairing the comparison — an
+unambiguous improvement, which moved twelve query results onto the
+engine's — merged the two rows into one group, whose representative is
+the first row seen, which is the *old-format* one. A `SELECT DISTINCT`
+that had returned four rows including both correct values now returned
+two, one of them wrong. The stored data was right throughout; only the
+projection was wrong, and fixing the comparison made the wrongness
+visible by removing what had been masking it.
+
+The narrowing direction has a rule of its own worth measuring rather
+than assuming: reading `7.55` back through a column narrowed to
+`INTEGER`, the engine rounds **half away from zero**, so `8.50` answers
+`9` where banker's rounding would answer `8`.
+
 ## MVCC on disk: the transaction inventory
 
 Firebird decides which version a transaction may see using state kept entirely on disk, not in a separate log. The **header page** holds four 64-bit markers (`ods.h`, `struct header_page`):
