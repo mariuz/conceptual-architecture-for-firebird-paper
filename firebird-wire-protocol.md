@@ -19,6 +19,7 @@ Every protocol fact here is drawn from the Firebird source vendored in this repo
 * [Every object on a connection shares one id space](#every-object-on-a-connection-shares-one-id-space)
 * [An attach that cannot open the file says so at attach time](#an-attach-that-cannot-open-the-file-says-so-at-attach-time)
 * [A reply with a hole in it is not an answer](#a-reply-with-a-hole-in-it-is-not-an-answer)
+* [A request is a co-routine](#a-request-is-a-co-routine)
 * [Protocol comparison: PostgreSQL and MySQL](#protocol-comparison-postgresql-and-mysql)
 * [Worked examples](#worked-examples)
 * [Client implementations (Node.js / TypeScript and others)](#client-implementations-nodejs--typescript-and-others)
@@ -583,6 +584,114 @@ is a protocol field with no schema, and the failure mode when it is
 missing is not an error but a **wrong default**. And a server's job here
 is not to describe itself: it is to occupy the exact position in a list
 that a client's arithmetic already assumes it occupies.
+
+## A request is a co-routine
+
+Everything above treats a statement as a round trip: the client asks,
+the server answers, and whatever the server was doing is over by the
+time the reply leaves. The legacy request API — `op_compile`,
+`op_start*`, `op_send`, `op_receive` — is not shaped that way, and the
+difference is not a detail of an old interface. It is the one place in
+the protocol where **the server keeps a program suspended between
+packets and the client decides what it does next.**
+
+GPRE, Firebird's embedded-SQL preprocessor, compiles
+
+```sql
+FOR X IN RDB$DATABASE
+    MODIFY X USING X.RDB$CHARACTER_SET_NAME = :name; END_MODIFY
+END_FOR
+```
+
+into BLR whose body is a loop the *client* drives:
+
+```
+blr_for ( RDB$DATABASE, context 0 )
+  blr_send 0 { 1, X.RDB$CHARACTER_SET_NAME }   -- here is the row
+  blr_label 0
+    blr_loop
+      blr_select
+        blr_receive 2 -> blr_leave 0           -- "I am done"
+        blr_receive 1 -> blr_modify 0 -> 1 {…} -- "write this"
+blr_send 0 { 0 }                               -- end of stream
+```
+
+`blr_select` is the verb that makes this a co-routine. It has no
+condition. It parks, and the branch that runs is chosen by **which
+message number the client sends next** — resolved not where the request
+stopped but inside `EXE_send`, which scans the branches for the number
+that arrived and points the request at that one
+([`exe.cpp:936`](extern/firebird/src/jrd/exe.cpp#L936)).
+
+### The engine keeps no stack across the gap
+
+The natural way to write an interpreter for that tree is recursion, and
+recursion is exactly what cannot survive here: between the `blr_send`
+and the client's reply there is a socket read, and a suspended C++ (or
+Rust) call stack cannot span it.
+
+The engine's answer is a trampoline. `EXE_looper` holds no stack at all
+— every node returns the next node to run, and a node that must block
+sets a flag and returns *itself*
+([`exe.cpp:1746`](extern/firebird/src/jrd/exe.cpp#L1746)):
+
+```cpp
+while (node && !(request->req_flags & req_stall))
+{
+    ...
+    node = node->execute(tdbb, request, &exeState);
+}
+```
+
+The whole resumable state is five fields on the request: what it is doing
+(`req_operation`), where to resume (`req_next`), which message it is
+parked on (`req_message`), the stall and unwind flags (`req_flags`), and
+the label a `blr_leave` is unwinding to (`req_label`)
+([`req.h:418`](extern/firebird/src/jrd/req.h#L418)). Everything else —
+the open cursor, the record buffers — hangs off the request block, not
+off any thread's stack.
+
+`EXE_send` and `EXE_receive` are then mirror images, and both begin by
+*driving the request forward to the state they need*:
+
+| the client did | the engine runs until | and if it finds the other |
+|---|---|---|
+| `op_send` | `req_operation == req_receive` | `isc_req_sync`, "Request expected to receive but need to send" |
+| `op_receive` | `req_operation == req_send` | `isc_req_sync`, "Request expected to send but need to receive" |
+
+A message number no parked `blr_select` offers is a bare `isc_req_sync`
+with no text at all ([`exe.cpp:955`](extern/firebird/src/jrd/exe.cpp#L955));
+a body of the wrong length is `isc_port_len` carrying both the length
+given and the length expected. The three failures are worth separating,
+because they say three different things: *you and I disagree about whose
+turn it is*, *you named a branch I do not have*, and *you named a branch
+I do have and then sent the wrong shape*.
+
+### One opcode, two directions
+
+`op_send` is opcode 25 travelling **both ways**. The server tags a
+message it is delivering with it; the client uses it to push a message
+*into* a stalled request. A server that has never suspended a program has
+no reason to implement the inbound half, and will not discover the
+omission by testing — nothing it can run will ever provoke one.
+
+Two fields of that inbound packet are traps. Its transaction field is
+never set by the client and never read by the engine: a request runs
+under the transaction pinned when it *started*
+(`TRA_attach_request`), so a server that helpfully switches to the handle
+in the packet will retarget the write to whatever stale value was left in
+the client's reused buffer. And the message body is laid out per the
+message number the packet names — not message 0. Confusing a
+`cstring(253)` (a four-byte length, then bytes, padded to four) with a
+flat four-byte `short` does not produce a wrong value; it consumes the
+wrong number of bytes, and the next read lands in the middle of the
+following packet.
+
+That is the general shape of the hazard in this API. The read-only half
+of it — `isql`'s `SHOW` commands, which compile a request, start it, and
+drain rows — exercises none of these paths, because such a program never
+parks. A server can pass every test built on `SHOW` and still be unable
+to run the second kind of program at all.
 
 ## Protocol comparison: PostgreSQL and MySQL
 
