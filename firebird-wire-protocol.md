@@ -14,6 +14,11 @@ Every protocol fact here is drawn from the Firebird source vendored in this repo
 * [How Firebird's SRP differs from the papers](#how-firebirds-srp-differs-from-the-papers)
 * [What Srp256 improves](#what-srp256-improves)
 * [Wire encryption: from the session key to the cipher](#wire-encryption-from-the-session-key-to-the-cipher)
+* [The fetch batch, and the bugs that only exist past it](#the-fetch-batch-and-the-bugs-that-only-exist-past-it)
+* [A cursor is consumed by its fetch](#a-cursor-is-consumed-by-its-fetch)
+* [Every object on a connection shares one id space](#every-object-on-a-connection-shares-one-id-space)
+* [An attach that cannot open the file says so at attach time](#an-attach-that-cannot-open-the-file-says-so-at-attach-time)
+* [A reply with a hole in it is not an answer](#a-reply-with-a-hole-in-it-is-not-an-answer)
 * [Protocol comparison: PostgreSQL and MySQL](#protocol-comparison-postgresql-and-mysql)
 * [Worked examples](#worked-examples)
 * [Client implementations (Node.js / TypeScript and others)](#client-implementations-nodejs--typescript-and-others)
@@ -359,6 +364,137 @@ Three properties of this defect class are worth carrying:
 The correction is to treat the handle namespace as what it is: a
 protocol-level contract rather than a server-internal detail. Whatever
 the server hands out, of any kind, has to be unique per connection.
+
+## An attach that cannot open the file says so at attach time
+
+`op_attach` looks like the one operation where a server has nothing
+interesting to decide: the client names a database, the server either
+has it or does not. The interesting part is what "does not" means, and
+when the client is told.
+
+A server that answers `op_attach` with success and defers the failure to
+the first statement is not merely being late. It is answering a
+*different question* than the one asked, and clients ask this one for
+reasons that have nothing to do with running SQL. `gbak` probes for a
+target database **by attaching to it**: an attach that succeeds means
+"occupied", an attach that fails means "free". A server whose attach
+always succeeds therefore tells `gbak` that every path in the filesystem
+is already a database, and `gbak -c` into a fresh path becomes
+impossible — the client refuses with `database ... already exists. To
+replace it, use the -REP switch` about a file that is not there. The
+subsequent error the deferred failure produces (`invalid transaction
+handle`) is about the wrong subject entirely.
+
+The engine has three answers here, and it is worth seeing that they are
+not three rules but one: **which syscall failed.**
+
+| what the client named | what the engine answers |
+|---|---|
+| a missing path, a missing directory, a file it may not read | `isc_io_error` / `"open"` / *path* / `isc_io_open_err` / the OS text |
+| a directory | `isc_io_error` / `"read"` / *path* / `isc_io_read_err` / `Is a directory` |
+| a file that is neither | `isc_bad_db_format` / *path* |
+
+The first two come from the same place. `PIO_open` posts the `open`
+form when the `open(2)` fails
+([`unix.cpp:685`](extern/firebird/src/jrd/os/posix/unix.cpp#L685)), and
+`PIO_header` posts the `read` form when the header read fails
+([`unix.cpp:549`](extern/firebird/src/jrd/os/posix/unix.cpp#L549)). A
+directory is the case that shows the rule: on Linux a directory `open`s
+perfectly well and fails at the first `read` with `EISDIR`, so the
+engine calls it a *read* error without anything in it knowing what a
+directory is. Only a file that survives both and still carries no header
+the engine can decode is `isc_bad_db_format`.
+
+That is a rule a converted implementation can follow without a table of
+special cases: perform the open, then perform the read, and report
+whichever one broke, with the OS's own message. Guessing from the path
+("does it exist? is it a directory?") reproduces today's answers and
+diverges on the next filesystem.
+
+### The third line is interpreted on the server, not the client
+
+The engine builds these vectors with `Arg::Unix(errno)`, which is status
+tag `isc_arg_unix` (7) carrying a raw error number — a number that means
+nothing on a client running a different operating system. It never
+reaches the client in that form. The remote server's response path walks
+the vector and passes through only the tags the protocol defines a
+representation for; everything else it renders with `fb_interpret` and
+pushes as `isc_arg_interpreted` (5), a plain string
+([`server.cpp:6344`](extern/firebird/src/remote/server/server.cpp#L6344)):
+
+```cpp
+const int l = (p < bufferEnd) ? fb_interpret(p, bufferEnd - p, &old_vector) : 0;
+if (l == 0)
+    break;
+
+new_vector.push(isc_arg_interpreted);
+new_vector.push((ISC_STATUS)(IPTR) p);
+```
+
+So `No such file or directory` is text by the time it crosses the
+socket, and a server written from scratch emits tag 5 with the string
+rather than tag 7 with an errno — the wire form is what has to match,
+not the engine's internal one.
+
+## A reply with a hole in it is not an answer
+
+`op_info_database` carries a list of item codes and returns a list of
+answers. The tempting reading is that the reply is a *set* — the server
+answers what it can, the client uses what it got. It is not. Some
+clients index the reply positionally, and one of them is `libfbclient`
+itself.
+
+`isc_version()` asks for three items in one request
+([`utl.cpp:134`](extern/firebird/src/yvalve/utl.cpp#L134)):
+
+```cpp
+static inline constexpr unsigned char info[] =
+    { isc_info_firebird_version, isc_info_implementation, fb_info_implementation, isc_info_end };
+```
+
+It walks the reply filling three pointers, all initialised to null
+([`utl.cpp:449`](extern/firebird/src/yvalve/utl.cpp#L449)) — and then,
+outside the loop, dereferences two of them without a check
+([`utl.cpp:506`](extern/firebird/src/yvalve/utl.cpp#L506)):
+
+```cpp
+UCHAR count = MIN(*versions, *implementations);
+```
+
+`implementations` is set only by `isc_info_implementation` (11) or, for
+the pair count, nothing else. A server that answers item 103 and stays
+silent about 11 hands back a reply the client cannot parse, and the
+client does not survive reading it: `Segmentation fault (core dumped)`,
+rc 139, `gbak`'s verbose output stopping mid-sentence at `backup version
+is 12`. Nothing in the crash points at the info reply.
+
+The protocol already has a way to say *no*. An item the server will not
+serve is answered with `isc_info_error` — the item code and
+`isc_infunk`, "information type inappropriate for object specified" —
+and `isc_version()` handles that tag explicitly, with a comment naming
+the exact scenario it was written for
+([`utl.cpp:482`](extern/firebird/src/yvalve/utl.cpp#L482)):
+
+```cpp
+case isc_info_error:
+    // old server does not understand fb_info_implementation
+    break;
+```
+
+Note what the `default:` arm does with anything else: it raises `Invalid
+info item`. Between the explicit refusal and the hard error there is no
+room for silence, and that is the design. **Skipping an item is the one
+answer the protocol has no encoding for**, because the client cannot
+distinguish a missing item from an item it mis-parsed.
+
+The general rule a server has to hold, then, is not "implement these
+items" — no server implements all of them — but *never leave a hole*:
+every requested item comes back either as its value or as
+`isc_info_error`. It is also why the failure mode is so hard to trace
+from the client end. Answering item 101 (`frb_info_att_charset`) with an
+error rather than a value makes `isql` abandon the whole reply and print
+`Pre IB V6 server only speaks SQL dialect 1` — a version complaint about
+a charset question. Every symptom in this area names the wrong subject.
 
 ## Protocol comparison: PostgreSQL and MySQL
 
