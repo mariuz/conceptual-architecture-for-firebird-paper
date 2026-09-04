@@ -496,6 +496,94 @@ error rather than a value makes `isql` abandon the whole reply and print
 `Pre IB V6 server only speaks SQL dialect 1` — a version complaint about
 a charset question. Every symptom in this area names the wrong subject.
 
+### The same reply is written three times
+
+There is a second way to get `op_info_database` wrong, and it is not a
+hole — it is a reply that is *complete* and still short.
+
+`isc_info_firebird_version` looks like a scalar: the server's version
+string. It is not. It is a counted **list**, and so is
+`isc_info_implementation` beside it, because three different pieces of
+software each add an entry on the packet's way to the caller. The engine
+core answers its own — the "access method". The remote **server** merges
+a second on top before the reply leaves the machine
+([`server.cpp:4700`](extern/firebird/src/remote/server/server.cpp#L4700)):
+
+```cpp
+string version;
+versionInfo(version);
+info_db_len = MERGE_database_info(temp_buffer, buffer, buffer_length,
+    DbImplementation::current.backwardCompatibleImplementation(), 4, 1,
+    reinterpret_cast<const UCHAR*>(version.c_str()),
+    reinterpret_cast<const UCHAR*>(this->port_host->str_data), protocol);
+```
+
+and the client's own remote interface merges a third when it arrives
+([`client/interface.cpp:2109`](extern/firebird/src/remote/client/interface.cpp#L2109)),
+with `class_ = 3` where the server passed 4. `MERGE_database_info`
+([`merge.cpp:45`](extern/firebird/src/remote/merge.cpp#L45)) walks the
+reply and appends one counted string to the version list and one
+`(implementation, class)` pair to the implementation list, bumping each
+count byte as it goes. That is why `SHOW VERSION` prints three lines from
+what looks like one question.
+
+The consequence for a server is a rule with no obvious source: **answer
+for your own merge level and the core's, and make the two counts equal.**
+`isc_version()` reads `MIN(*versions, *implementations)` and then walks
+*both* lists that many times
+([`utl.cpp:506`](extern/firebird/src/yvalve/utl.cpp#L506)), so a count
+that is too low does not fail — it silently truncates the banner. The
+list a client sees is the list it was told to expect, and nobody
+validates the two against each other.
+
+### The protocol version travels as text
+
+The entry the remote server adds is not a copy of the core's. It is
+built by `rem_port::versionInfo`
+([`remote.cpp:1515`](extern/firebird/src/remote/remote.cpp#L1515)) from a
+string the port has been carrying since the handshake — because
+`inet.cpp` rewrites it the moment the protocol is settled
+([`inet.cpp:836`](extern/firebird/src/remote/inet.cpp#L836)):
+
+```cpp
+temp.printf("%s/P%d", port->port_version->str_data,
+            port->port_protocol & FB_PROTOCOL_MASK);
+```
+
+then `versionInfo` appends `:` with `C` for wire crypt and `Z` for
+compression. The result is the familiar tail: `.../tcp (host)/P20:C`.
+
+This is worth dwelling on, because a client reads it *as data*. `gbak`
+needs to know which protocol it negotiated, in order to decide whether
+the server can take a restore through the batch API or must be fed the
+older BLR store requests. It does not ask. It scans the version string
+for the literal `")/P"` and takes the integer that follows
+([`restore.epp:857`](extern/firebird/src/burp/restore.epp#L857)):
+
+```cpp
+const char* pm = ")/P";
+const char* pp = strstr(text, pm);
+if (pp)
+{
+    pp += strlen(pm);
+    *version = atoi(pp);
+}
+```
+
+If the marker is absent the variable keeps its initial `0` — and zero is
+not "unknown", it is the value `restore.epp` uses for *embedded*
+([`restore.epp:14071`](extern/firebird/src/burp/restore.epp#L14071)). A
+server that negotiates protocol 20 but omits the tail is therefore read
+as an in-process engine with no wire at all, and the restore silently
+takes a different and much older code path.
+
+Two general points fall out of this, and they are the same point twice.
+A field whose value is only ever *parsed out of a human-readable string*
+is a protocol field with no schema, and the failure mode when it is
+missing is not an error but a **wrong default**. And a server's job here
+is not to describe itself: it is to occupy the exact position in a list
+that a client's arithmetic already assumes it occupies.
+
 ## Protocol comparison: PostgreSQL and MySQL
 
 Firebird, PostgreSQL and MySQL all put a binary request/response protocol over a raw TCP socket, but they made different decisions at every layer — framing, who speaks first, how authentication works, and (most tellingly) whether confidentiality is part of the database protocol or delegated to TLS underneath it. This section compares the three, so the Firebird handshake above has a frame of reference. It complements the storage-and-engine comparison in [architecture-comparison.md](architecture-comparison.md); here the subject is strictly *the bytes on the wire*.
