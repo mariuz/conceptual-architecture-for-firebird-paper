@@ -223,6 +223,84 @@ break CCH_flush                 # src/jrd/cch.cpp:1192 — careful-write orderin
 
 `Service::start` shows the exact bytes the samples built (`isc_action_svc_backup`, dbname, bkp_file, verbose) being parsed and a thread spawned around `gbak()` — backtraces from `BACKUP_backup` reveal gbak is just another client running inside the server, reading through a snapshot transaction. `BackupManager::beginBackup` is the `ALTER DATABASE BEGIN BACKUP` stall from the [nbackup section](#nbackup-physical-incremental-backup) (watch `backup_state` change), and `check_precedence` (`src/jrd/cch.cpp:3177`), reached from `CCH_flush`, is the page-ordering machinery that makes ["recovery" a no-op](#crash-recovery-consistency-without-a-log): the reason there is no log to replay is decided here, one page-write dependency at a time.
 
+## A restore is a conversation the client leads
+
+It is tempting to read `gbak -c` as "the backup tool writes a database".
+It does not. gbak writes a **catalog**, one row at a time, through the
+same request API any client could use, and asks the server to make each
+row into an object. Watching a restore from the server's side of the wire
+makes the division of labour precise, and several of its rules are not
+what the shape of the data would suggest.
+
+**The client leaves the server's numbers blank.** A `STORE X IN
+RDB$RELATIONS` arrives with `RDB$RELATION_ID` and `RDB$FORMAT` NULL; the
+engine assigns the id in a *before-insert* trigger and asserts the client
+did not supply one (`SystemTriggers::beforeInsertRelation`). The column
+rows follow the relation's own row, so the relation's format cannot be
+laid out when the row is stored — it is computed at commit, from the
+catalog as it then stands. A server that fills the id in *after* the row
+is written re-keys nothing, and the engine's second lookup probe — by id,
+through `RDB$INDEX_1` — then misses a relation whose every column reads
+correctly.
+
+**An index is stored disabled, on purpose.** Every index gbak restores
+carries `RDB$INDEX_INACTIVE = 3` (`DEFERRED_ACTIVE`), a primary key
+included; the coercion at `restore.epp:6843` turns an active index into
+a deferred one unconditionally. Storing the row posts the engine no work
+at all — `indexDfw` returns without posting when the index id is null.
+The b-tree is built much later, when the restore's tail modifies that 3
+back to 0 after the data is loaded, and `afterUpdateIndex` catches the
+transition. A primary key is not visible on the index's row at all; only
+`RDB$RELATION_CONSTRAINTS` says so.
+
+**The data goes through the batch API — if the client can find out that
+it may.** gbak takes the negotiated protocol version not from any
+protocol field but by scanning the server's *version string* for `")/P"`
+(`restore.epp:857`), and falls back to hand-built BLR store requests when
+it finds none. Then it asks the batch for its parameters and, having sent
+`TAG_BUFFER_BYTES_SIZE = 0` meaning *"as much as you have"*
+(`DsqlBatch.cpp:117` lifts a zero to the hard limit), refuses through its
+own client library a server that answers that zero back
+(`client/interface.cpp:3195`). Neither rule is written anywhere a
+protocol reader would look.
+
+**The tail realigns the name counters, and it matters.** After the data,
+gbak runs nine `EXECUTE BLOCK`s of one shape:
+
+```sql
+EXECUTE BLOCK AS
+  DECLARE VARIABLE maxInTable INT; DECLARE VARIABLE currentGen INT;
+BEGIN
+  SELECT FIRST(1) CAST(SUBSTRING(RDB$INDEX_NAME FROM 5 FOR 32) AS INT)
+    FROM RDB$INDICES
+   WHERE SUBSTRING(RDB$INDEX_NAME FROM 5 FOR 32) SIMILAR TO '[0-9]+ *'
+     AND RDB$INDEX_NAME STARTING WITH 'RDB$'
+   ORDER BY 1 DESC INTO :maxInTable;
+  currentGen = gen_id(RDB$INDEX_NAME, 0);
+  IF (currentGen < maxInTable) THEN
+    EXECUTE STATEMENT 'SET GENERATOR SYSTEM.RDB$INDEX_NAME TO ' || maxInTable;
+END
+```
+
+one per system generator (`genToFix[]`, `restore.epp:12432`). A server
+that stores the catalog rows itself leaves those counters at zero, and
+without this step its next `CREATE TABLE` would mint `RDB$1` and
+`RDB$PRIMARY1` a second time. The blocks exercise, in one statement,
+several corners a server can pass every other test without: a
+mixed-case declared variable (a bare identifier, and so folded), `FIRST
+(1)` with parentheses, a zero-step `gen_id` that reads without drawing,
+a schema-qualified `SET GENERATOR`, and a `SET` statement reaching the
+server as a dynamic *immediate* statement rather than a query.
+
+**The closing message names the consequence, not the cause.** gbak's
+`flag_on_line` is initialised true and only ever cleared; when it is
+clear at the end, the message is *"Database is not online due to failure
+to activate one or more indices"* — whatever cleared it. A restore whose
+indices activated perfectly and whose counter blocks failed prints
+exactly that. The nine errors sat in the log directly under *"adjusting
+system generators"*, and the way to find them was to read the step whose
+messages preceded them, not the verdict.
+
 ## Further research
 
 **Firebird**
