@@ -301,6 +301,73 @@ exactly that. The nine errors sat in the log directly under *"adjusting
 system generators"*, and the way to find them was to read the step whose
 messages preceded them, not the verdict.
 
+**A real database, not a fixture.** The fixture that closed the last
+section had two domains and one table. The `employee` sample that ships
+with Firebird has 83 domains with defaults and CHECK clauses, eleven
+tables, a view, twenty-two procedures, four user triggers, five
+exceptions, two generators, fourteen foreign keys, sixty-eight check
+constraints, two array columns and every row - and restoring it through
+a server that only answers requests is the test of whether the
+conversation above was understood or merely transcribed. What the
+restore asks for after the tables is, in gbak's order: a blob column in
+a legacy message arrives as an *id* the client created with
+`op_create_blob2` a moment earlier, and it is the store's assignment -
+`blb::move`, run from `EXE_assignment` before the record is written -
+that materialises the temporary blob into the target relation, with the
+target column's sub-type and character set winning over whatever the
+client declared. An array column arrives through the slice API:
+`op_put_slice` with an SDL program naming the field and its bounds, the
+elements in XDR form - and a `VARCHAR` element travels in the
+*cstring* form, because `SDL_info` types `blr_varying2` as
+`dtype_cstring` with a length of `sizeof(USHORT)` plus the declared
+width, landing in a seventeen-byte `vary` slot. A generator's id is
+assigned at *store* time, not at commit (`set_metadata_id` in
+`VIO_store`, drawing from the master generator), and its value is set by
+a request of gbak's own making: a declared `INT64` variable assigned
+`gen_id3(<generator>, <value>)` - a draw over the zeroed slot, not a
+`SET GENERATOR`. Exceptions, procedures and functions take their numbers
+the same way from the system generators named for them. A batch only
+translates `SQL_BLOB` parameters through its blob map; an array is
+`SQL_QUAD` and its temporary id passes to the request untouched, which
+is why gbak never registers one.
+
+Two of the walls were about *time*, and both are visible only in a real
+database. gbak stores a domain's `RDB$COMPUTED_BLR` and
+`RDB$VALIDATION_BLR` last of all, by a `MODIFY` of the `RDB$FIELDS` row
+after every table's data is in (`update_global_field`), because the BLR
+names relations that did not exist when the domain was stored. By then
+each table using the domain has had its format and runtime summary built
+without them; the engine's `dfw modify_field` re-versions every dependent
+table, and that is the whole reason the engine's own restore of
+`employee` leaves its three computed-column tables at `RDB$FORMAT` 2.
+And triggers arrive after the table *and its data*, while the engine
+loads a table's triggers from the `RSR_trigger_name` entries of its
+runtime summary - so a summary built at the table's own commit describes
+a table whose triggers never fire, and it has to be rebuilt when the
+trigger row commits. The order in that summary is not decoration: the
+engine writes user triggers first and constraint triggers second, each
+sorted by position (`DdlNodes.epp:9190-9250`), and that is the order
+same-position triggers fire in. On `EMPLOYEE`, `SET_EMP_NO` runs before
+`CHECK_3`, so a row that fails its check has already drawn the
+generator; a server that listed them alphabetically read 147 where the
+engine reads 148.
+
+That last number is the point of method. The restored file was checked
+three ways that all passed while it was still wrong: the catalog rows
+diffed clean against the engine's restore, `gfix -v -full` found nothing,
+and every `SELECT` answered. What found the remaining defects was
+handing the file to the real engine and *writing* to it - inserting a
+row whose key a trigger assigns, one that fails a domain validation, two
+that fail check constraints, updating a salary the history trigger
+records - and comparing not just the outcomes but the generator values
+afterwards. With those fixed, `isql -x` extracts identical DDL from the
+two restores, and the reads and writes agree. Three catalog-only
+differences remain for the next chunk: `RDB$DEPENDENCIES`, which the
+engine builds by compiling the BLR at commit; the `SQL$` security classes
+`dfw_grant` computes from the restored privileges; and a view's
+`RDB$DBKEY_LENGTH`, where gbak's own adjustment pass wrote 16 through one
+server and the engine ends at 0.
+
 ## Further research
 
 **Firebird**
