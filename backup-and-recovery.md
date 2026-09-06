@@ -394,6 +394,34 @@ a domain named in a descriptor - reproduces the engine's rows column for
 column, and with them the engine's refusals to drop what something still
 uses.
 
+### Using the restored database through the conversion
+
+A restore that leaves the engine's own file is half the test; the other
+half is whether the conversion can serve that file. Reading every sample
+table, the arrays, the views, the union of counts and the context
+variables through fire-crab, and writing through the sample's own CHECK
+constraints and triggers, now answers what the engine answers over its own
+restore, with two exceptions worth recording. The first is the procedure
+`DEPT_BUDGET`, whose body uses a singleton `SELECT INTO`, an aggregate into
+a variable, a cursor loop with scaled arithmetic, and recursion through
+`EXECUTE PROCEDURE ... RETURNING_VALUES` - a PSQL surface the conversion
+does not interpret yet, and the next piece of work.
+
+The second exception is the engine's. Deleting department 600, which two
+employees and two sub-departments reference, is refused by the shipped
+`employee.fdb` and by fire-crab, but allowed by the engine over its own
+freshly restored copy. The catalogue is identical in both files; what
+differs is the order of the rows the partner lookup walks, and the engine
+at this snapshot checks only the first partner of a parent index on
+`DELETE` and on a key `UPDATE`. A fresh database with three child tables
+referencing one parent reproduces it without a backup involved: the engine
+refuses the delete of the row the first child references and allows the
+other two, while the conversion, restored from that database's backup,
+refuses all of them. A restore does not corrupt the constraint, but by
+rewriting the catalogue in a different order it changes which single
+partner the engine happens to enforce - which is why a differential
+harness must compare against the shipped file as well as the restored one.
+
 ## Further research
 
 **Firebird**
