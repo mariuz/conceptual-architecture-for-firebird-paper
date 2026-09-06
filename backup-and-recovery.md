@@ -368,6 +368,32 @@ engine builds by compiling the BLR at commit; the `SQL$` security classes
 `RDB$DBKEY_LENGTH`, where gbak's own adjustment pass wrote 16 through one
 server and the engine ends at 0.
 
+**The third half of "readable".** The three checks that passed while the
+restored file was still wrong - the catalog diff, `gfix`, `SELECT` - had a
+fourth blind spot that none of the write probes touched either, because
+every probe ran as SYSDBA. gbak's backup carries the *names* of security
+classes on the object rows and no class rows at all; the engine
+recompiles every class from the restored privileges at commit
+(`dfw_grant`, `GRANT_privileges`), draws a class for an object that
+arrived without one, and gives each table a default class. A server that
+stored the rows and stopped there left objects naming classes that did
+not exist - and the engine treats a class with no row as *unchecked*.
+Measured with an ordinary user: on the engine's restore,
+`gen_id(EMP_NO_GEN, 0)` is refused with *no permission for USAGE access*;
+on the row-only restore the same user read the generator. The restored
+database was more permissive than the one backed up, and nothing SYSDBA
+could run would have shown it. The same commit-time shape closes the
+last of the engine's derived catalog: `RDB$DEPENDENCIES`, which gbak does
+not back up and the engine rebuilds by compiling each object's BLR with
+dependency collection on. Walking the stored BLR with the operand grammar
+of the engine's own pretty-printer, and emitting exactly the references
+its parser records - a stream, a field of a bound context (a trigger's
+contexts 0 and 1 being its own table, which is why a trigger's columns
+yield field rows and no relation row), a call, a generator, an exception,
+a domain named in a descriptor - reproduces the engine's rows column for
+column, and with them the engine's refusals to drop what something still
+uses.
+
 ## Further research
 
 **Firebird**
