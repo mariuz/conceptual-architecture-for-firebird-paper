@@ -404,8 +404,23 @@ constraints and triggers, now answers what the engine answers over its own
 restore, with two exceptions worth recording. The first is the procedure
 `DEPT_BUDGET`, whose body uses a singleton `SELECT INTO`, an aggregate into
 a variable, a cursor loop with scaled arithmetic, and recursion through
-`EXECUTE PROCEDURE ... RETURNING_VALUES` - a PSQL surface the conversion
-does not interpret yet, and the next piece of work.
+`EXECUTE PROCEDURE ... RETURNING_VALUES`. Closing it turned out to say
+more about the engine than about PSQL. The sample's bodies never reached
+the conversion's source interpreter at all: a restored procedure carries
+the engine's compiled BLR, and the conversion runs that first. What kept
+the ten procedures from answering were four narrow things, each measured
+on the engine before it was written: the paren-less call spelling
+`EXECUTE PROCEDURE dept_budget :rdno`, a SUM and AVG that folded only
+integers and so answered NULL over a DECIMAL column, a COMPUTED BY column
+read as an empty record slot instead of its stored expression, and a FOR
+SELECT whose source is another procedure called with arguments. One more
+law came out of the measurements: `EXECUTE PROCEDURE` receives exactly one
+output message and then unwinds the request, so whatever a body does after
+its first SUSPEND never happens, while `SELECT * FROM p` runs the body to
+its end. A conversion that ran every body to the end and took the first
+row answered the same values but performed side effects the engine never
+would. All ten procedures now run identically, exceptions, line numbers
+and rollbacks included.
 
 The second exception is the engine's. Deleting department 600, which two
 employees and two sub-departments reference, is refused by the shipped
