@@ -492,6 +492,33 @@ silently disappeared. None of this was an error the restore reported. It
 was visible only because the same file had been backed up twice and the two
 restores were held against each other.
 
+### The restore the conversion performs
+
+The conversion can also be the one that restores. Given the engine's own
+backup of the employee database, the conversion's service restores it, and
+the test is whether the result is the database the engine's own restore
+produces from the same file. Opened side by side, the two agree: the
+schema, the generated constraint and index names as the file carried them,
+the relation identifiers, the security classes and the order in which they
+are numbered, the dependencies, the privilege rows, and every stored row
+read by name, its blobs and arrays included.
+
+The privileges are the part that had been missing. A backup carries the
+access rows as they stood, and the conversion had been parsing them and
+throwing them away, on the reasoning that grants are metadata rather than
+data. But a restored object without its access rows is not a restricted
+object; to the engine it is an unchecked one, and a query the original
+database would have refused now succeeds. So the restore stores the rows as
+the file gives them and recomputes each object's access list from its
+owner, exactly as a fresh grant would. One difference is left standing and
+recorded rather than hidden: the engine assigns each column an internal
+identifier in the order the backup lists the fields and lays the physical
+record out to match, while the conversion assigns them in the order of the
+identifiers themselves. On a table whose stored column order differs from
+its identifier order the two catalogues disagree in that one column, and a
+bare "select star" lists such a table's columns in the identifier order.
+Every column read by name, and every other catalogue row, is identical.
+
 ## Further research
 
 **Firebird**
