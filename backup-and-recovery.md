@@ -422,6 +422,28 @@ row answered the same values but performed side effects the engine never
 would. All ten procedures now run identically, exceptions, line numbers
 and rollbacks included.
 
+The last step turns the question around. Instead of restoring the sample,
+the conversion now builds it from the same two scripts Firebird ships to
+build it, `empddl.sql` and `empdml.sql`, into an empty database the engine
+created. The first attempt refused fifty-one of the DDL statements; the
+finished run refuses none, and the engine, reading both files afterwards,
+extracts the same DDL from each and finds the same generated names in the
+same order: the constraint numbers, the shared index counter that names a
+primary key `RDB$PRIMARY5` and the next foreign key `RDB$FOREIGN6`, the
+check-trigger pairs, the security classes, the dependency rows, the
+privileges, and every row of data. Getting there was mostly a matter of
+measuring what the engine stores for constructs the conversion had refused
+or approximated: a text `IN` list casts each member to the tested column's
+type, a comma-separated FROM is one flat record selection with the WHERE as
+its boolean, an array element is `blr_index` over the field with a count
+and the subscripts, a selectable procedure used as a source is
+`blr_procedure` with its arguments, a concatenation of two VARCHAR domains
+is a VARCHAR of their summed lengths with no precision, and a stored body
+keeps its comments. One lesson was about tooling rather than the engine:
+the line numbers isql reports for a failing statement in a script do not
+name the statement, and two rounds of diagnosis went astray before the
+server's own trace of what it refused became the source of truth.
+
 The second exception is the engine's. Deleting department 600, which two
 employees and two sub-departments reference, is refused by the shipped
 `employee.fdb` and by fire-crab, but allowed by the engine over its own
