@@ -459,6 +459,39 @@ rewriting the catalogue in a different order it changes which single
 partner the engine happens to enforce - which is why a differential
 harness must compare against the shipped file as well as the restored one.
 
+### The backup the conversion writes
+
+The other direction of the same conversation is a backup written by the
+conversion and restored by the shipped `gbak`. The test that settles it is
+not a comparison of the two backup files - relation order in a backup is
+the physical order of the catalogue rows, and the header carries a
+timestamp - but of what the real restore makes of each. The engine and the
+conversion each back up the same employee file, the engine restores both,
+and the two restored databases must be one database: the extracted DDL,
+the generated names and identifiers, the security classes and owners, the
+dependencies, every privilege row, every data row and every array. Measured
+on the employee database built from its own scripts and on the restored
+sample, they are, down to the path in the `CREATE DATABASE` comment.
+
+Most of what had to change was learned by laying the engine's stream next
+to the conversion's, record by record. Two attributes of a field record,
+its sub-type and its scale, had been transposed for as long as the writer
+existed, so every `NUMERIC` column had come back from a restore as a plain
+64-bit integer. Columns had been matched to their descriptors by position,
+which holds for a table the conversion created and fails for one the
+engine's restore created. An array slice in the stream opens with its own
+raw length before the first element, and without that word the restore
+read a character count from the wrong place. And the engine stamps an owner
+on every field record, a security class on every named domain, exception
+and relation, and no object-schema on a privilege granted on a schema
+itself; the conversion wrote none of these, and the restore, finding
+objects without owners or classes, invented what was missing - twenty
+`USAGE` grants to `PUBLIC` in one restore and none in the other, default
+security classes handed out in arrival order, and two schema grants that
+silently disappeared. None of this was an error the restore reported. It
+was visible only because the same file had been backed up twice and the two
+restores were held against each other.
+
 ## Further research
 
 **Firebird**
