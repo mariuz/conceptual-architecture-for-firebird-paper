@@ -10,3 +10,6 @@
 [submodule "extern/fire-crab"]
 	path = extern/fire-crab
 	url = https://github.com/mariuz/fire-crab
+[submodule "extern/firebird-qa"]
+	path = extern/firebird-qa
+	url = https://github.com/FirebirdSQL/firebird-qa
