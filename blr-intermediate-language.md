@@ -534,6 +534,37 @@ blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(sca
 
 This is a sixth client stack, and the stored artifact is byte-for-byte the same.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Blr.java`](samples/java/src/main/java/fbsamples/Blr.java)
+
+The same read through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Blr`). Fetching is `ResultSet.getBytes()`, a plain `byte[]` with the sub_type 2 segments read by the driver, and the attachment uses encoding NONE. The opcodes come from the driver itself. Jaybird carries `org.firebirdsql.gds.BlrConstants`, a 269-constant transcription of `blr.h`, because, like the Go driver, its pure-Java protocol has no `libfbclient` to describe parameter rows and so *writes* BLR on every execute. The twin shows that direction as a third dump. It prepares a statement on Jaybird's GDS-ng layer (`FbDatabase.createStatement`, `FbStatement.prepare`) and passes its parameter descriptor to the driver's `DefaultBlrCalculator`, then decodes the result with the decoder used for the procedure's messages. Each parameter is a value plus a `blr_short` null indicator, so two parameters make a 4-field `blr_message 0`, the same pairing as in `GET_EMP_PROJ`'s stored messages. Unlike firebirdsql, Jaybird writes the charset-carrying `blr_text2`.
+
+Verified output (the stored-BLR part is byte-for-byte the Python and Go twins' output):
+
+```text
+(opcodes: 269 blr_* constants in Jaybird's org.firebirdsql.gds.BlrConstants)
+
+== computed column EMPLOYEE.FULL_NAME - RDB$FIELDS.RDB$COMPUTED_BLR
+(java type: byte[])
+05 27 27 17 00 09 4c 41 53 54 5f 4e 41 4d 45 15
+0f 00 00 02 00 2c 20 17 00 0a 46 49 52 53 54 5f
+4e 41 4d 45 4c (37 bytes total)
+blr_version5
+   blr_concatenate
+      blr_concatenate
+         blr_field context 0, 'LAST_NAME'
+         blr_literal blr_text2 charset 0, len 2, ", "
+      blr_field context 0, 'FIRST_NAME'
+blr_eoc
+...
+== BLR Jaybird writes for the parameters of
+   select proj_id from employee_project where emp_no = ? and proj_id = ?
+05 02 04 00 04 00 07 00 07 00 0f 00 00 05 00 07
+00 ff 4c (19 bytes total)
+blr_version5, blr_begin
+blr_message 0, 4 fields: blr_short(scale 0) blr_short(scale 0) blr_text2(cs 0, len 5) blr_short(scale 0)
+blr_end, blr_eoc
+```
+
 ### Things to try
 
 - Point the sample at your own scratch database, create `CREATE TABLE t (a INT, b COMPUTED BY (a * 2 + 1))`, and decode the arithmetic: you will meet `blr_multiply`/`blr_add` (prefix, two operands each) and a `blr_literal blr_long`.

@@ -234,6 +234,34 @@ done.
 
 Strings are exact but not arithmetic: a Go program that wants to compute with these values parses them into `math/big` (`big.Int`, `big.Rat`) itself — the driver deliberately stops at a lossless representation.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Numerics.java`](samples/java/src/main/java/fbsamples/Numerics.java)
+
+The same four experiments through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Numerics`). Like Python, Java ships the engine's exact types in its standard library, and Jaybird maps `NUMERIC`, `INT128` and `DECFLOAT` all to `java.math.BigDecimal`. The 2⁵³ cent therefore survives unless the program asks for `getDouble()`. `BigDecimal` has no `Infinity`, though. An untrapped `DECFLOAT` 1/0 cannot be fetched with `getBigDecimal()`; it comes back through `getDouble()` or as Jaybird's own IEEE type `org.firebirdsql.extern.decimal.Decimal64` via `getObject(1, Decimal64.class)`. That is the Pascal twin's `TBCD` gap, with a typed way out. The raw fetch goes below JDBC to the GDS-ng `FbStatement`. Its `FieldDescriptor` gives type 580 / scale −4, and its `RowValue` holds the field exactly as it crossed the wire. Those bytes are **XDR big-endian**: the same `0x075bcd15` the C++ twin read little-endian out of libfbclient's message buffer, before any client-side reordering. Trap setting 4b goes through the DPB, as in the Python twin, here as the `decfloatTraps` connection property (`isc_dpb_decfloat_traps`).
+
+Verified output:
+
+```text
+(0.1+0.2)-0.3 in DOUBLE PRECISION : 5.551115123125783E-17  (Double)
+(0.1+0.2)-0.3 in DECFLOAT(34)     : 0.0  (BigDecimal, signum 0)
+
+NUMERIC(18,4) wire format: type=580 (SQL_INT64), length=8, scale=-4
+field bytes (XDR, big-endian)  : 00 00 00 00 07 5b cd 15
+raw integer                    : 123456789
+value = raw * 10^scale         : 123456789 * 10^-4 = 12345.6789
+NUMERIC(18,2) past 2^53        : 90071992547409.93 as BigDecimal, 90071992547409.94 as double
+
+INT128 max  : 170141183460469231731687303715884105727  (BigDecimal, == 2^127-1: true)
+INT128 max+1: arithmetic exception, numeric overflow, or string truncation; Integer overflow.  The result of an integer operation caused the most significant bit of the result to carry. (gds 335544779)
+
+1/0 with default traps : Decimal float divide by zero.  The code attempted to divide a DECFLOAT value by zero. (gds 335545139)
+1/0 with traps cleared : getDouble() = Infinity, getObject(Decimal64.class) = +Infinity
+                         getBigDecimal() fails: Unsupported get conversion requested for field DIVIDE at index 1 (JDBC type DECFLOAT), target type: java.math.BigDecimal, reason: value +Infinity out of range
+1/0 with decfloatTraps=Inexact (DPB) : Infinity
+done.
+```
+
+`getErrorCode()` on the INT128 overflow is 335544779 (`isc_exception_integer_overflow`), not the 335544321 the other twins print. Jaybird reports the most specific code in the vector and keeps the generic one in the message. Its `double` rendering of the NUMERIC(18,2) value is .94, not node-firebird's .92: `BigDecimal.doubleValue()` rounds the exact decimal to the nearest double (…409.9375), where the JS driver divided an already-rounded integer.
+
 ### Things to try
 
 - Add `SET DECFLOAT ROUND CEILING` before a `SELECT CAST(1 AS DECFLOAT(16))/3*3` in either sample — the result becomes `1.000000000000001` (the doc's rounding-mode demo).

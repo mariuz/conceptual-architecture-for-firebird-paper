@@ -444,6 +444,19 @@ Verified output:
 4. identical text after DDL   100 prepares:  288.9 ms  (2.89 ms/prepare) - misses
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/StmtCache.java`](samples/java/src/main/java/fbsamples/StmtCache.java)
+
+The same four timing runs through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=StmtCache`). Jaybird sits on the clean side of the wrapper split. `Connection.prepareStatement()` is a real prepare-without-execute (`op_allocate` + `op_prepare` with the describe request), `close()` frees the handle, and the driver keeps no client-side statement cache. Statement pooling in Java belongs to the connection pool (or `javax.sql` pooled data sources), not to the driver. Two JDBC details shape the sample. The prepares run in one manual-commit transaction, so, as in the Go twin, run 4's `RECREATE TABLE` comes from a *second attachment* in auto-commit, and its commit purges this attachment's entries because the cache is per-database. The JVM also needs a warm-up: the sample first prepares a trivial statement 2,000 times so that run 1 times the server, not Jaybird's own class loading and JIT compilation. A hit then costs ~0.3 ms, close to the Python twin and above the pure-Go 0.17 ms.
+
+Verified output (second of two consecutive runs; the first gave 0.42 / 1.67 / 1.47 / 4.25 ms per prepare, with the same ordering):
+
+```text
+1. identical text             100 prepares:   31.4 ms  (0.31 ms/prepare) - hits
+2. + i trailing spaces        100 prepares:  127.8 ms  (1.28 ms/prepare) - misses
+3. distinct literal           100 prepares:  133.9 ms  (1.34 ms/prepare) - misses
+4. identical text after DDL   100 prepares:  521.1 ms  (5.21 ms/prepare) - misses
+```
+
 ### Things to try
 
 - Change run 2 to vary *case* instead of whitespace (`Select` / `sElect`…) — same misses, same reason.

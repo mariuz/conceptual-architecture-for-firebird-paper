@@ -686,6 +686,43 @@ RDB$SQL.EXPLAIN('SELECT COUNT(*) FROM CUSTOMERS') with path PUBLIC:
 done.
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Schemas.java`](samples/java/src/main/java/fbsamples/Schemas.java)
+
+The same five demonstrations through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Schemas`). The connection stays in JDBC auto-commit, so every `SET SEARCH_PATH` and every probe is its own transaction and the path still carries over, which is the attachment-state point once more. The plan is the generous kind: `FirebirdPreparedStatement` offers both `getExecutionPlan()` (the legacy one-liner) and `getExplainedExecutionPlan()` (the tree), like firebird-driver's `.plan` / `.detailed_plan`. The instructive part is a sixth step that asks **JDBC's own metadata layer**. Jaybird 6 predates Firebird 6 schemas, so `supportsSchemasInDataManipulation()` is `false`, `getSchemas()` is empty, `Connection.getSchema()` is `null`, and `getTables(..., "CUSTOMERS", ...)` returns the two same-named tables as two indistinguishable rows with `TABLE_SCHEM = null`. The engine resolves names by schema, but a schema-unaware metadata API can't tell `PUBLIC.CUSTOMERS` from `APP.CUSTOMERS`. That's a concrete reason tools built on JDBC metadata need a schema-aware driver release before they work with Firebird 6.
+
+Verified output:
+
+```text
+schemas in RDB$SCHEMAS      : APP  PUBLIC  SYSTEM
+default search path         : "PUBLIC", "SYSTEM"
+
+SELECT ORIGIN FROM CUSTOMERS, as the path changes:
+  path PUBLIC,SYSTEM        -> from PUBLIC
+  path APP,PUBLIC           -> from APP
+
+SET SEARCH_PATH TO APP      -> "APP", "SYSTEM"   (SYSTEM auto-appended)
+
+procedure created with path APP,PUBLIC (lands in APP, binds APP.CUSTOMERS)
+  after SET SEARCH_PATH TO PUBLIC:
+    direct SELECT ... FROM CUSTOMERS -> from PUBLIC
+    SELECT SRC FROM APP.WHICH_ONE    -> from APP   <- unmoved
+    RDB$DEPENDENCIES records         -> APP.CUSTOMERS
+
+plan for unqualified SELECT : PLAN ("PUBLIC"."CUSTOMERS" NATURAL)
+explained plan              : Select Expression
+                                  -> Aggregate
+                                      -> Table "PUBLIC"."CUSTOMERS" Full Scan
+
+JDBC DatabaseMetaData (Jaybird JCA/JDBC driver 6.0.6):
+  supportsSchemasInDataManipulation() -> false
+  getSchemas()                        -> 0 rows
+  Connection.getSchema()              -> null
+  getTables("CUSTOMERS")              -> TABLE_SCHEM=null TABLE_NAME=CUSTOMERS
+  getTables("CUSTOMERS")              -> TABLE_SCHEM=null TABLE_NAME=CUSTOMERS
+
+done.
+```
+
 ### Things to try
 
 - Add the [shadowing experiment](#shadowing-and-the-hazard-search-paths-always-carry): `CREATE TABLE PUBLIC."RDB$DATABASE" (X INT)` and watch an unqualified `SELECT ... FROM RDB$DATABASE` on a fresh connection find yours; then `SET SEARCH_PATH TO SYSTEM, PUBLIC` to defuse it.

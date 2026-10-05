@@ -419,6 +419,22 @@ after they detach:        19 threads (pooled, not destroyed)
 
 `MON$REMOTE_PROCESS` names the binary `go run` built in its cache — and only because the sample re-attaches after creating: the driver's create DPB carries no `isc_dpb_process_name`, its attach DPB does.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Threading.java`](samples/java/src/main/java/fbsamples/Threading.java)
+
+The same census through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Threading`). The twelve workers are an `ExecutorService` of platform threads, each opening its own `Connection`. A `CountDownLatch`, playing the role of the Python twin's semaphore and the Go twin's `WaitGroup`, takes the "during" census only once all twelve have attached and queried. Java's rule sits between the twins'. A Jaybird `Connection` *is* thread-safe, since every call takes the attachment's lock, but a shared connection only serializes its users on that lock and on one server worker. So one connection per thread, or a pool, is still the design, by convention rather than by the compiler as in Rust. Monitoring runs in JDBC auto-commit, where every query is its own transaction and gets a fresh MON$ snapshot, which avoids the Go twin's `COMMIT RETAINING` trap. The `MON$REMOTE_PROCESS` column brings one delta: **Jaybird sends no `isc_dpb_process_name` by default**. The first run's sample row showed `NULL` there. The sample now sets the `processName` connection property (the `org.firebirdsql.jdbc.processName` system property works too), and the row names itself.
+
+Verified output (a warm server: the twelve attachments needed only one new worker thread; an earlier run on a cooler pool went 9 → 15 → 15):
+
+```text
+engine process: pid 665, 15 threads (1 attachment open)
+with 12 extra attachments: 16 threads | 13 user attachments, 1 distinct server pid
+after they detach:        16 threads (pooled, not destroyed)
+  ID SYS  USER               REMOTE_PROCESS
+  16   0  SYSDBA             fbsamples.Threading
+  17   1  Cache Writer       <internal>
+  18   1  Garbage Collector  <internal>
+```
+
 ### Things to try
 
 - Raise the worker count above the pool size (e.g. 40) and watch the thread count climb by exactly the shortfall.

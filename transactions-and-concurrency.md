@@ -233,6 +233,23 @@ A conflicting update failed as designed:
 done.
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Transactions.java`](samples/java/src/main/java/fbsamples/Transactions.java)
+
+The same scenario through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Transactions`). JDBC's isolation levels map onto Firebird TPBs — `TRANSACTION_REPEATABLE_READ` is `isc_tpb_concurrency`, `TRANSACTION_READ_COMMITTED` is `read_committed, rec_version`, `TRANSACTION_SERIALIZABLE` is `consistency` — all WAIT by default, like the Go driver's. The difference is that Jaybird hands the TPB back: `FirebirdConnection.createTransactionParameterBuffer()` takes the same `isc_tpb_*` items the C++ sample packs by hand, and `setTransactionParameters(level, tpb)` installs them behind a JDBC level, so `setTransactionIsolation(TRANSACTION_REPEATABLE_READ)` starts a SNAPSHOT **NO WAIT** transaction and the conflict fails fast. The whole status vector arrives as one `SQLException` message, with the SQLSTATE and the first gds code as `getSQLState()` / `getErrorCode()`.
+
+Verified output:
+
+```text
+A (SNAPSHOT)       sees amount = 100
+B                  committed amount = 999
+A (same SNAPSHOT)  sees amount = 100   <- still the start-of-tx version
+A (READ COMMITTED) sees amount = 999   <- the committed version
+A conflicting update failed as designed:
+    deadlock; update conflicts with concurrent update; concurrent transaction number is 10 [SQLState:40001, ISC error code:335544336]
+    SQLState 40001 / gds 335544336
+done.
+```
+
 ### Things to try
 
 - Change `isc_tpb_nowait` to `isc_tpb_wait` in step 3 of the C++ sample and watch the update block until `holdB` commits — then fail anyway (SNAPSHOT cannot see the new version).

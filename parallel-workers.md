@@ -414,6 +414,35 @@ done.
 
 Compare the two parallel rosters. The C++ embedded run's helpers are `<Worker>` attachments with `system_flag 1`, drawn from the engine pool that `MaxParallelWorkers` caps. gbak's four are plain `SYSDBA` user attachments (attachments 5 to 8), and the server's `MaxParallelWorkers = 1` does not limit them. This is utility-level parallelism, and a client that cannot reconfigure the server can still request it. (On this shared one-core machine the build and backup times prove nothing about speed.)
 
+### Java sample — [`samples/java/src/main/java/fbsamples/ParallelWorkers.java`](samples/java/src/main/java/fbsamples/ParallelWorkers.java)
+
+The same two phases through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver (`cd samples/java && mvn -q compile exec:exec -Dsample=ParallelWorkers`, about 1 min), using both of its driver families. Phase A runs over the pure-Java wire protocol and is the most complete of the wire twins: the knob is an ordinary connection property, `parallelWorkers=4` (Jaybird's name for `isc_dpb_parallel_workers`), and the reply is not lost as in fb-cpp and fbintf, because JDBC already has a home for status-vector warnings — the connection's `SQLWarning` chain, which carries the engine's text *and* the gds code `335545286` (`isc_bad_par_workers`) that the Python warning object lacks. Phase B switches to jaybird-native's `jdbc:firebird:embedded:` URL, which loads libfbclient and the engine into the JVM through JNA. The private `FIREBIRD` root has to be in the process environment before the engine loads, and the JVM has no API to change its own environment, so the sample calls libc's `setenv` through JNA itself (already on the classpath for jaybird-native) — the C++ sample's `setenv`, one FFI hop away. The `MON$ATTACHMENTS` poller is an ordinary Java `Thread` holding a second embedded attachment, with auto-commit giving it a fresh snapshot on every query.
+
+Verified output:
+
+```text
+[A] server attach, parallelWorkers=4 (isc_dpb_parallel_workers)
+    SQLWarning (gds 335545286): Wrong parallel workers value 4, valid range are from 1 to 1 [SQLState:HY000, ISC error code:335545286]
+    server config: ParallelWorkers = 1, MaxParallelWorkers = 1; granted MON$PARALLEL_WORKERS = 1 -> 0 extra workers
+
+[B] embedded attach, FIREBIRD=/tmp/fbhandson/fbroot-parallel-java
+    engine config: ParallelWorkers = 4, MaxParallelWorkers = 8
+    parade table: 200000 rows of 180 incompressible bytes, 4 pointer pages
+    create index: 28224 ms; max '<Worker>' attachments seen: 3
+    MON$ATTACHMENTS at the widest moment:
+        Cache Writer  (system_flag 1)
+        Garbage Collector  (system_flag 1)
+        SYSDBA  (system_flag 0)
+        SYSDBA  (system_flag 0)
+        <Worker>  (system_flag 1)
+        <Worker>  (system_flag 1)
+        <Worker>  (system_flag 1)
+    after build: workers stay pooled (idle timeout 60 s): 3
+done.
+```
+
+The facts match the C++ run: the clamp to 1, 4 pointer pages, the same seven-attachment roster with three `<Worker>` rows at `system_flag 1`, and the workers still pooled after the build. As with the Python run, the 28 s build time on this shared one-core machine proves that the workers engaged, not that the build got faster.
+
 ### Things to try
 
 - In the C++ sample's private root, set `ParallelWorkers = 8` and watch `getMaxWorkers()` cap the width at the pointer-page count instead (the output already prints both numbers).

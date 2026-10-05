@@ -1,7 +1,7 @@
 # Samples
 
-Runnable C++, JavaScript, Rust, Free Pascal, Python and Go examples that
-exercise the architecture described in the [paper](../README.md). The C++ programs use the modern
+Runnable C++, JavaScript, Rust, Free Pascal, Python, Go and Java examples
+that exercise the architecture described in the [paper](../README.md). The C++ programs use the modern
 object-oriented client API (`firebird/Interface.h`) that is the supported
 interface in Firebird 3 and later, including the Firebird 6 development
 branch; the JavaScript programs use [node-firebird](https://github.com/hgourvest/node-firebird),
@@ -100,6 +100,21 @@ and debugging"** section built on a pair of samples here:
   TPB, no SNAPSHOT NO WAIT); there is no embedded mode; and
   `database/sql` pools connections, so `fbsample` pins each `*sql.DB` to
   one connection to make it exactly one attachment.
+- **`java/src/main/java/fbsamples/<Topic>.java`** — the Java twin, written
+  against [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL
+  project's JDBC driver (one Maven module, one class per topic, sharing
+  [`FbSample.java`](java/src/main/java/fbsamples/FbSample.java)). It is
+  the one twin with all three connection paths: its default PURE_JAVA
+  protocol is an independent wire-protocol implementation like the Go
+  and JavaScript drivers, while `jaybird-native` (through JNA) adds the
+  NATIVE protocol over libfbclient and the EMBEDDED protocol that loads
+  the engine in-process — the twins about in-process engines use it.
+  Beneath JDBC it keeps Firebird's own layer within reach: TPBs installed
+  behind JDBC's isolation levels
+  (`FirebirdConnection.setTransactionParameters`), the Services API in
+  `org.firebirdsql.management` (backup, statistics, maintenance, nbackup,
+  trace, users), events, execution plans, and the wire-level GDS-ng API
+  for info requests.
 
 Each document's Hands-on section shows its pair's *verified* output, a
 "things to try" list, and gdb breakpoints into the engine functions the
@@ -308,6 +323,23 @@ go run ./transactions        # or any other ./<topic>
 The first run downloads the driver into the module cache. Scratch
 databases go to `/tmp/fbhandson/<topic>_go.fdb` like the other twins;
 `FB_HOST`, `ISC_USER` and `ISC_PASSWORD` override the defaults.
+
+## Java samples
+
+The [`java/`](java/) directory holds the per-document twins in Java. With
+JDK 17+ and Maven 3.9+ (the pure-Java protocol needs no Firebird client
+library; the native and embedded twins load `libfbclient` from
+`/opt/firebird/lib`):
+
+```sh
+cd samples/java
+mvn -q compile exec:exec -Dsample=Transactions     # or any other class in fbsamples
+mvn -q compile exec:exec -Dsample=Transactions -Dargs=/tmp/fbhandson/other.fdb
+```
+
+The first run downloads Jaybird and JNA into the local Maven repository.
+Scratch databases go to `/tmp/fbhandson/<topic>_java.fdb` like the other
+twins; `FB_HOST`, `ISC_USER` and `ISC_PASSWORD` override the defaults.
 
 ## Debugging
 

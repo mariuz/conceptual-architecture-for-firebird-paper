@@ -234,6 +234,33 @@ done.
 
 Both MON$ figures are measured against the one idle baseline taken before the first sort, so the small sort's +22 MB also carries whatever the big sort's pools had not yet given back; what matters is the scratch column — a 70 MB spill above `TempCacheLimit`, nothing below it.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Sorting.java`](samples/java/src/main/java/fbsamples/Sorting.java)
+
+The same experiment through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Sorting`). The watcher is a plain `Thread` with its own `Connection`, which means its own attachment. Like the pure-Go driver, Jaybird blocks only the thread that waits on its socket, so polling continues while the main thread sits in the `executeQuery` that performs the sort. Each poll ends in `commit()`, so the next poll gets a new MON$ snapshot. The plan surface matches firebird-driver's: `FirebirdPreparedStatement.getExecutionPlan()` gives the legacy `PLAN SORT (...)`, and `getExplainedExecutionPlan()` gives the tree whose Sort node carries the record and key lengths. The scratch half has the same privilege gap as the Python and Go twins. It tries the server's `/proc/<pid>/fd` first and otherwise watches the free space of `/tmp` through `java.nio.file.FileStore.getUsableSpace()`. The peak drop is the familiar 73400320-byte spill plus 84 KB of filesystem noise.
+
+Verified output:
+
+```text
+bulk: 200000 rows, 400-byte ASCII key -> ~82 MB of sort data
+server pid 665, database memory allocated while idle: 26288128 bytes
+
+big sort (200k rows, ~82 MB)
+  PLAN SORT ("PUBLIC"."BULK" NATURAL)
+  -> Sort (record length: 430, key length: 408)
+  top row id = 39140
+  /proc/665/fd not readable; peak drop of free space on /tmp: 73486336 bytes
+  peak database MON$MEMORY_ALLOCATED: 94384128 bytes (+68096000 over idle)
+
+small sort (20k rows, ~8 MB)
+  PLAN SORT ("PUBLIC"."BULK" NATURAL)
+  -> Sort (record length: 430, key length: 408)
+  top row id = 39140
+  /proc/665/fd not readable; peak drop of free space on /tmp: 0 bytes
+  peak database MON$MEMORY_ALLOCATED: 46125056 bytes (+19836928 over idle)
+
+done.
+```
+
 ### Things to try
 
 - Drop the `desc` and `first 1` and fetch everything: the numbers barely move — the sort is a pipeline breaker, so the *open* pays for the whole sort whether you fetch one row or all 200,000.

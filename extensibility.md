@@ -236,6 +236,12 @@ The same UDR walk through [firebirdsql](https://github.com/nakagami/firebirdsql)
 
 Verified: `gen_rows(1, 5)` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, and the `RDB$CONFIG` roster is identical to the C++ run — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Extensibility.java`](samples/java/src/main/java/fbsamples/Extensibility.java)
+
+The same UDR walk through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Extensibility`). The lesson of the other twins holds once more — no libfbclient in the JVM, nothing lost, because the `udr_engine` loads the native module inside the server. The JDBC idiom adds two small things: the calls are `PreparedStatement`s with `?` parameters bound by `setInt` (the C++ sample inlines literals), and the headers of the isql-style listings come from `ResultSetMetaData.getColumnLabel`. And it adds one contrast: `DatabaseMetaData.getProcedures` / `getFunctions`, the driver's portable catalog API, report `GEN_ROWS` as `procedureReturnsResult` and `SUM_ARGS` as `functionNoTable` — and nothing more; the `module!entry` binding and `ENGINE udr` exist only in the `RDB$` tables, which is where a client must look to tell a UDR from PSQL.
+
+Verified: `gen_rows(?, ?)` with `[1, 5]` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, `DatabaseMetaData` prints `getProcedures: GEN_ROWS  procedureReturnsResult` / `getFunctions:  SUM_ARGS  functionNoTable`, and the `RDB$CONFIG` roster is identical to the C++ run — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
+
 ### Things to try
 
 - Declare more of the shipped module: `gen_rows2` (same logic via typed `FB_UDR_MESSAGE`s), `mult`, or the `replicate` UDR *trigger* ([`extern/firebird/examples/udr/`](extern/firebird/examples/udr/) shows each declaration in a comment above its implementation).

@@ -221,6 +221,28 @@ phase 2 (two embedded engines, private caches) needs an in-process engine:
 
 The node-firebird picture again: the second worker's thousands of logical fetches cost **zero** physical reads, served from buffers the first worker's traffic kept hot.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/PageCache.java`](samples/java/src/main/java/fbsamples/PageCache.java)
+
+Both phases through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver (`cd samples/java && mvn -q compile exec:exec -Dsample=PageCache`). Jaybird puts both families of driver in one jar set, so this twin falls on both sides of the divide that split node-firebird and Go from the libfbclient twins. Phase 1 runs on the default PURE_JAVA wire protocol (`jdbc:firebird://localhost/...`), an independent Java implementation of the protocol like those two. Phase 2 switches to jaybird-native's EMBEDDED protocol (`jdbc:firebird:embedded:/tmp/fbhandson/page_cache_emb_java.fdb`), which loads libfbclient through JNA (`jna.library.path=/opt/firebird/lib`, set in `main`) and with it a full engine inside the child JVM. Only the URL prefix changes. The choreography is `ProcessBuilder` relaunching `java -cp <java.class.path> fbsamples.PageCache --worker ...`, so each embedded engine gets its own process. Phase 2's children get `FIREBIRD` pointed at a SuperClassic sandbox (`/tmp/fbhandson/fbemb_java`) through `ProcessBuilder.environment()`; the sample builds the sandbox with `Files.createSymbolicLink`. As in the Python twin, the variable has to be in the environment before the engine loads, which is why the boundary is a process.
+
+Verified output:
+
+```text
+phase 1: two client processes, ONE SuperServer shared cache
+  worker pid 67383  row 1: 300 commits | page fetches=14019  reads=83   writes=858
+  worker pid 67384  row 2: 300 commits | page fetches=6708   reads=31   writes=894
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+phase 2: two EMBEDDED engine processes, PRIVATE page caches
+  worker pid 67582  row 2: 300 commits | page fetches=16825  reads=1034 writes=909
+  worker pid 67581  row 1: 300 commits | page fetches=16617  reads=1027 writes=904
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+same workload - the private caches paid for coherency in disk I/O.
+```
+
+The same roughly 20-fold jump in physical reads (31–83 against ~1 030) appears whenever a twin can reach phase 2, and no update is lost in either topology. Here one program reached both topologies by changing the URL.
+
 ### Things to try
 
 - Give the two rows their own pages (`create table t (id int primary key, v int, pad char(4000))` forces ~one row per 8K page) and rerun: phase 2's `reads` collapse — no shared page, no ping-pong, the protocol goes quiet.

@@ -247,6 +247,21 @@ after COMMIT: 1 delivery, count = 3  (correct - one delivery, count 3)
 PASS
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Events.java`](samples/java/src/main/java/fbsamples/Events.java)
+
+The same three semantics through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Events`). It is the third client after node-firebird and the Go driver to implement the [auxiliary-channel dance](#the-wire-the-auxiliary-connection) with no client library — `op_connect_request`, the second socket, `op_que_events`, `op_event` — and on the client-side bookkeeping it sits with fb-cpp and the Go driver: Jaybird swallows the baseline delivery, does the `isc_event_counts` delta and re-queues the one-shot interest itself, handing each delivery to an `EventListener` as a `DatabaseEvent` (`getEventName()`, `getEventCount()`) on its own event thread; the sample passes them to `main` through a `BlockingQueue`, so every "wait briefly" checkpoint is a timed `poll`. The instructive difference is where the channel hangs: besides a standalone `FBEventManager` that opens its own attachment, `EventManager.createFor(connection)` attaches the event channel to an *existing* JDBC connection's attachment — the shape of the C++ sample's `queEvents` on its listener `IAttachment`, where the Go driver opens a fresh attachment per subscription.
+
+Verified output:
+
+```text
+listener registered for 'demo_event' (baseline consumed by Jaybird's EventManager)
+after POST_EVENT + ROLLBACK: delivered count = 0  (correct - rollback swallows posts)
+3 x POST_EVENT executed, not yet committed - waiting briefly...
+before COMMIT: delivered count = 0  (correct - delivery is commit-time)
+after COMMIT: 1 delivery, count = 3  (correct - one delivery, count 3)
+PASS
+```
+
 ### Things to try
 
 - Set `EVENTS_DEMO_PAUSE_MS=5000` and, during the pause, list the demo process's sockets (`ss -tnp | grep events_demo`): two attachments, **three** TCP connections — the third is the aux channel to a non-3050 ephemeral port, the [`RemoteAuxPort` firewall pitfall](#the-wire-the-auxiliary-connection) made visible.

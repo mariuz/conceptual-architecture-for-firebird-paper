@@ -492,6 +492,34 @@ typed round-trip:
   MAIL  "user@example.com"
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Types.java`](samples/java/src/main/java/fbsamples/Types.java)
+
+The same showcase through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Types`). Java sits at the top of the ladder with fbintf and firebird-driver, and needs no extra dependency, because `BigDecimal` and `BigInteger` are in the JDK. `INT128` arrives as an exact `BigDecimal` (`getObject(col, BigInteger.class)` compares equal to `2^127 - 1`). `DECFLOAT(34)` arrives as a `BigDecimal` equal to `new BigDecimal("0.1")` and visibly not to `new BigDecimal(0.1d)`. `BOOLEAN` is a `Boolean`. The zoned timestamp is an `OffsetDateTime` by default, and `getObject(col, ZonedDateTime.class)` brings back `Europe/Bucharest` (see the [temporal Java twin](temporal-and-time-zones.md)). The sample shows three faces per column. The wire code comes from Jaybird's GDS-ng layer, `FbStatement.getRowDescriptor()` on a statement prepared but never executed. The public JDBC metadata gives the `java.sql.Types` code, the Firebird type name and the Java class. The third face is the value itself. Unlike Python's DB-API `description`, the JDBC metadata here agrees with the values, but it shows where JDBC's own type vocabulary ends. `INT128` reports `java.sql.Types.NUMERIC`, because JDBC has no 128-bit integer type. `DECFLOAT` reports **2015**, Jaybird's vendor code `JaybirdTypeCodes.DECFLOAT`, which `java.sql.JDBCType.valueOf` rejects with an `IllegalArgumentException` (the first draft of the sample crashed on exactly that). The domain violation is an `SQLException` with SQLSTATE `23000` and gds `335544347`.
+
+Verified output:
+
+```text
+domain CHECK rejected 'not-an-address':
+    SQLState 23000, gds 335544347: validation error for column "PUBLIC"."SHOWCASE"."MAIL", value "not-an-address" [SQLState:23000, ISC error code:335544347]
+
+column wire type (FbStatement)  JDBC getColumnType / getColumnTypeName              getColumnClassName
+------ -----------------------  --------------------------------------------------- ------------------
+FLAG   32764 = SQL_BOOLEAN      BOOLEAN / BOOLEAN                                   java.lang.Boolean
+BIG    32752 = SQL_INT128       NUMERIC / INT128                                    java.math.BigDecimal
+MONEY  32762 = SQL_DEC34        JaybirdTypeCodes.DECFLOAT (2015) / DECFLOAT         java.math.BigDecimal
+BORN   32754 = SQL_TIMESTAMP_TZ TIMESTAMP_WITH_TIMEZONE / TIMESTAMP WITH TIME ZONE  java.time.OffsetDateTime
+MAIL   448 = SQL_VARYING        VARCHAR / VARCHAR                                   java.lang.String
+
+typed round-trip:
+  FLAG  true  (Boolean)
+  BIG   170141183460469231731687303715884105727  == 2^127 - 1 (BigInteger) ? true
+  MONEY 0.1  == new BigDecimal("0.1") ? true  (and new BigDecimal(0.1d)? false)
+  BORN  2026-07-21T12:00+03:00  (OffsetDateTime); as ZonedDateTime: 2026-07-21T12:00+03:00[Europe/Bucharest]
+  MAIL  "user@example.com"
+
+done.
+```
+
 ### Things to try
 
 - Add an `INT128` overflow: insert `1.7e38` cast to `INT128`, or `SELECT 170141183460469231731687303715884105727 + 1` — watch dialect-3 exact arithmetic refuse instead of wrapping.

@@ -568,6 +568,29 @@ the file /tmp/fbhandson/services_go.fbk now exists on the SERVER: 3072 bytes, ow
 
 The same 74 lines in 75 polls as the C++, Pascal and Python twins, and the owner is the server's user, as the document's operational rule says it must be.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Services.java`](samples/java/src/main/java/fbsamples/Services.java)
+
+The same session through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, which speaks the Services protocol itself on its pure-Java wire (`cd samples/java && mvn -q compile exec:exec -Dsample=Services`). As with the Go and JavaScript drivers, `localhost` can only mean the remote `service_mgr`. There is no embedded one to attach by mistake. The `org.firebirdsql.management` classes wrap the protocol. `FBServiceManager.getServerVersion()` is the `isc_info_svc_server_version` request. `FBBackupManager` takes `setDatabase` / `setBackupPath` (both server paths) and `setVerbose(true)`, and `backupDatabase()` starts `isc_action_svc_backup` and drains the output into the `OutputStream` given to `setLogger()`.
+
+The instructive difference is that drain. Jaybird asks for **`isc_info_svc_to_eof`**, not `isc_info_svc_line`, with a 1 KB result buffer. Each `op_service_info` answer is as much of gbak's output as fits: 1019 bytes of text plus the item byte, the 2-byte length and `isc_info_end`. So the same 74 verbose lines that cost every other twin 75 round trips arrive here in **3 chunks**, plus the empty answer that ends the stream. The ring buffer is still drained one buffer at a time. Jaybird simply lets the server fill the buffer before answering, instead of asking line by line. The sample's logger counts the chunks and their sizes, and the `.fbk` belongs to the server's user.
+
+Verified output (middle trimmed):
+
+```text
+service       : localhost:service_mgr (pure-Java wire)
+server version: LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+backup started (verbose) - Jaybird drains with isc_info_svc_to_eof:
+  gbak:readied database /tmp/fbhandson/services_java.fdb for backup
+  gbak:creating file /tmp/fbhandson/services_java.fbk
+  gbak:starting transaction
+  ...
+  gbak:closing file, committing, and finishing. 3072 bytes written
+done: 74 gbak lines in 3 chunks of output (bytes per chunk: [1019, 1019, 817])
+the file /tmp/fbhandson/services_java.fbk now exists on the SERVER: 3072 bytes, owned by firebird
+```
+
+The same `isc_info_svc_to_eof` drain explains what the [trace twin](trace-and-audit.md) saw: for a live trace stream, "fill the buffer first" means the output arrives in delayed bursts.
+
 ### Things to try
 
 - Drop `isc_spb_verbose` from the C++ start block: the backup completes in a handful of polls with almost no lines — the non-verbose escape hatch from [the pipe section](#the-service-thread-and-the-1-kb-pipe).

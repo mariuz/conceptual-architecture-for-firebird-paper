@@ -122,7 +122,7 @@ IDLE_AFTER     0     ACTIVE_AFTER    1
 Firebird has **no built-in inbound connection pooler** (no PgBouncer equivalent shipped). Instead the inbound cost is governed by two things:
 
 - **`ServerMode`** (see the [main paper](README.md#firebird-3-2016-unified-server-providers-and-plugins)). In **SuperServer** the engine is one multi-threaded process with a **shared page cache**, so a new connection is a thread and a modest allocation — inbound connections are relatively cheap, and the pressure for an external pooler is low. **Classic** (process per connection) and **SuperClassic** trade that shared cache for process isolation, making connections heavier — closer to PostgreSQL's model and more likely to benefit from limiting/pooling.
-- **Driver-level pooling.** The client drivers ([client APIs document](client-apis-and-drivers.md)) implement inbound pooling on the application side — the .NET provider and Jaybird maintain connection pools, as do most ADO.NET/JDBC-style stacks — so a typical app server reuses its own connections without any server-side proxy.
+- **Driver-level pooling.** The client drivers ([client APIs document](client-apis-and-drivers.md)) implement inbound pooling on the application side — the .NET provider maintains its own connection pool; Jaybird (since version 3) ships none and instead provides the JDBC building blocks (`FBConnectionPoolDataSource`, `FBSimpleDataSource`) for a Java pool such as HikariCP or an application server's — so a typical app server reuses its own connections without any server-side proxy.
 
 For very high inbound concurrency you can still front Firebird with a generic TCP proxy or connection limiter, but it is not the routine necessity it is for a process-per-connection database.
 
@@ -134,7 +134,7 @@ For very high inbound concurrency you can still front Firebird with a generic TC
 | Inbound connection cost | Low (Super) / higher (Classic) | **High** (fork + backend setup) | Moderate | N/A |
 | Built-in inbound pooler | No | No | No (thread pool mitigates) | N/A |
 | External inbound pooler | Generic TCP proxy (rare) | **[PgBouncer](https://www.pgbouncer.org/) / [pgpool](https://www.pgpool.net/)** (common) | **[ProxySQL](https://proxysql.com/)** | N/A |
-| Driver-side pooling | .NET / Jaybird / etc. | Most drivers / HikariCP | Most drivers | N/A |
+| Driver-side pooling | .NET provider; Java via HikariCP etc. over Jaybird | Most drivers / HikariCP | Most drivers | N/A |
 | Outbound / foreign pool | **Built-in EDS pool** | [`postgres_fdw`](https://www.postgresql.org/docs/current/postgres-fdw.html) connection caching; [`dblink`](https://www.postgresql.org/docs/current/dblink.html) | [FEDERATED](https://dev.mysql.com/doc/refman/8.4/en/federated-storage-engine.html) engine | [`ATTACH`](https://sqlite.org/lang_attach.html) (local files only) |
 | Foreign-pool tuning | `ALTER EXTERNAL CONNECTIONS POOL`; `ExtConnPool*` | FDW options / server-level | Limited | None |
 | Cross-DB statement | `EXECUTE STATEMENT ON EXTERNAL` | `dblink` / FDW | FEDERATED tables | `ATTACH` + query |
@@ -254,6 +254,37 @@ released one:            open=2 inUse=1 idle=1 waitCount=1
                          (same attachment, previous borrower's session state intact: no reset on release)
 all released:            open=2 inUse=0 idle=2 waitCount=1
                          2 of this process's attachments still open in MON$ATTACHMENTS (kept idle by the pool)
+done.
+```
+
+### Java sample — [`samples/java/src/main/java/fbsamples/Pooling.java`](samples/java/src/main/java/fbsamples/Pooling.java)
+
+Both directions through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL JDBC driver (`cd samples/java && mvn -q compile exec:exec -Dsample=Pooling`). The outbound half runs the EDS experiment twice. In an explicit transaction, `COMMIT RETAIN` sent as SQL keeps the pooled external connection `active=1`, and only `commit()` parks it. In JDBC auto-commit mode the external connection goes back to the idle list straight away, because Jaybird's auto-commit is a hard commit and not the `COMMIT RETAINING` the Go driver uses.
+
+The inbound half matters more in Java than anywhere else, because Java applications almost always run behind a pool, yet Jaybird itself has shipped no production pool since version 3. It provides the JDBC plumbing that pools are built on. `FBSimpleDataSource` is a plain `DataSource`, where every `close()` is a detach. `FBConnectionPoolDataSource` is a `javax.sql.ConnectionPoolDataSource`: each `PooledConnection` it returns is *one* physical attachment that hands out logical handles and fires `connectionClosed` when a handle is closed, and an application server's pool listens for that event. HikariCP and pools like it wrap a plain `DataSource` or driver URL and keep the physical connections themselves. The twin drives a `PooledConnection` by hand and gets the same result as the Go twin. The attachment outlives the borrower, so the second borrower gets the same `CURRENT_CONNECTION`. Jaybird's reset on hand-out only restores auto-commit and client-info properties, so the first borrower's `USER_SESSION` variable is still set until `ALTER SESSION RESET` clears it, the reset the server's own EDS pool runs automatically.
+
+Verified output:
+
+```text
+-- outbound: the server-side EDS pool --
+before:                    size=5 lifetime=30s idle=0 active=0
+inside the block:          idle=0 active=1   (3 calls, 1 outbound connection)
+after COMMIT RETAIN:       size=5 lifetime=30s idle=0 active=1
+after commit():            size=5 lifetime=30s idle=1 active=0
+inside (auto-commit):      idle=0 active=1   (3 calls, 1 outbound connection)
+after the auto-commit:     size=5 lifetime=30s idle=1 active=0
+after CLEAR ALL:           size=5 lifetime=30s idle=0 active=0
+
+-- inbound: Jaybird's FBConnectionPoolDataSource --
+getPooledConnection():     1 attachment(s) of fbsamples-pooling in MON$ATTACHMENTS
+1st borrower:              CURRENT_CONNECTION = 589, sets USER_SESSION BORROWER = 'first'
+1st borrower close():
+    (listener) connectionClosed: handle returned, attachment kept
+after close():             1 attachment(s) still open
+2nd borrower:              CURRENT_CONNECTION = 589, BORROWER = first   <- same attachment, state leaked
+after ALTER SESSION RESET: BORROWER = <null>
+    (listener) connectionClosed: handle returned, attachment kept
+PooledConnection.close(): 0 attachment(s) left -- a real detach
 done.
 ```
 

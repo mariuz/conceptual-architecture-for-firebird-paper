@@ -240,6 +240,40 @@ done.
 
 The three access paths trimmed from the top agree with every other run: `Index "PUBLIC"."DOC_UPPER_TITLE" Range Scan (full match)` for the expression predicate, `Index "PUBLIC"."DOC_ACTIVE" Full Scan` for the partial, and `First N Records` over `Index "PUBLIC"."DOC_ID_DESC" Full Scan` for the descending walk.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Indexes.java`](samples/java/src/main/java/fbsamples/Indexes.java)
+
+The same five plans through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Indexes`). Unlike the other two wire-protocol drivers, which had to fall back on `RDB$SQL.EXPLAIN`, Jaybird asks the *statement*, and like the Python driver it offers both forms: `FirebirdPreparedStatement.getExecutionPlan()` is the legacy one-line `PLAN (...)` and `getExplainedExecutionPlan()` the explained tree — the plan-info items of the prepare-info request, sent by a client with no libfbclient. The JDBC addition is the portable index catalog, `DatabaseMetaData.getIndexInfo`, which turns out to carry every variant: `ASC_OR_DESC = D` for the descending index, the partial index's predicate in `FILTER_CONDITION`, and — outside the JDBC spec's "column" notion — the expression index's source `(upper(title))` reported as its `COLUMN_NAME`.
+
+Verified output (trimmed):
+
+```text
+select id from doc where num = 42 or id = 7
+PLAN ("PUBLIC"."DOC" INDEX ("PUBLIC"."DOC_NUM", "PUBLIC"."DOC_ID_DESC"))
+explained:
+  Select Expression
+      -> Filter
+          -> Table "PUBLIC"."DOC" Access By ID
+              -> Bitmap Or
+                  -> Bitmap
+                      -> Index "PUBLIC"."DOC_NUM" Range Scan (full match)
+                  -> Bitmap
+                      -> Index "PUBLIC"."DOC_ID_DESC" Range Scan (full match)
+
+select id from doc where title containing 'itle 12'
+PLAN ("PUBLIC"."DOC" NATURAL)
+
+CONTAINING is correct but unindexed: matched 111 rows by scanning all 3000
+
+DatabaseMetaData.getIndexInfo(DOC):
+  DOC_ACTIVE       column=STATUS         asc/desc=A filter=where status = 'active'
+  DOC_ID_DESC      column=ID             asc/desc=D filter=null
+  DOC_NUM          column=NUM            asc/desc=A filter=null
+  DOC_UPPER_TITLE  column=(upper(title)) asc/desc=A filter=null
+done.
+```
+
+The three plans trimmed from the top are identical to the C++ run's: `DOC_UPPER_TITLE` and `DOC_ACTIVE` as `INDEX`, `DOC_ID_DESC` as `ORDER`.
+
 ### Things to try
 
 - Drop `doc_active` and re-run: the `status = 'active'` query falls back to... check whether the optimizer picks `doc_num` (it can't) or `NATURAL` — then recreate the partial index with `WHERE status = 'done'` and watch the `'active'` query *ignore* it: a partial index only serves predicates that imply its condition.

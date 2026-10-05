@@ -452,6 +452,24 @@ done.
 
 The same `+20` catalog record inserts and the same page marks, within noise of the other twins. The writes are slightly lower. Fetches came in at `+4018`, against roughly 2,100–2,250 for the libfbclient twins, and a repeat run gave exactly `+4018` again: the difference is stable, not noise. The milliseconds are the least reproducible part.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/RequestLifecycle.java`](samples/java/src/main/java/fbsamples/RequestLifecycle.java)
+
+The same instrumented round trip, with [Stage 2's](#stage-2-the-remote-module-client-side) client half in Java: [Jaybird](https://github.com/FirebirdSQL/jaybird)'s pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=RequestLifecycle`). Plain JDBC would blur the stages. A `Connection` runs one transaction at a time, and `Statement.execute(sql)` prepares and executes in one call. So the trip runs one level down, on Jaybird's GDS-ng layer, where each stage is its own wire operation: `FbDatabase.startTransaction(tpb)`, `createStatement`, `FbStatement.prepare` (Stages 1–5), `execute` (6–8) and `FbTransaction.commit()` (Stage 9). The prepare verdict comes back typed, since `FbStatement.getType()` returns `StatementType.DDL`. That is the value the Go driver reads and keeps private. A GDS-ng attachment carries any number of transactions, as fbintf's and firebird-driver's do. The MON$ samples and the outside-view check therefore run as ordinary JDBC auto-commit queries on the *same* `Connection`, each in a fresh transaction, and no monitor attachment is needed. Only the in-transaction count rides the DDL's own `FbTransaction`.
+
+Verified output:
+
+```text
+prepare    0.83 ms   statement type = DDL
+execute  222.25 ms   catalog record inserts: +20, page marks: +131
+         in this tx:  RDB$RELATIONS has TRACE_DEMO = 1
+         other tx:    RDB$RELATIONS has TRACE_DEMO = 0  (TRA_commit has not happened)
+commit    39.53 ms   page writes: +16  (fetches: +2248 over the whole trip)
+         other tx:    RDB$RELATIONS has TRACE_DEMO = 1
+done.
+```
+
+The counters match the libfbclient twins: `+20` catalog record inserts, page marks and writes within noise, and `+2248` fetches. A first run, on the database the sample had just created, measured `+4262` fetches and a 766 ms execute, close to the Go twin's `+4018`. The Go figure stayed the same on its repeat run, so the sample does not explain it. Here, at least, the extra fetches went away once the database was no longer brand new. The milliseconds vary from run to run, as before.
+
 ### Things to try
 
 - Add a column or a second index to the `CREATE TABLE` and watch the record-insert delta grow by exactly the extra catalog rows.

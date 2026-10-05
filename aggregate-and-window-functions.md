@@ -372,6 +372,40 @@ West   300    1
 
 The explained plan has the same five `Window Partition` nodes as the Rust, Free Pascal and Python runs, over one `Table "PUBLIC"."SALES" Full Scan`. Its sort keys are 56, 56, 12 and 60 bytes, the UTF8 widths, because this twin also attaches with `charset=UTF8`. The other results match the earlier twins: `FILTER`/`LISTAGG`/`STDDEV_POP` give East `1`, `100.00,150.00,200.00`, `40.82` and West `3`, `250.00,300.00,400.00`, `62.36`, and row 2's neighbour average is `125.00`.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Windows.java`](samples/java/src/main/java/fbsamples/Windows.java)
+
+The same six-row table and four query groups through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Windows`). The rows go in as one JDBC batch. Every `NUMERIC` comes back as an exact `java.math.BigDecimal`, the INT128-wide running `SUM` included, so like the Go twin it needs no `CAST`. `PERCENTILE_CONT` is a DOUBLE and so a Java `double`, which prints as `150.0`. Where Jaybird differs from the Go and Rust twins is the plan: it has a plan API, so the twin does not need `RDB$SQL.EXPLAIN`. `FirebirdPreparedStatement.getExecutionPlan()` returns the legacy plan that the C++ sample prints with `IStatement::getPlan(false)`, and `getExplainedExecutionPlan()` returns the structured one.
+
+Verified output (trimmed):
+
+```text
+== window functions ==
+REGION AMOUNT RN OVERALL_RANK RUNNING_TOTAL PREV_AMOUNT
+------ ------ -- ------------ ------------- -----------
+East   100.00 1  6            100.00        <null>
+East   200.00 3  4            300.00        100.00
+East   150.00 2  5            450.00        200.00
+West   300.00 2  2            300.00        <null>
+West   250.00 1  3            550.00        300.00
+West   400.00 3  1            950.00        250.00
+
+plan:PLAN SORT (SORT (SORT (SORT ("PUBLIC"."SALES" NATURAL))))
+
+explained plan:Select Expression
+    -> Window
+        -> Window Partition
+            -> Record Buffer (record length: 197)
+                -> Sort (record length: 210, key length: 24)
+...
+== PERCENTILE_CONT median / hypothetical RANK(175) ==
+REGION MEDIAN RANK_OF_175
+------ ------ -----------
+East   150.0  3
+West   300.0  1
+```
+
+The explained plan has the same five `Window Partition` nodes over one `Table "PUBLIC"."SALES" Full Scan`, but its sort keys are 24, 24, 12 and 28 bytes. That is because Jaybird's `createDatabaseIfNotExist` creates the database with default character set NONE, so `REGION` takes one byte per character. The other results match the earlier twins: East `1`, `100.00,150.00,200.00`, `40.82`, West `3`, `250.00,300.00,400.00`, `62.36`, and row 2's neighbour average is `125.00`.
+
 ### Things to try
 
 - Change the FB6 exclusion to `EXCLUDE TIES` or `EXCLUDE GROUP` after adding a duplicate amount — the frame drops peers instead of the current row.

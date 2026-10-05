@@ -614,6 +614,49 @@ done.
 
 The three views are three moments, and the markers say so: SQL and `gstat -h` agree (next 5), while the file, read last, is two transactions further on (next 7) — work done after the `MON$` read, including the server's own attachment for the statistics service. Page size, ODS 14.0, the GUID and the 294-page skeleton agree everywhere.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/OdsHeader.java`](samples/java/src/main/java/fbsamples/OdsHeader.java)
+
+The same acts through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=OdsHeader`). Like the Python twin, it reads the server-owned file, so run it on the server machine as a member of the `firebird` group. The middle view is the info API at its rawest. Jaybird's GDS-ng layer exposes `FbDatabase.getDatabaseInfo(items, size)`, which sends the `isc_info_*` item bytes and returns the undecoded response buffer. The sample walks the clumplets itself (item byte, 2-byte length, little-endian value through Jaybird's `VaxEncoding`). The output shows the encoding: the 64-bit transaction markers (items 104–107) travel as **4-byte** values while they're small, and `fb_info_db_guid` (144) is a 38-character text GUID. Like firebird-driver, and unlike fbintf, nothing here is out of reach. The file act is `FileChannel` + `ByteBuffer.order(LITTLE_ENDIAN)` at the `ods.h` offsets, and the census includes the six unformatted type-0 pages, as in the Python and Go twins. The sample makes no warm-up commits, so on a freshly created file the markers stay near their floor (next 2).
+
+Verified output (first run, freshly created database):
+
+```text
+-- server's view (MON$DATABASE) --
+page_size ods_major ods_minor oit oat ost next = 8192 14 0 1 2 2 2
+
+-- the same through the info API (FbDatabase.getDatabaseInfo) --
+  ods_version[32,4B]=14  ods_minor[33,4B]=0  page_size[14,4B]=8192  allocation[21,4B]=294
+  oit[104,4B]=1  oat[105,4B]=2  ost[106,4B]=2  next[107,4B]=2  guid[144,38B]={1F6BB05B-6DA7-4B2B-A6E8-0A52649AC4DB}
+
+-- header page, parsed from /tmp/fbhandson/ods_java.fdb (offsets per ods.h) --
+pag_type      @0   = 1 (pag_header)
+pag_flags     @1   = 0
+hdr_page_size @16  = 8192
+hdr_ods_version @18 = 0x800e -> ODS 14 (FIREBIRD flag 0x8000 set), minor @20 = 0
+hdr_flags     @22  = 0x12 (force_write SQL_dialect_3)
+hdr_PAGES     @28  = 3   <- pointer page of RDB$PAGES (catalog bootstrap anchor)
+hdr_next_transaction   @40 = 2
+hdr_oldest_transaction @48 = 1 (OIT)
+hdr_oldest_active      @56 = 2 (OAT)
+hdr_oldest_snapshot    @64 = 2 (OST)
+hdr_guid      @84  = {1F6BB05B-6DA7-4B2B-A6E8-0A52649AC4DB}
+
+-- page-type census: 294 pages of 8192 bytes --
+  type  0  undefined                  6
+  type  1  pag_header                 1
+  type  2  pag_pages (PIP)            1
+  type  3  pag_transactions (TIP)     1
+  type  4  pag_pointer               40
+  type  5  pag_data                  97
+  type  6  pag_root                  40
+  type  7  pag_index (b-tree)       106
+  type  9  pag_ids (generators)       1
+  type 10  pag_scns                   1
+done.
+```
+
+All three views agree on ODS 14.0, 8192-byte pages, the markers and the GUID (info API vs `hdr_guid`), and `allocation` 294 equals the census count.
+
 ### Things to try
 
 - Point both samples at a copy of `employee.fdb` (`gbak` it, or use any restored copy) and compare the census: user data changes the data/index page mix, not the fixed skeleton.

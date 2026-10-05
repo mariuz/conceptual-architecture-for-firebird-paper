@@ -347,6 +347,42 @@ which this driver never loads.
 done.
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/ArchitectureComparison.java`](samples/java/src/main/java/fbsamples/ArchitectureComparison.java)
+
+The same three questions through [Jaybird](https://github.com/FirebirdSQL/jaybird) (`cd samples/java && mvn -q compile exec:exec -Dsample=ArchitectureComparison`), and the only twin that holds *both* driver families in one program, picked by the JDBC URL. `jdbc:firebird://localhost/employee` is Jaybird's default PURE_JAVA protocol, an independent implementation of the wire like the Go driver. The two other attachments go through jaybird-native, which loads `libfbclient` with JNA and passes the connection string to the Y-valve unchanged: `jdbc:firebird:embedded:inet://localhost/employee` reaches the Remote provider, and `jdbc:firebird:embedded:/tmp/fbhandson/arch_embedded_java.fdb` makes the Y-valve load the Engine provider into the JVM. Like the Python twin it prints the `isc_info_firebird_version` lines that Jaybird keeps (`GDSServerVersion.getRawVersions()`). The pure-Java leg crosses two layers and negotiates `P19`, while `libfbclient` negotiates `P20` across three, so the protocol level comes from the client implementation, as the Go twin found. Legs 2 and 3 share one library handle on purpose: with Jaybird 6.0.6, also opening a `jdbc:firebird:native://` attachment in the same JVM loaded `libfbclient` a second time, and the driver's shutdown hook then called `fb_shutdown` on both handles and the JVM died with SIGSEGV at exit.
+
+Verified output:
+
+```text
+One JDBC driver: its own wire client, then one libfbclient with two providers.
+
+[1] PURE_JAVA (Jaybird's own wire protocol):
+    JDBC URL          : jdbc:firebird://localhost/employee
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : TCPv4
+    MON$SERVER_PID    : 665   (this JVM is pid 63030)
+    info version      : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+                        LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P19:C
+
+[2] libfbclient via JNA, inet:// -> Remote provider:
+    JDBC URL          : jdbc:firebird:embedded:inet://localhost/employee
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : TCPv4
+    MON$SERVER_PID    : 665   (this JVM is pid 63030)
+    info version      : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+                        LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P20:C
+                        LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P20:C
+
+[3] libfbclient via JNA, local path -> Engine provider:
+    JDBC URL          : jdbc:firebird:embedded:/tmp/fbhandson/arch_embedded_java.fdb
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : <null>
+    MON$SERVER_PID    : 63030   (this JVM is pid 63030 -- the engine runs IN this process)
+    info version      : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+
+done.
+```
+
 ### Things to try
 
 - Point both attachments at databases of your own and diff the full `MON$ATTACHMENTS` row (`MON$REMOTE_PROTOCOL`, `MON$REMOTE_PROCESS`, `MON$AUTH_METHOD`) between the two providers — embedded also skips server authentication entirely.

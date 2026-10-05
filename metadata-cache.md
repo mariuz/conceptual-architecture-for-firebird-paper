@@ -494,6 +494,37 @@ newVersion: table 128 is used by transaction 10
 
 The same three codes the Python twin printed, decoded from the wire by a client that never loaded libfbclient: the status vector — and the cache's verdict — is the server's.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/MetadataCache.java`](samples/java/src/main/java/fbsamples/MetadataCache.java)
+
+The same four demonstrations from two attachments through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=MetadataCache`). JDBC makes the transaction boundaries explicit the way `database/sql` does: a `Connection` with auto-commit off runs exactly one transaction at a time, so which transaction a prepare happened in is just which `Connection` ran it. B's open SNAPSHOT is `TRANSACTION_REPEATABLE_READ`, which is `isc_tpb_concurrency`. The instructive diff is how the status vector arrives. The `SQLException` message joins every element with `; `, and its `getCause()` is a chain of `FBSQLExceptionInfo`, linked by `getNextException()`, with one entry and one gds code per element. That chain is the Python and Go twins' code list, kept as objects, and it comes from a client that never loaded libfbclient.
+
+Verified output:
+
+```text
+== 1. uncommitted ALTER: visible to creator only ==
+A (same tx)  : select e from t -> <null>
+B            : select e from t -> ERROR: Dynamic SQL Error; SQL error code = -206; Column unknown; "E"; At line 1, column 8
+
+== 2. committed ALTER: seen even inside B's open SNAPSHOT tx ==
+B (snapshot) : select count(*) from t -> 1
+B (same  tx) : select d from t -> <null>
+   (records are snapshot-isolated; metadata is read-committed -
+    the new statement was prepared against the chain's current head)
+
+== 3. two uncommitted DDLs on one object ==
+B: ALTER failed:
+unsuccessful metadata update; ALTER TABLE "PUBLIC"."T" failed; newVersion: table 131 is used by transaction 47
+   (SQLState 42000, gds codes [335544351, 336397287, 335544382])
+
+== 4. RDB$FORMATS after the committed DDL ==
+formats stored for T: 3 (T has lived through that many shapes)
+A  E      D
+1  <null> <null>
+done.
+```
+
+Demo 3 names table 131 and transaction 47 because the scratch database had already lived through earlier runs (each `recreate table` takes a new `MetaId`). The text and the three codes are the ones the other twins print: `isc_no_meta_update`, `isc_dsql_alter_table_failed` and `isc_random`.
+
 ### Things to try
 
 - In demo 2, move the `SELECT d FROM t` *before* A's second ALTER commits, keep the statement handle, and re-execute it after the commit: an already-prepared statement keeps running against the version it was compiled with — resolution is at *prepare* time, which is the precise wording the document insists on.

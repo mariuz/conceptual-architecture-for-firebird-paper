@@ -623,6 +623,52 @@ done.
 
 Same `Natural` = 60 and 68 fetches as every twin. The marker's transaction is worth a second look: `database/sql`'s default `Begin()` makes the driver send `read_committed, rec_version`, yet the trace reports `READ_CONSISTENCY` — the server's `ReadConsistency = 1` overriding the client's request, visible only from this side. The full stream also shows a `READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY` transaction (`TRA_1`) rolled back at detach, although every TPB this driver sends on this path is read-write.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Trace.java`](samples/java/src/main/java/fbsamples/Trace.java)
+
+The full two-service session through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Trace`). Jaybird puts the trace family in a class, `org.firebirdsql.management.FBTraceManager`. Like the Go driver's, it owns part of the lifecycle. `startTraceSession(name, config)` sends `isc_action_svc_trace_start` with the text in `isc_spb_trc_cfg` and returns at once. The manager then drains the stream on a **thread of its own** into whatever `OutputStream` was given to `setLogger()`. `listTraceSessions()` and `stopTraceSession(id)` each open a fresh service attachment, which plays service B.
+
+The drain is where this driver teaches something. It asks for `isc_info_svc_to_eof`, the item the Python twin found unsuitable for a live drain, not `isc_info_svc_line`. The server answers in bursts: the "Trace session ID n started" line is held back until the first traced events come with it. The manager's `getSessionId(name)`, which sniffs that line out of the stream, is therefore `null` until traced work starts. A first draft polled it for five seconds before running the worker, never got the id, could not stop the session, and the manager's non-daemon thread kept the JVM alive. The sample now takes the id from the server instead (the `listTraceSessions()` output, matched by session name) and stops the session in a `finally`. The sample's logger stamps each burst with its arrival time, which makes the batching visible.
+
+Verified output (trimmed like the other listings; the full stream also carries COMMIT/ROLLBACK/DETACH events):
+
+```text
+[main ] +271 ms startTraceSession("hands-on-java") returned
+[main ] getSessionId("hands-on-java") = null
+[trace] ---- output arrives at +1523 ms ----
+[trace] Trace session ID 2 started
+[trace] 2026-10-06T01:18:52.8300 (665:0x7399c8fd7dc0) TRACE_INIT
+[trace] 	SESSION_2 hands-on-java
+[trace] 2026-10-06T01:18:52.8300 (665:0x7399c8fd7dc0) ATTACH_DATABASE
+[trace] 	/tmp/fbhandson/trace_java.fdb (ATT_10, SYSDBA:NONE, UTF8, TCPv4:127.0.0.1/54202)
+[trace] 2026-10-06T01:18:52.8300 (665:0x7399c8fd7dc0) START_TRANSACTION
+...
+[trace] 		(TRA_8, READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY)
+...
+[trace] 		(TRA_9, READ_COMMITTED | READ_CONSISTENCY | WAIT | READ_WRITE)
+...
+[worker] +1422 ms marker query says: 60
+[trace] ---- output arrives at +1773 ms ----
+[trace] SELECT COUNT(*) FROM RDB$RELATIONS /* traced! */
+...
+[trace] PLAN ("SYSTEM"."RDB$RELATIONS" NATURAL)
+[trace] 1 records fetched
+[trace]       0 ms, 68 fetch(es)
+...
+[trace] "SYSTEM"."RDB$RELATIONS"                60
+...
+[list ] Session ID: 2
+[list ]   name:    hands-on-java
+...
+[main ] +3045 ms stopTraceSession(2)
+[stop ] Trace session ID 2 stopped
+[trace] ---- output arrives at +3274 ms ----
+...
+[trace] 2026-10-06T01:18:52.9370 (665:0x7399c8fd7dc0) TRACE_FINI
+done.
+```
+
+Same `Natural` = 60 and 68 fetches as every twin. Two records are worth reading closely. First, the `ATTACH_DATABASE` event has no second line naming the remote process, because Jaybird sends no `isc_dpb_process_name` unless asked (see the [threading twin](threading-and-synchronization.md)). Second, the stream shows Jaybird's two transactions: a driver-internal `READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY` one (`TRA_8`, rolled back at detach) and the JDBC auto-commit transaction for the marker. JDBC's default `TRANSACTION_READ_COMMITTED` asks for `rec_version`, and the trace reports `READ_CONSISTENCY`, the server's `ReadConsistency = 1` overriding it, exactly as in the Go run.
+
 ### Things to try
 
 - Misspell a config element (`log_statement_finish` → `log_statement_finnish`) and re-run: the session starts, the stream reports the parse error for that database, and the workload runs untraced — the [configuration-error posture](#trace-is-a-plugin-and-a-plugin-that-misbehaves-is-ejected) reproduced at will.

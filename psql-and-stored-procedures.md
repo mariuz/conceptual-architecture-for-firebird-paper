@@ -610,6 +610,35 @@ done.
 
 The `GDSCodes` line is the status vector the other twins flatten into text: `isc_except`, two `isc_random` string carriers (the exception name and its message), and `isc_stack_trace` — the PSQL call stack is a status-vector entry of its own.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Psql.java`](samples/java/src/main/java/fbsamples/Psql.java)
+
+The same four module types through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Psql`). JDBC is the one API in the set with a standard **call verb**, `CallableStatement` and the `{call proc(?, ...)}` escape, and it uses that one verb for both sides of the divide. Jaybird resolves the escape against the catalog. It reads `RDB$PROCEDURE_TYPE` and exposes the result as `FirebirdCallableStatement.isSelectableProcedure()`. `{call hire(?, ?, ?)}` becomes `EXECUTE PROCEDURE`, and its single output message is kept as a one-row "singleton" result read through the registered OUT parameter (`registerOutParameter(3, INTEGER)`, then `getInt(3)`). `{call raises(?)}` becomes `SELECT * FROM raises(?)`, and its `SUSPEND`ed rows come back from `executeQuery()` as a real cursor. The Go driver makes the same split inside the driver from the prepare's statement type; Jaybird makes it before the prepare, from metadata. `NUMERIC(10,2)` stays exact as `BigDecimal`. The exception's status vector arrives both as the message text and as the `FBSQLExceptionInfo` cause chain, one gds code per entry.
+
+Verified output:
+
+```text
+{call hire('Ada', 5000)}                   -> NEW_ID = 1   (selectable: false)
+{call hire('Grace', 6000)}                 -> NEW_ID = 2   (selectable: false)
+audit_log rows (trigger emp_bi):              2
+
+{call raises(10)}:
+(selectable: true)
+ID NAME  NEW_SALARY
+-- ----- ----------
+1  Ada   5500.00  (BigDecimal)
+2  Grace 6600.00  (BigDecimal)
+
+{call hire('Poorpay', 500)} ->
+exception 1
+"PUBLIC"."LOW_SALARY"
+salary below minimum
+At procedure "PUBLIC"."HIRE" line: 4, col: 29
+(SQLState HY000, gds [335544517, 335544382, 335544382, 335544842])
+done.
+```
+
+The four codes are the ones the Go twin decoded from the same wire: `isc_except`, two `isc_random` carriers, and `isc_stack_trace`.
+
 ### Things to try
 
 - Add a nested call (`hire` invoked from an `EXECUTE BLOCK`, or from a second procedure) and watch the stack trace grow to multiple `At procedure ... At block` lines — the `dbginfo` machinery described in the [BLR document](blr-intermediate-language.md#both-directions-of-translation).

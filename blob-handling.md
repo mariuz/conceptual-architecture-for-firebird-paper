@@ -369,6 +369,35 @@ id 4: 17 octets, 17 chars, "part1-part2-part3"
 done.
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Blobs.java`](samples/java/src/main/java/fbsamples/Blobs.java)
+
+The same scenario through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL JDBC driver (`cd samples/java && mvn -q compile exec:exec -Dsample=Blobs`). Unlike the other wire-protocol twins, Jaybird exposes the segmented API. On its GDS-ng layer, `FbDatabase.createBlobForOutput` plus three `FbBlob.putSegment` calls build the blob, and an `FbStatement` stores only its 8-byte id. Reading back with `FbBlob.getSegment(64)` shows what the wire does with segments. `op_get_segment` asks the server to fill a 64-byte buffer, the server packs as many length-prefixed segments as fit, and Jaybird strips the prefixes, so all three arrive as **one** 40-byte chunk. `libfbclient` unpacks the same buffer one segment per call, which is why the C++ and Python twins see the boundaries. The blob itself still records them: `FbBlob.getBlobInfo()` returns the C++ sample's `isc_info_blob_*` clumplets, 3 segments with the longest 22 bytes. The JDBC path is different again. `Connection.createBlob()` with three writes to `setBinaryStream()` produces a **stream** blob, because Jaybird's `useStreamBlobs` defaults to true: type 1, one 40-byte segment. Only a stream blob can seek, so `FirebirdBlob.BlobInputStream.seek(13)` reads `second` without reading the start of the blob.
+
+Verified output:
+
+```text
+id 1: wrote 3 segments with FbBlob.putSegment, blob id 0x0000000000000001
+  FbBlob.getSegment(64) #1: 40 bytes  "first segmentsecond, longer segmentthird"
+  blob info: 3 segments, longest 22, total 40 bytes, type 0 (0=segmented, 1=stream)
+
+id 3: the same three writes through JDBC Blob.setBinaryStream()
+  FbBlob.getSegment(64) #1: 40 bytes  "first segmentsecond, longer segmentthird"
+  blob info: 1 segments, longest 40, total 40 bytes, type 1 (0=segmented, 1=stream)
+  isSegmented() = false; BlobInputStream.seek(13) then 6 bytes: "second"
+
+-- column subtypes (RDB$FIELDS) --
+FIELD SUBTYPE CHARSET
+----- ------- -------
+DATA  0       <null>
+NOTE  1       UTF8
+
+-- BLOB_APPEND result --
+ID OCTETS CHARS CONTENT
+-- ------ ----- -----------------
+2  17     17    part1-part2-part3
+done.
+```
+
 ### Things to try
 
 - Grow the C++ text blob (e.g. 64 putSegment calls of 4 KB) and watch `getInfo` report the level change indirectly: re-run `gstat -r` on the table and see blob pages appear, then compare `Average record length` — it stays ~15 bytes no matter how big the blobs get.

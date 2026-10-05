@@ -81,7 +81,7 @@ Both paths reach the same server; the choice is a trade-off between zero-depende
 | Language | Driver | Strategy | Notes |
 |---|---|---|---|
 | **C / C++** | fbclient OO API / ISC API | native (is the library) | [`Interface.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/include/firebird/Interface.h) / [`ibase.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/include/firebird/ibase.h); the samples here |
-| **Java** | [Jaybird](https://github.com/FirebirdSQL/jaybird) (JDBC) | **pure** (+ optional native) | Pure-Java wire protocol; the reference JDBC driver |
+| **Java** | [Jaybird](https://github.com/FirebirdSQL/jaybird) (JDBC) | **pure** (+ optional native) | Pure-Java wire protocol; the reference JDBC driver; jaybird-native adds NATIVE / EMBEDDED protocols over fbclient via JNA; used by the Java samples |
 | **.NET** | [FirebirdSql.Data.FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (ADO.NET) | **pure** | Managed provider ([NuGet](https://www.nuget.org/packages/FirebirdSql.Data.FirebirdClient)); Entity Framework support |
 | **Python** | [firebird-driver](https://github.com/FirebirdSQL/python3-driver) | native (OO API via ctypes) | Official; [PyPI](https://pypi.org/project/firebird-driver/); DB-API 2.0; used by the Python samples |
 | **Node.js / TS** | [node-firebird](https://github.com/hgourvest/node-firebird) | **pure** JS | Path B; used by the samples |
@@ -235,6 +235,31 @@ one wire protocol, no client library, three Go levels. done.
 ```
 
 The three message lines are the ones the Python twin's `fb_interpret` walk prints for the same failure, decoded here by Go code that only shares the wire format with `libfbclient`.
+
+### Java sample — [`samples/java/src/main/java/fbsamples/ApiStyles.java`](samples/java/src/main/java/fbsamples/ApiStyles.java)
+
+The Java twin through [Jaybird](https://github.com/FirebirdSQL/jaybird), the Java row of the [driver table](#the-driver-ecosystem-by-language) (`cd samples/java && mvn -q compile exec:exec -Dsample=ApiStyles`). Jaybird is the only driver here that uses **both** paths in one package, and the twin goes down through its levels:
+
+- **JDBC over PURE_JAVA**: the portable surface, with a typed `getString()`. The `FbDatabase` underneath is `V19Database`, Jaybird's own wire-protocol implementation.
+- **The GDS-ng layer of the same attachment.** `FirebirdConnection.getFbDatabase()` exposes the API that comes closest to the C++ descriptor work. `FbStatement.prepare` produces a `RowDescriptor` whose field is SQL type 449 (`SQL_VARYING` + 1 for nullable, length 255). `execute` and `fetchRows` then pass the raw column bytes to a `StatementListener`, and `FbDatabase.executeImmediate` runs a statement with no statement handle.
+- **JDBC over NATIVE.** `jdbc:firebird:native://` maps `libfbclient` with JNA, and its `JnaDatabase` drives it through the *legacy ISC API* (`isc_attach_database`, `isc_dsql_prepare`, XSQLDA), the calls in the C++ sample's first half, behind the same JDBC interfaces.
+- **The Services API**, which the driver also implements itself.
+
+In the error model, the status vector becomes one `SQLException` whose message joins the `fb_interpret` lines with `; `. The first GDS code is returned by `getErrorCode()` and the SQLSTATE by `getSQLState()`.
+
+Verified output:
+
+```text
+[JDBC, PURE_JAVA     ] engine version = 6.0.0   (FbDatabase: V19Database)
+[GDS-ng FbStatement  ] engine version = 6.0.0   (sqltype 449, length 255, 5 raw bytes)
+[GDS-ng FbDatabase   ] executeImmediate("set decfloat round half_even") ok
+[JDBC, NATIVE        ] engine version = 6.0.0   (FbDatabase: JnaDatabase, isc_* calls via JNA)
+[service_mgr         ] server version = LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+[error model         ] attach /nonexistent/x.fdb -> SQLException
+    I/O error during "open" operation for file "/nonexistent/x.fdb"; Error while trying to open file; No such file or directory [SQLState:08001, ISC error code:335544344]
+    getErrorCode() 335544344  getSQLState() 08001
+one driver: its own wire protocol AND libfbclient's ISC API. done.
+```
 
 ### Things to try
 

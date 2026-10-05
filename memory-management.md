@@ -477,6 +477,38 @@ GROUP POOLS USED       ALLOCATED  WITH_OWN_EXTENTS
 
 The redirection signature (groups 1/2/3 all `allocated = 0`, the one `cmp` pool mapping exactly 65 536 bytes) and the byte-exact nested roll-up repeat once more, on a client with no libfbclient in the process.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/MemoryPools.java`](samples/java/src/main/java/fbsamples/MemoryPools.java)
+
+The same walk through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=MemoryPools`). The monitor connection runs with auto-commit off and commits after every read, so each observation is a fresh `MON$` snapshot; the worker's growing transaction is the connection's own JDBC transaction. The instructive diff is against the Go twin: Jaybird is just as free of libfbclient, yet it gets the ids the Python way, from **info calls** — `FbDatabase.getDatabaseInfo` (the wire `op_info_database`) for `isc_info_attachment_id` and `isc_info_current_memory`, decoded with Jaybird's `VaxEncoding`, and `FbTransaction.getTransactionId()` (`isc_info_tra_id`) for the running transaction, reached through `FBConnection.getGDSHelper()` — the sample's one step past the public interfaces, as the Python twin's `_istmt` is. The `SUM`s over BIGINT arrive as INT128 and simply map to `BigDecimal`, no `CAST` needed.
+
+Verified output:
+
+```text
+-- per-level summary (0=db 1=att 2=tra 3=stmt 5=cmp; used > 0 with allocated = 0: parent redirection)
+GROUP POOLS USED       ALLOCATED  WITH_OWN_EXTENTS
+0     1     22448176   27856896   1
+1     4     285872     0          0
+2     2     110560     0          0
+3     1     20976      0          0
+5     1     34848      65536      1
+
+-- worker's pool chain (attachment 5, transaction 21; before the update)
+  database pool:           used=22530656   allocated=28184576
+  (isc_info_current_memory 22415968)
+  worker attachment pool:  used=71216      allocated=0
+  worker transaction pool: used=13616      allocated=0
+
+-- after an uncommitted 3000-row UPDATE in that transaction
+  worker attachment pool:  used=78496      allocated=0
+  worker transaction pool: used=20896      allocated=0
+
+-- after rollback (transaction pool destroyed with its undo log)
+  worker attachment pool:  used=57600      allocated=0
+  attachment used fell by 20896; the dead transaction pool held 20896
+```
+
+The redirection signature and the byte-exact nested roll-up repeat on a second pure-wire client.
+
 ### Things to try
 
 - Prepare (without executing) twenty distinct statements on one connection and re-run the group summary: group 5 (`cmp_statement`) pools multiply, and each that grows past ~48 KB maps its own 64 KB extent — `PARENT_REDIRECT_THRESHOLD` found empirically.

@@ -367,6 +367,33 @@ At line 1, column 8
 done.
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/ParserErrors.java`](samples/java/src/main/java/fbsamples/ParserErrors.java)
+
+The same six statements through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=ParserErrors`). It is the wire-protocol driver that closes the Go section's gap: `prepareStatement` is a genuine prepare-only step, *and* it publishes what the prepare response describes — `FirebirdPreparedStatement.getStatementType()` returns the `isc_info_sql_stmt_*` code, and `ParameterMetaData` describes the `?` as `SMALLINT` in JDBC terms (`java.sql.Types.SMALLINT`, precision 5) rather than the raw `sqltype=500, length=2`. The error channel is shaped differently from every other twin: Jaybird flattens the status vector into one `SQLException` whose message joins the items with `; `, and picks the *most specific* gds code for `getErrorCode()` — `335544634` (`isc_dsql_token_unk_err`) or `335544578` (`isc_dsql_field_err`), where fb-cpp reports the outer `isc_dsql_error` — with the SQLSTATE to match (`42000` for syntax, `42S22` for an unknown column). The unflattened vector is still there: the exception's *cause* is an `FBSQLExceptionInfo` chain with one entry per status-vector item, each with its own gds code.
+
+Verified output (excerpt):
+
+```text
+---- SELECT first_name FROM employee WHERE emp_no = ?
+  parsed OK: type=SELECT, input params=1, output columns=1
+    param 0: SMALLINT (java.sql.Types 5), precision=5
+---- SELECT FIRST 1 emp_no FROM employee
+  parsed OK: type=SELECT, input params=0, output columns=1
+---- SELECT first FROM (SELECT 1 AS first FROM rdb$database)
+  parsed OK: type=SELECT, input params=0, output columns=1
+---- SELEC 1 FROM rdb$database
+  prepare failed (syntax; SQLState 42000, gds 335544634):
+Dynamic SQL Error; SQL error code = -104; Token unknown - line 1, column 1; SELEC [SQLState:42000, ISC error code:335544634]
+  status-vector gds codes: 335544569 335544436 335544634 335544382
+---- SELECT frst_name
+FROM employee
+  prepare failed (semantic; SQLState 42S22, gds 335544578):
+Dynamic SQL Error; SQL error code = -206; Column unknown; "FRST_NAME"; At line 1, column 8 [SQLState:42S22, ISC error code:335544578]
+  status-vector gds codes: 335544569 335544436 335544578 335544382 336397208
+```
+
+The `WHERE ORDER BY 1` case (omitted above) reports `Token unknown - line 3, column 7; ORDER` with the same four codes as `SELEC`.
+
 ### Things to try
 
 - Feed the C++ sample a statement using a *reserved* word as an identifier (`SELECT order FROM rdb$database`) and compare with the non-reserved `FIRST` case; the token lists at the top of [`parse.y`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/parse.y) explain the difference.

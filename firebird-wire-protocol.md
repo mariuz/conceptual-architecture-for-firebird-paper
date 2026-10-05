@@ -972,6 +972,54 @@ detached. bye
 
 The protocol is P19 rather than the native clients' P20, because the version list belongs to the client: firebirdsql 0.9.21 offers versions up to 19.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Protocol.java`](samples/java/src/main/java/fbsamples/Protocol.java)
+
+The same negotiated-session report through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL JDBC driver (`cd samples/java && mvn -q compile exec:exec -Dsample=Protocol`). On the [driver-strategy](client-apis-and-drivers.md#two-ways-to-build-a-driver) axis its default PURE_JAVA protocol stands with firebirdsql. Everything in this document is Java code there: `op_connect` with versions up to 19, `op_cond_accept`, Srp256/Srp/Legacy_Auth, `op_crypt`, and zlib compression. The engine records **`P19`** like the Go driver, but the cipher is **`ChaCha`**, the 32-bit-counter variant. Jaybird 6.0.6 implements `ChaCha` and `Arc4` but not `ChaCha64`. `MON$CLIENT_VERSION` carries the driver's name, `Jaybird jaybird-6.0.6`. Jaybird also keeps the client's view of the session, the `isc_info_firebird_version` lines whose `/P19:C` suffix gives the negotiated protocol and the crypt flag. It has fewer lines than `libfbclient`'s, because the client side adds no Remote layer of its own.
+
+The handshake is the driver's code, so connection properties steer it:
+
+- **`wireCompression=true`** adds zlib on top of the cipher. The engine records `MON$WIRE_COMPRESSED = true` and the suffix becomes `P19:CZ`.
+- **`authPlugins=Srp`** offers only the SHA-1 proof, and the attach is refused, as for the Go twin, because this server's `AuthServer` is `Srp256` alone.
+- **`wireCrypt=DISABLED`** is refused because the server's `WireCrypt` is `Required`.
+
+Jaybird has no property for choosing the cipher, so the Go twin's `Arc4` downgrade has no equivalent here.
+
+Verified output (the compressed session trimmed to its differing lines):
+
+```text
+== default properties: Jaybird's preferences ==
+attached to jdbc:firebird://localhost/employee
+engine version : 6.0.0
+protocol       : TCPv4
+wire crypt     : ChaCha
+authenticated  : SYSDBA
+MON$ATTACHMENTS, as the server recorded the handshake:
+   auth method    : Srp256
+   wire protocol  : P19
+   wire crypt     : ChaCha
+   compressed     : false
+   client version : Jaybird jaybird-6.0.6
+the client side (isc_info_firebird_version, kept by Jaybird):
+   LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+   LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P19:C
+   -> protocol 19, encrypted true, compressed false
+
+== wireCompression=true: zlib on top of the cipher ==
+...
+   compressed     : true
+...
+   LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P19:CZ
+   -> protocol 19, encrypted true, compressed true
+
+== authPlugins=Srp: the client offers only the SHA-1 proof ==
+attach refused : Error occurred during login, please check server firebird.log for details [SQLState:08006, ISC error code:335545106]
+
+== wireCrypt=DISABLED: the client refuses to encrypt ==
+attach refused : Incompatible wire encryption levels requested on client and server [SQLState:28000, ISC error code:335545064]
+
+detached. bye
+```
+
 ### Things to try
 
 - In `srp-handshake.js`, offer only `Srp` instead of `Srp256,Srp` in `CNCT_plugin_list` — the server accepts and the proof drops to SHA-1: the downgrade the in-tree README [warns about](#what-srp256-improves), performed by hand.

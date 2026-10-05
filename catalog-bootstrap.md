@@ -378,6 +378,12 @@ The same four self-description steps through [firebirdsql](https://github.com/na
 
 Verified: identical to the C++ run on an equally fresh file — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, the `RDB$PAGES` rows down to the incidental TIP on page 287 and generator page on 85, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `0 / 60 / 598` for formats/system relations/system columns, and format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Catalog.java`](samples/java/src/main/java/fbsamples/Catalog.java)
+
+The same four self-description steps through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Catalog`). The fresh-database dance is the shared `FbSample.recreate` — attach, `getFbDatabase().dropDatabase()` through Jaybird's wire-level GDS-ng layer, then reconnect with the `createDatabaseIfNotExist=true` connection property — and the `hdr_PAGES` anchor stays as primitive as in every other language: a `FileChannel` read of four bytes at offset 28 into a `ByteBuffer` set to `LITTLE_ENDIAN`. The JDBC addition is a view from the portable side: `DatabaseMetaData.getTables` classifies the very relations whose formats are compiled into the engine as `SYSTEM TABLE` (by `RDB$SYSTEM_FLAG`), reporting `60 SYSTEM TABLE, 0 TABLE` on the fresh file and `60 SYSTEM TABLE, 1 TABLE` after the DDL — a generic tool sees a complete catalog without ever knowing that none of the sixty has a stored format.
+
+Verified: identical to the C++ run on an equally fresh file — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, the `RDB$PAGES` rows down to the incidental TIP on page 287 and generator page on 85, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `0 / 60 / 598` for formats/system relations/system columns, and format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id.
+
 ### Things to try
 
 - Add a third DDL statement (`ALTER TABLE t1 ALTER b TYPE VARCHAR(20)`) and watch `RDB$FORMATS` grow to format 3 — then `SELECT` the table and see all rows decode, the lazy-conversion story of [the metadata-cache document](metadata-cache.md#formats-the-on-disk-half-of-the-same-idea).

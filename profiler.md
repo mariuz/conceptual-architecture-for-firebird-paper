@@ -525,6 +525,43 @@ done.
 
 The counters again match every twin — 5001/10001 through the hash join, 20,000 executions of line 8, 20,001 for the `WHILE` — and line 8 again dominates, this time at 58 ms.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Profiler.java`](samples/java/src/main/java/fbsamples/Profiler.java)
+
+The same session through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Profiler`). It is the seventh driver to show that a SQL-package control surface loses nothing: the profile id comes back as a `Long` and is bound with `setLong` into both views. The procedure is a Java text block. Text blocks strip the indentation common to every line but keep the relative indentation, so the column numbers are real, as in the Pascal, Python and Go twins and unlike the Rust twin's all-ones. Like the Go twin, this one *shows* the autonomous-flush pitfall instead of only avoiding it. The session runs with auto-commit off under `TRANSACTION_REPEATABLE_READ` (SNAPSHOT). A count of the profile's `PLG$PROF_PSQL_STATS` rows in that same transaction right after `FINISH_SESSION(TRUE)` is **0**. After a real `Connection.commit()` the views are full. Jaybird's own auto-commit mode would have hidden the pitfall, because it hard-commits after every statement, much like node-firebird's per-query transactions.
+
+Verified output:
+
+```text
+profile session 1 finished and flushed
+PSQL stat rows visible inside the SNAPSHOT that ran it: 0  <- the flush committed autonomously, after the snapshot
+
+record sources of the join (PLG$PROF_RECORD_SOURCE_STATS_VIEW):
+ACCESS_PATH                                               OPENS FETCHES TOTAL_NS
+--------------------------------------------------------- ----- ------- --------
+Select Expression                                         1     2       1175200
+  -> Aggregate                                            1     2       1174700
+    -> Filter                                             1     5001    1219000
+      -> Hash Join (inner) (keys: 1, total key length: 4) 1     5001    1471500
+        -> Table "PUBLIC"."NUMS" as "A" Full Scan         1     5001    748400
+        -> Record Buffer (record length: 25)              1     10001   623300
+          -> Table "PUBLIC"."NUMS" as "B" Full Scan       1     5001    610800
+
+hotspot procedure, per PSQL line (PLG$PROF_PSQL_STATS_VIEW):
+LINE_NUM COLUMN_NUM COUNTER TOTAL_NS AVG_NS
+-------- ---------- ------- -------- ------
+8        5          20000   30423100 1521
+9        5          20000   2941100  147
+10       5          20000   2428200  121
+6        3          20001   644500   32
+3        3          1       3500     3500
+5        3          1       1000     1000
+2        3          1       200      200
+12       3          1       100      100
+done.
+```
+
+The counters match every other twin: 5001/10001 fetches through the hash join, 20,000 executions of line 8 and 20,001 for the `WHILE` on line 6. Line 8 dominates again, this time at 30 ms.
+
 ### Things to try
 
 - Add an index on `nums.val`, rerun, and watch the `Hash Join` in the captured plan tree become a nested loop with an `Index Scan` — the profiler as a before/after harness for the [optimizer](query-optimizer-and-execution.md).

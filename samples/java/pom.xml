@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Java twins of the per-document hands-on samples (see ../README.md).
+
+  One Maven module, one class per companion document in package fbsamples,
+  sharing FbSample.java.  Run a sample with:
+
+      mvn -q compile exec:exec -Dsample=Transactions [-Dargs=...]
+
+  Jaybird is the FirebirdSQL project's JDBC driver.  Its default PURE_JAVA
+  protocol is an independent Java implementation of the wire protocol; the
+  jaybird-native dependency (with JNA) adds the NATIVE and EMBEDDED
+  protocols, which load libfbclient / the engine in-process like the C++
+  samples - a few twins use them to contrast the two.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>org.firebirdsql.paper</groupId>
+  <artifactId>fbsamples</artifactId>
+  <version>1.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jaybird.version>6.0.6</jaybird.version>
+    <sample>Transactions</sample>
+    <args></args>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.firebirdsql.jdbc</groupId>
+      <artifactId>jaybird</artifactId>
+      <version>${jaybird.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.firebirdsql.jdbc</groupId>
+      <artifactId>jaybird-native</artifactId>
+      <version>${jaybird.version}</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <compilerArgs><arg>-Xlint:all,-processing</arg></compilerArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- exec:exec forks a JVM per run, so a sample's System.exit, its
+             native libraries and its child processes stay its own. -->
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.5.0</version>
+        <configuration>
+          <executable>java</executable>
+          <commandlineArgs>-cp %classpath fbsamples.${sample} ${args}</commandlineArgs>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

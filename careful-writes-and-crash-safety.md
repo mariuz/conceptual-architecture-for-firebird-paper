@@ -310,6 +310,23 @@ committed marker rows : 1   <- durable
 uncommitted rows      : 0   <- gone with the killed writer
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/CarefulWrites.java`](samples/java/src/main/java/fbsamples/CarefulWrites.java)
+
+The same engine-kill experiment through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL JDBC driver (`cd samples/java && mvn -q compile exec:exec -Dsample=CarefulWrites`). Its default protocol is a wire client like the Go driver's, but jaybird-native adds an EMBEDDED protocol. `jdbc:firebird:embedded:/tmp/fbhandson/careful_writes_java.fdb` loads `libfbclient` through JNA, and the Y-valve loads the Engine provider into the JVM. That puts this twin in the C++ failure domain: the process that is killed *is* the engine. Java has no `fork()`, so the parent uses `ProcessBuilder` to start a second JVM (the same `java` binary and class path) running the class with `--writer`. It polls `Files.size()` while the writer's uncommitted 500,000-row `execute block` grows the file, then sends `SIGKILL` with `Process.destroyForcibly()`. Re-attaching is an ordinary embedded `getConnection()` on the same path. As in every twin, the driver has no recovery call to make.
+
+Verified output:
+
+```text
+[writer 71046] marker row committed (embedded engine in this JVM)
+file grew 1597440 -> 3719168 bytes; SIGKILL to engine pid 71046
+re-attach + both counts took 539 ms
+committed marker rows : 1   <- survived the crash
+uncommitted rows      : 0   <- rolled back by visibility, not replay
+(3956736 bytes on disk after the crash)
+```
+
+The 539 ms includes loading JNA, `libfbclient` and the engine into the parent JVM for the first time, and there is still no recovery phase.
+
 ### Things to try
 
 - Rerun the C++ sample and then `gfix -v -full -user SYSDBA /tmp/fbhandson/careful_writes.fdb` (embedded, so run it with `FIREBIRD=/opt/firebird` while no server has the file): like the [live test](#crash-safety-live), you may see orphan-page warnings — allocated-but-never-linked pages, the designed leftover — and zero corruption errors.

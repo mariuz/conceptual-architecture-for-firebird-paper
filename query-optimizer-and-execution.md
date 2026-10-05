@@ -863,6 +863,45 @@ Verified output (trimmed to the plan flip and the hash join):
 
 The estimates are the [cost model](#access-path-selection) showing its inputs. The table really holds 2,000 rows but is estimated at 2,723: the number comes from data pages times records per page, not from a count. Without an index the filter falls back to a default selectivity (3 rows). Once `EMP_DEPT` exists, its fresh statistics (1/20 selectivity) give 136. The elided middle matches the other twins: a `Unique Scan` on `RDB$PRIMARY2` estimated at 1 row, and `Sort (record length: 228, key length: 8)` over the nested loop.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Plans.java`](samples/java/src/main/java/fbsamples/Plans.java)
+
+The same five experiments through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Plans`). This is the one wire-protocol driver in the set that *does* request the plan info items. `FirebirdPreparedStatement.getExecutionPlan()` sends `isc_info_sql_get_plan` and `getExplainedExecutionPlan()` sends `isc_info_sql_explain_plan`, both over `op_info_sql`. So Jaybird skips the `RDB$SQL.EXPLAIN` detour that node-firebird, rsfbclient and the Go driver take, and prints the terse legacy `PLAN (...)` one-liner next to the record-source tree, as only the C++ and Python twins do. In both of those twins the client is libfbclient. `Connection.prepareStatement` prepares on the server immediately, and the statement is closed without ever being executed.
+
+Verified output (trimmed to the plan flip and the hash join):
+
+```text
+== SELECT name FROM emp WHERE dept_id = 5
+legacy:  PLAN ("PUBLIC"."EMP" NATURAL)
+detailed:
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."EMP" Full Scan
+
+-- CREATE INDEX emp_dept ON emp (dept_id) --
+
+== SELECT name FROM emp WHERE dept_id = 5
+legacy:  PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."EMP_DEPT"))
+detailed:
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."EMP" Access By ID
+            -> Bitmap
+                -> Index "PUBLIC"."EMP_DEPT" Range Scan (full match)
+...
+== SELECT COUNT(*) FROM emp a JOIN emp b ON a.salary = b.salary
+legacy:  PLAN HASH ("A" NATURAL, "B" NATURAL)
+detailed:
+Select Expression
+    -> Aggregate
+        -> Filter
+            -> Hash Join (inner) (keys: 1, total key length: 4)
+                -> Table "PUBLIC"."EMP" as "A" Full Scan
+                -> Record Buffer (record length: 25)
+                    -> Table "PUBLIC"."EMP" as "B" Full Scan
+```
+
+The elided middle matches the other twins: `PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."RDB$PRIMARY3"))` with a `Unique Scan` for `id = 42`, and `PLAN SORT (JOIN ("D" NATURAL, "E" INDEX ("PUBLIC"."EMP_DEPT")))` over a `Sort (record length: 108, key length: 8)`. The record length is the Rust run's 108, not the Pascal and Python runs' 228. Jaybird's `createDatabaseIfNotExist` leaves the database default character set at `NONE`, so the two `VARCHAR(20)` columns take 20 bytes each, not UTF8's 80.
+
 ### Things to try
 
 - Add `ROWS 10` or an `ORDER BY id` to the `dept_id = 5` query and re-prepare: watch `FirstRowsStream` appear, or the plan switch to `ORDER` (index-order walk) instead of `SORT`.

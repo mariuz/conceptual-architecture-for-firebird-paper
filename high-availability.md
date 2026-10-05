@@ -284,6 +284,28 @@ done.
 
 The sizes match the C++ and Python runs byte for byte.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Ha.java`](samples/java/src/main/java/fbsamples/Ha.java)
+
+The same lifecycle through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Ha`). The shadow half is the Go and Python twins' again — fresh scratch database (`ha_java.fdb`/`ha_java.shd`), `CREATE SHADOW`/`DROP SHADOW` as plain DSQL, `Files.size` playing `stat()` — and the sizes match the C++ runs byte for byte. What Jaybird adds is a step past the C++ sample's "stays as text": the `gfix -replica` switch is just a DPB item, `isc_dpb_set_db_replica`, and Jaybird exposes every DPB item it knows as a connection property, so attaching with `set_db_replica=1` turns the scratch database into a **read-only replica** (`MON$DATABASE.MON$REPLICA_MODE = 1`, user writes refused because the engine forces their transactions read-only) and attaching with `set_db_replica=0` **promotes** it back — the promotion step of [the failover section](#firebird-failover-what-is-manual-what-is-external), done from a client. This is only the mode flag on the header page, not log shipping: no `replication.conf` is involved. The shadow's recovery verbs (`gfix -activate`/`-kill`) are `FBMaintenanceManager.activateShadowFile`/`killUnavailableShadows`, named in the sample's comment because showing them needs a lost main file.
+
+Verified output:
+
+```text
+CREATE SHADOW 1 done - the engine dumped every page to the mirror
+RDB$FILES: /tmp/fbhandson/ha_java.shd  shadow_number=1  flags=1
+after CREATE SHADOW:         main =  2564096 bytes, shadow =  2433024 bytes
+after 5000 inserts:          main =  2899968 bytes, shadow =  2818048 bytes
+DROP SHADOW 1 DELETE FILE done
+after DROP SHADOW:           main =  2899968 bytes, shadow =       -1 bytes
+RDB$FILES rows left: 0
+
+attached with set_db_replica=1:  replica mode = 1 (READ_ONLY replica)
+  user write refused: attempted update during read-only transaction [SQLState:25006, ISC error code:335544361]
+attached with set_db_replica=0:  replica mode = 0 (NONE - a primary)
+  write after promotion OK, rows = 5001
+done.
+```
+
 ### Things to try
 
 - Create the shadow with `CREATE SHADOW 1 AUTO` vs `MANUAL` and read `RDB$FILE_FLAGS` again — the flag bits encode the [conditional/manual modes](#firebird-ha-building-blocks) that decide what happens when the shadow becomes unavailable.

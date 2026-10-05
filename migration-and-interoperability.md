@@ -269,6 +269,36 @@ the UUID again, on a charset=NONE attachment:
 
 `NUMERIC(38,8)` describes as `INT128` with scale −8, the same INT128 carrier as in the C++ run. The text face that follows is the C++ run's to the character: `2026-07-21 12:00:00.0000 Europe/Bucharest`, `TRUE`, and the same UUID upper-cased by `UUID_TO_CHAR`.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Migration.java`](samples/java/src/main/java/fbsamples/Migration.java)
+
+The same probe through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Migration`), on the same three faces as the Python and Go twins. The DESCRIBE face is what a generic Java migration tool maps target types from — `ResultSetMetaData`'s `java.sql.Types` code, type name, precision/scale and `getColumnClassName` — and it is instructive in its own way: `INT128` publishes as `Types.NUMERIC` with precision 38 and scale 0 (type name `INT128`), so a JDBC tool sees a wide decimal rather than an unknown type; `DECFLOAT` has no `java.sql.Types` code at all and gets Jaybird's vendor code `JaybirdTypeCodes.DECFLOAT` (2015), which `JDBCType.valueOf` rejects — the sample has to catch that; and `CHAR(16) OCTETS` becomes `Types.BINARY` with class `byte[]`. The native face is at the Python end of the spectrum, exact for every type: `BigDecimal` for INT128, NUMERIC(38,8) and DECFLOAT(34) (the digits fbintf's decoder corrupts arrive intact), `Boolean`, `byte[]` for the UUID, and `TIMESTAMP WITH TIME ZONE` as an `OffsetDateTime` by default — offset only, zone name dropped — or, asked for with `getObject(col, ZonedDateTime.class)`, a `ZonedDateTime` that keeps `[Europe/Bucharest]`.
+
+Verified output (trimmed):
+
+```text
+column   getColumnType                   getColumnTypeName        prec scale  getColumnClassName
+C_INT128 NUMERIC (2)                     INT128                     38     0  java.math.BigDecimal
+C_NUM    NUMERIC (2)                     NUMERIC                    38     8  java.math.BigDecimal
+C_DEC    Jaybird DECFLOAT (2015)         DECFLOAT                   34     0  java.math.BigDecimal
+C_TSTZ   TIMESTAMP_WITH_TIMEZONE (2014)  TIMESTAMP WITH TIME ZONE   30     0  java.time.OffsetDateTime
+C_BOOL   BOOLEAN (16)                    BOOLEAN                     1     0  java.lang.Boolean
+C_UUID   BINARY (-2)                     CHAR                       16     0  [B
+C_VC     VARCHAR (12)                    VARCHAR                    20     0  java.lang.String
+
+same row fetched natively (getObject):
+
+  C_INT128 -> BigDecimal     170141183460469231731687303715884105727
+  C_NUM    -> BigDecimal     123456789012345678901234567890.12345678
+  C_DEC    -> BigDecimal     12345678901.23456789012345678901234
+  C_TSTZ   -> OffsetDateTime 2026-07-21T12:00+03:00
+  C_BOOL   -> Boolean        true
+  C_UUID   -> byte[]         a423e357-91c8-4337-8f6e-8f10a498d300 (16 bytes)
+  C_VC     -> String         naïve ütf8 text
+  C_TSTZ   -> ZonedDateTime  2026-07-21T12:00+03:00[Europe/Bucharest]   (getObject(col, ZonedDateTime.class))
+```
+
+The text face that follows is the C++ run's to the character (`2026-07-21 12:00:00.0000 Europe/Bucharest`, `TRUE`, the same UUID upper-cased by `UUID_TO_CHAR`).
+
 ### Things to try
 
 - Change the connection `encoding` to `'NONE'` in the JS sample and re-probe `C_UUID` — a 16-byte `Buffer` now, no error: charset coercion happens client-side, per connection.

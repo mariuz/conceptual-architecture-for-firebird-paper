@@ -270,6 +270,29 @@ at exit:       libfbclient mapped=no, libEngine14 mapped=no
 done.
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/EmbeddedDemo.java`](samples/java/src/main/java/fbsamples/EmbeddedDemo.java)
+
+The three demonstrations through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL JDBC driver (`cd samples/java && mvn -q compile exec:exec -Dsample=EmbeddedDemo`). By default Jaybird is a pure-Java wire client like firebirdsql, but its jaybird-native module adds an **EMBEDDED** protocol. `jdbc:firebird:embedded:/tmp/fbhandson/embedded_demo_java.fdb` uses JNA to load `libfbclient` (found through `jna.library.path=/opt/firebird/lib`, which the sample sets in `main`), and the plain local path makes the Y-valve load `libEngine14` into the JVM. `/proc/self/maps` shows both arriving with the first embedded attach and neither before it. The query reports `NETWORK_PROTOCOL` NULL and the JVM's own pid. Because Jaybird carries both driver families, the timing table can compare three JDBC URLs in one process: embedded; the same `libfbclient` sent to the server with `jdbc:firebird:embedded:inet://localhost/employee`; and Jaybird's own wire client. It repeats the wire-client leg with `employee` held open by another attachment, the effect the Go twin found. The remote `libfbclient` leg goes through the EMBEDDED factory instead of `jdbc:firebird:native://` on purpose. With Jaybird 6.0.6, a second `libfbclient` handle in the same JVM made the exit-time `fb_shutdown` crash the JVM (see the [architecture-comparison twin](architecture-comparison.md#java-sample--samplesjavasrcmainjavafbsamplesarchitecturecomparisonjava)).
+
+Verified output (timings vary from run to run; on an earlier run both remote legs took about 90 ms):
+
+```text
+before attach:  libfbclient mapped=no, libEngine14 mapped=no
+after  attach:  libfbclient mapped=yes, libEngine14 mapped=yes
+
+rows=3  max(name)=sprocket  NETWORK_PROTOCOL=<null: in-process>
+engine pid=75115, my pid=75115 - the 'server' is this JVM
+
+attach+detach avg over 5 runs:
+    embedded                       jdbc:firebird:embedded:/tmp/fbhandson/embedded_demo_java.fdb     4.27 ms
+    libfbclient -> server          jdbc:firebird:embedded:inet://localhost/employee                14.23 ms
+    pure-Java wire client          jdbc:firebird://localhost/employee                              14.27 ms
+    pure-Java, employee kept open  jdbc:firebird://localhost/employee                               7.28 ms
+done.
+```
+
+The two remote legs cost the same: the wire is the wire whether `libfbclient` or Java code speaks it. Holding the database open halves the remote attach.
+
 ### Things to try
 
 - Run `./build/embedded_demo` while `/opt/firebird/bin/isql /tmp/fbhandson/embedded_demo.fdb` sits attached in another shell — observe the 08001 exclusive-open error from the footnote above; then point both at a `FIREBIRD` root whose `firebird.conf` says `ServerMode = Classic` and watch them coexist.

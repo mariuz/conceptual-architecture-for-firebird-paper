@@ -499,6 +499,26 @@ the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the s
 
 The record-conflict dialect again, now as a structured `*firebirdsql.FbError` whose `GDSCodes` carry the whole chain; the 10.0 s deadlock is the scan interval once more — the cycle was complete after 0.3 s.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/LockManager.java`](samples/java/src/main/java/fbsamples/LockManager.java)
+
+The same three probes and the same deadlock through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=LockManager`). Unlike the other pure-wire twins (node-firebird, rsfbclient, Go), Jaybird can express the reservation, and it does so both ways the libfbclient twins do, through its GDS-ng layer (`FirebirdConnection.getFbDatabase()`). The holder uses `FbDatabase.startTransaction(String)`, which runs `SET TRANSACTION WAIT RESERVING t1 FOR PROTECTED WRITE` as fb-cpp does. The probes use `startTransaction(tpb)` with a TPB built item by item, as fbintf and firebird-driver build theirs: `addArgument(isc_tpb_lock_write, "T1")` + `isc_tpb_protected`, then `isc_tpb_nowait`, `isc_tpb_wait` + `addArgument(isc_tpb_lock_timeout, 3)`, or `isc_tpb_wait`. Either way the lock is taken when the transaction starts, before any statement runs. A first draft passed a bare `isc_tpb_lock_timeout` item and then the valued one, and the engine rejected the TPB with `invalid parameter in transaction parameter block`: the builder packs whatever bytes it is given. The deadlock act runs on plain JDBC connections switched to `TRANSACTION_REPEATABLE_READ` (SNAPSHOT WAIT), crossing the updates from a second `Thread`.
+
+Verified output:
+
+```text
+holder: t1 reserved FOR PROTECTED WRITE (LCK_relation at LCK_EX)
+NO WAIT:         failed after 0.104 s: lock conflict on no wait transaction (gds 335544345)
+LOCK TIMEOUT 3:  failed after 3.001 s: lock time-out on wait transaction (gds 335544510)
+holder: committed (2 s later) -> lock released
+WAIT:            granted after 2.012 s
+building deadlock: A updates row 1, B updates row 2, then cross...
+deadlock: A failed after 10.0 s: deadlock
+deadlock: B's update proceeded after 10.0 s (A was the victim)
+the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the scan.
+```
+
+This is the bare reservation-path dialect (`isc_lock_conflict` / `isc_lock_timeout`), the same one the libfbclient twins see. The 0.104 s NO WAIT is the JVM loading Jaybird's error-handling classes on the first failure. A second run measured 0.021 s, and the engine's refusal itself is immediate.
+
 ### Things to try
 
 - While the C++ holder has `t1` reserved, run `fb_lock_print -d /tmp/fbhandson/lock_manager.fdb -o -r` *(or `-f` on the `fb_lock_*` file)*: the reservation appears as an `LCK_relation`-series request at state 6 (EX), and the LOCK TIMEOUT probe shows up as `Pending` for exactly three seconds.

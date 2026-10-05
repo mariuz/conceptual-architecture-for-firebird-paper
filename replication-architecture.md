@@ -363,6 +363,33 @@ done.
 
 Note *how* the replica refuses the user's write. The error is not replication-specific. It is `isc_read_only_trans`, the same error a `READ ONLY` transaction gets, because on a read-only replica the engine starts every user transaction read-only and exempts only the replicator's own attachment. A replica is "read-only for everyone except the replicator", and the client sees the first half of that sentence.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Replication.java`](samples/java/src/main/java/fbsamples/Replication.java)
+
+The same state walk through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Replication`). The DDL half is plain JDBC. Each step is an auto-commit `Statement.execute`, each failed reset step is caught and ignored, and `TRIM` in the read-backs handles the `CHAR(63)` columns. The replica end is covered both ways, joining the Python twin's read and the Go twin's write. **Read:** the `fb_info_replica_mode` database-info item goes through Jaybird's GDS-ng `FbDatabase.getDatabaseInfo` and is decoded by hand (item byte, two-byte length, VAX integer), next to `MON$REPLICA_MODE`. **Write:** Jaybird 6.0.6's `FBMaintenanceManager` has no replica-mode setter, but it is an open class with protected Services hooks. A small subclass in the sample uses `createRequestBuffer(service, isc_action_svc_properties, 0)`, adds `isc_spb_prp_replica_mode`, which is the `gfix -replica` switch, and calls `executeServicesOperation`. The driver could reach the operation all along; it just had no method for it yet.
+
+Verified output:
+
+```text
+-- initial state (publication exists but is inactive)
+RDB$DEFAULT   ACTIVE_FLAG 0   AUTO_ENABLE 0    published: (none)
+-- after ENABLE PUBLICATION
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: (none)
+-- after INCLUDE TABLE REPL_ORDERS
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: PUBLIC.REPL_ORDERS
+-- after INCLUDE ALL (auto-enable: future tables join automatically)
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 1    published: PUBLIC.REPL_ORDERS, PUBLIC.REPL_SCRATCH
+MON$REPLICA_MODE = 0, fb_info_replica_mode = 0  (0 = not a replica: this side publishes)
+
+-- Services: isc_spb_prp_replica_mode = isc_spb_prp_rm_readonly
+MON$REPLICA_MODE = 1, fb_info_replica_mode = 1  (1 = read-only replica)
+user INSERT on the replica: attempted update during read-only transaction (gds 335544361)
+-- Services: isc_spb_prp_replica_mode = isc_spb_prp_rm_none
+MON$REPLICA_MODE = 0, fb_info_replica_mode = 0  (a primary again)
+done.
+```
+
+The refused write is `isc_read_only_trans` (gds 335544361), the error a `READ ONLY` transaction gets, as in the Go twin. The info item and the monitoring table agree at every step.
+
 ### Things to try
 
 - Create a new table *after* `INCLUDE ALL` and re-read `RDB$PUBLICATION_TABLES` — `RDB$AUTO_ENABLE` means it appears without any further DDL.

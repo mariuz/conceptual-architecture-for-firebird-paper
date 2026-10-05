@@ -337,6 +337,33 @@ failed login (wrong password) produces:
 temporary user and role dropped. done.
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Security.java`](samples/java/src/main/java/fbsamples/Security.java)
+
+The same four steps through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Security`), under its own names (`JAVA_USER`, `JAVA_MONITOR`). Like the Go and JavaScript drivers, Jaybird implements layers 1 and 2 itself — its own Srp256 client proof and its own wire encryption — and the server's record shows the client's choice once more: Jaybird ships only the `ChaCha` (ChaCha20 with a 32-bit counter) and `Arc4` plugins, so `MON$WIRE_CRYPT_PLUGIN` reads **`ChaCha`** where fbclient and the pure-Go driver negotiate `ChaCha64` and node-firebird `Arc4`. The role is the `roleName` connection property (written as `isc_dpb_sql_role_name`), and the user management runs in explicit transactions, one full `commit()` per DDL batch. The idempotent cleanup checks `SEC$USERS` / `RDB$ROLES` first, because a `DROP USER` of a missing user fails only at `COMMIT`, and Jaybird then also logs a `WARNING` about the transaction being stuck in the `COMMITTING` state. The wrong password surfaces as a typed `SQLInvalidAuthorizationSpecException` (the JDBC subclass for SQLSTATE class 28) with gds `335544472` as `getErrorCode()`.
+
+Verified output:
+
+```text
+admin attachment:      user=SYSDBA auth=Srp256 wirecrypt=ChaCha protocol=TCPv4 role=NONE
+
+SEC$USERS (the security database, through the virtual view):
+    USER             PLUGIN   ADMIN
+    JAVA_USER        Srp      false
+    SYSDBA           Srp      true
+
+admin sees 1 user attachments in MON$ATTACHMENTS
+user, no role:         user=JAVA_USER auth=Srp256 wirecrypt=ChaCha protocol=TCPv4 role=NONE
+  -> sees 1 attachment(s): only its own
+user + role:           user=JAVA_USER auth=Srp256 wirecrypt=ChaCha protocol=TCPv4 role=JAVA_MONITOR
+  -> sees 2 attachments: MONITOR_ANY_ATTACHMENT at work
+
+failed login (wrong password) produces:
+    SQLState 28000 / gds 335544472 (SQLInvalidAuthorizationSpecException)
+    Your user name and password are not defined. Ask your database administrator to set up a Firebird login. [SQLState:28000, ISC error code:335544472]
+
+temporary user and role dropped. done.
+```
+
 ### Things to try
 
 - Grant `HANDSON_MONITOR` more bits — `set system privileges to MONITOR_ANY_ATTACHMENT, USE_GSTAT_UTILITY` — and re-run the doc's `fbsvcmgr ... action_db_stats` as `HANDSON_USER`: the [services-api document's layer-2 rejection](services-api.md#authorization-two-independent-layers) turns into success.

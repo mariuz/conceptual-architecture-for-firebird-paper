@@ -281,6 +281,27 @@ explicit new transaction: fresh        seq_reads=37293  idx_reads=1325  inserts=
 
 Above the trimmed lines, `MON$DATABASE` reported OIT 5 / OAT 6 / NEXT 7 with `page_buffers=2048`. The hierarchy join found attachment 3 (SYSDBA), tx 7, and its statement was the marker query itself. The freeze inside the explicit transaction matches every other run. The second freeze is the new evidence. Under auto-commit the counters stand still through a whole 10 000-row scan. The explicit transaction that follows then reads exactly `+10 000` sequential reads.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Monitoring.java`](samples/java/src/main/java/fbsamples/Monitoring.java)
+
+The same walk through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Monitoring`). JDBC has the JavaScript twin's trap — with auto-commit on, every statement is its own transaction and every MON$ read a fresh snapshot — so the demonstration runs with `setAutoCommit(false)` under `TRANSACTION_REPEATABLE_READ` (Firebird's SNAPSHOT), and the refresh is one `commit()`. The instructive diff is against the Go twin: Jaybird is just as free of libfbclient, yet it carries the Python twin's *second, live* channel, because database info is a wire operation (`op_info_database`) and Jaybird exposes it as `getFbDatabase().getDatabaseInfo`. The sample asks for `isc_info_fetches` and `isc_info_read_seq_count` — the latter a list of (relation id, count) pairs it decodes with `VaxEncoding`, picking out `MON_WORK`'s id — and, inside the very transaction where MON$ stands frozen, they show the workload at once.
+
+Verified output:
+
+```text
+MON$DATABASE:                           oit=4 oat=5 next=5 page_buffers=2048
+attachment -> transaction -> statement: att=3 usr=SYSDBA tx=5 state=1 sql_head=SELECT MON$OLDEST_TRANSACTION
+MON$ snapshot 1:                        seq_reads=16513 idx_reads=1295 inserts=13655 page_fetches=105459 page_reads=0
+info items, before the workload:        isc_info_fetches=106664  MON_WORK sequential reads=0
+... running workload: SELECT COUNT(*) full scan + indexed lookup ...
+count = 10000, point = 4242
+same transaction: STILL snapshot 1:     seq_reads=16513 idx_reads=1295 inserts=13655 page_fetches=105459 page_reads=0
+info items, same moment: live:          isc_info_fetches=116989  MON_WORK sequential reads=10000
+new transaction: fresh snapshot:        seq_reads=27293 idx_reads=1329 inserts=13655 page_fetches=116988 page_reads=0
+done.
+```
+
+The hierarchy row again shows the marker query that created the snapshot. `MON_WORK sequential reads` jumps from 0 to exactly 10 000 while the MON$ row stays frozen, and the fresh snapshot's `page_fetches` (116 988) lands one fetch short of the info item read a moment earlier (116 989): two channels, one counter.
+
 ### Things to try
 
 - Open a second connection running `SELECT COUNT(*) FROM MON_WORK` in a loop and re-run the sample: the hierarchy query (drop the `WHERE ... = CURRENT_CONNECTION`) now shows two attachments, and their statements' `MON$SQL_TEXT` side by side.

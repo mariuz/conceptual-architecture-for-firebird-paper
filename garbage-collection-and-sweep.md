@@ -237,6 +237,27 @@ after MaintenanceManager.Sweep():  OIT=32 OAT=33 OST=33 Next=33 (sweep interval 
 
 The record-stats trajectory matches the C++ and Python runs counter for counter: `imgc=10`, one `purge`, one `expunge`. The header lines show the absence. The OIT keeps its usual one-transaction lag behind `Next` throughout. The rolled-back transaction is number 28, and one committed peek later the OIT has moved past it to 29 with no sweep, so the rollback was booked as committed. The C++ run's `no_auto_undo` stump instead held the OIT two behind `Next`. Here the sweep has no stump to clear and only moves the counters on.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/GcSweep.java`](samples/java/src/main/java/fbsamples/GcSweep.java)
+
+The same experiment through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=GcSweep`), on a freshly recreated database. It is the pure-wire twin that reaches *every* lever, where the Go and Rust twins stopped at the stump. The pin is JDBC's `TRANSACTION_REPEATABLE_READ` (`isc_tpb_concurrency`); the stump is the [Transactions](transactions-and-concurrency.md) sample's trick — `createTransactionParameterBuffer()` with `isc_tpb_no_auto_undo` installed behind `TRANSACTION_SERIALIZABLE` via `setTransactionParameters` — so the rollback really is booked as rolled back in the TIP; the four header counters are database info items read through `getFbDatabase().getDatabaseInfo` (`isc_info_oldest_transaction` and friends, over `op_info_database`, starting no transaction — the Python twin's move); and the sweep is `FBMaintenanceManager.sweepDatabase()`, the Services API's `gfix -sweep`, run inside the server. The twelve updates are one `PreparedStatement` re-executed under auto-commit, a transaction per `executeUpdate`.
+
+Verified output:
+
+```text
+pinned SNAPSHOT reads val = 0
+before updates:                    upd=47   imgc=0   purges=0   expunges=0   backreads=0
+after 12 updates (snapshot open):  upd=59   imgc=10  purges=0   expunges=0   backreads=32
+pinned SNAPSHOT still reads val = 0
+snapshot released; new reader sees val = 12
+after release + scan + 1.5s:       upd=59   imgc=10  purges=1   expunges=0   backreads=35
+after DELETE + scan + 1.5s:        upd=59   imgc=10  purges=1   expunges=1   backreads=37
+header counters before rollback:   OIT=25 OAT=26 OST=26 Next=26 (sweep interval 20000)
+after no_auto_undo rollback:       OIT=26 OAT=27 OST=27 Next=27 (sweep interval 20000)
+after sweepDatabase():             OIT=27 OAT=29 OST=29 Next=29 (sweep interval 20000)
+```
+
+The record-stats trajectory is the C++ run's to the counter, and the header lines have the Python run's shape two transaction numbers earlier (auto-commit DDL used fewer transactions): the stump is transaction 26, the rollback freezes the OIT on it, and the sweep moves the OIT on to 27.
+
 ### Things to try
 
 - Set the updates loop to 100: `imgc` grows to ~98 but `max versions` stays 2 (check with `fbsvcmgr localhost:service_mgr -user SYSDBA -password masterkey action_db_stats dbname /tmp/fbhandson/gc_sweep.fdb sts_record_versions`).

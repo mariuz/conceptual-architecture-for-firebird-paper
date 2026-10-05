@@ -297,6 +297,39 @@ DSN zone    : America/Sao_Paulo  CURRENT_TIMESTAMP: 2026-10-05 16:31:55.7680 Ame
 done.
 ```
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Temporal.java`](samples/java/src/main/java/fbsamples/Temporal.java)
+
+The same four steps through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its default pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Temporal`). This is the one non-fbclient twin that shows the real struct, not a rebuilt one. JDBC hides the bytes, but Jaybird's own GDS-ng layer (`FbDatabase.createStatement` + a `StatementListener`) hands back each `RowValue`'s field data exactly as it came off the wire: 12 big-endian XDR bytes, the 2-byte zone id padded to 4. Those bytes reproduce the C++ numbers, and Jaybird's `TimeZoneMapping`, its compiled-in copy of Firebird's id table, names the id with no round trip. Through JDBC the type has two Java faces. `getObject()` returns an `OffsetDateTime`, which keeps the instant and the offset but drops the region, while `getObject(col, ZonedDateTime.class)` keeps `America/New_York`. The offset Java prints comes from the JVM's tzdata, not the engine's ICU. The session-zone step brings the instructive difference: **Jaybird always sends `isc_dpb_session_time_zone`, by default the JVM's zone**, so the session follows the client, not the server's OS. Moving the JVM default to `Australia/Sydney` moves the next attachment's `CURRENT_TIMESTAMP` with it. `sessionTimeZone=server` opts out, and `sessionTimeZone=<zone>` is the explicit form of the Python and Go twins' attach-time zone.
+
+Verified output (this machine's JVM and server OS zone are both `Europe/Bucharest`):
+
+```text
+named-zone literal:
+  on the wire : UTC days=61239 time=576000000  zone id=65361  (12 bytes)
+  id -> zone  : America/New_York  (Jaybird's TimeZoneMapping)
+  getObject() : 2026-07-18T12:00-04:00  (OffsetDateTime)
+  as Zoned    : 2026-07-18T12:00-04:00[America/New_York]
+offset literal:
+  on the wire : UTC days=61239 time=612000000  zone id=1139  (12 bytes)
+  id -> zone  : -05:00  (Jaybird's TimeZoneMapping)
+  getObject() : 2026-07-18T12:00-05:00  (OffsetDateTime)
+  as Zoned    : 2026-07-18T12:00-05:00
+instant      : 2026-07-18T16:00:00Z
+
+NY 12:00 in UTC, winter: 2026-01-18 17:00:00.0000 Etc/UTC
+NY 12:00 in UTC, summer: 2026-07-18 16:00:00.0000 Etc/UTC
+10:00 -02:00 = 09:00 -03:00 ? EQUAL
+
+JVM default zone: Europe/Bucharest
+session zone: Europe/Bucharest   CURRENT_TIMESTAMP: 2026-10-06 01:10:15.7540 Europe/Bucharest   <- Jaybird default
+session zone: Asia/Tokyo         CURRENT_TIMESTAMP: 2026-10-06 07:10:15.7650 Asia/Tokyo   <- SET TIME ZONE
+session zone: Australia/Sydney   CURRENT_TIMESTAMP: 2026-10-06 09:10:15.8180 Australia/Sydney   <- JVM zone set to Australia/Sydney
+session zone: Europe/Bucharest   CURRENT_TIMESTAMP: 2026-10-06 01:10:15.8660 Europe/Bucharest   <- sessionTimeZone=server
+session zone: America/Sao_Paulo  CURRENT_TIMESTAMP: 2026-10-05 19:10:15.9210 America/Sao_Paulo   <- sessionTimeZone=America/Sao_Paulo
+
+done.
+```
+
 ### Things to try
 
 - Change the C++ named-zone literal to `2026-11-01 01:30:00 America/New_York` — the doubled DST-overlap hour — and check which of the two possible UTC instants the wire struct holds (the docs promise the *first*, pre-transition occurrence).

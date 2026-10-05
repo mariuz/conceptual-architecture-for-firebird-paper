@@ -763,6 +763,29 @@ done.
 
 The UTF8 and WIN1252 lines end in identical Go strings but get there by different routes. On the UTF8 connection the server's transliteration produced `C3 A9`; on the WIN1252 connection the client's decoder did. Neither is visible in a `string`, and only the NONE connection's `[]byte` shows what is actually stored.
 
+### Java sample — [`samples/java/src/main/java/fbsamples/Intl.java`](samples/java/src/main/java/fbsamples/Intl.java)
+
+The same scenario through [Jaybird](https://github.com/FirebirdSQL/jaybird), the FirebirdSQL project's JDBC driver, on its pure-Java wire protocol (`cd samples/java && mvn -q compile exec:exec -Dsample=Intl`). rsfbclient, firebird-driver and Go each fold "charset" into one setting that is both the lc_ctype and the client codec. Jaybird keeps the two apart. The `encoding` connection property is the Firebird connection charset (`isc_dpb_lc_ctype`), and Java's decoding is chosen **per column**, from the charset id the server describes each column with. `ResultSet.getBytes()` therefore shows what crossed the wire, and `getString()` shows what Jaybird made of it. Under `encoding=NONE` the server passes the stored `E9` through untouched and describes the column as `WIN1252`, which the Pascal twin also observed. Jaybird decodes that byte with Java's windows-1252 codec, so the NONE connection still yields a correct `"Café"`: the transliteration has moved to the client side of the wire. Unlike the Go twin, that holds without asking for `WIN1252`, and an explicit `encoding=WIN1252` connection behaves identically. The JVM's default charset (UTF-8 here) would have rejected or mangled `E9`, so the correct string confirms the per-column codec. As in the Go twin, every connection selects the row with an ASCII-only predicate.
+
+Verified output:
+
+```text
+rows matching 'cafe' with UNICODE_CI_AI : 3
+rows matching 'cafe' with UCS_BASIC     : 1
+UPPER('café èñ ß')                      : CAFÉ ÈÑ ß
+ORDER BY name_ci_ai: cafe  CAFE  Café
+ORDER BY name_bin  : CAFE  Café  cafe    (binary: uppercase codepoints first)
+
+SELECT name_win ... 'Café' - same row, three connections:
+  encoding=UTF8:     len= 5  43 61 66 C3 A9  getString() = "Café"
+  encoding=NONE:     len= 4  43 61 66 E9     getString() = "Café"
+  encoding=WIN1252:  len= 4  43 61 66 E9     getString() = "Café"
+  -> the column stores E9 (WIN1252).  UTF8: the server transliterated to C3 A9.
+     NONE and WIN1252: E9 crossed the wire and Jaybird decoded it with the
+     column's own charset (windows-1252) into a Java String.
+done.
+```
+
 ### Things to try
 
 - Add `COLLATE UNICODE_CI` (case- but not accent-insensitive) as a third column: `'cafe'` then matches 2 of the 3 rows — the missing middle step between the sample's 3 and 1.
