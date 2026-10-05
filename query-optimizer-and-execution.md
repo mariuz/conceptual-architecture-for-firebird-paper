@@ -791,6 +791,45 @@ The same five experiments through [fbintf](https://github.com/MWASoftware/fbintf
 
 Verified: the same engine text as the other four runs — `Table "PUBLIC"."EMP" Full Scan` flipping to `Access By ID -> Bitmap -> Index "PUBLIC"."EMP_DEPT" Range Scan (full match)` after `CREATE INDEX`, `Index "PUBLIC"."RDB$PRIMARY6" Unique Scan` for `id = 42`, `Sort (record length: 228, key length: 8)` over the nested-loop join, and `Hash Join (inner) (keys: 1, total key length: 4)` with the `Record Buffer (record length: 25)` inner side. The sort's record length is 228 here versus 108 in the Rust run over the identical two-`VARCHAR(20)` projection: this scratch database's columns are UTF8 (4 bytes per character, 80 bytes per column instead of 20), and 228 − 160 = 108 − 40 — the 68 bytes of fixed sort-record overhead match exactly, a storage-charset artifact, not a plan difference.
 
+### Python sample — [`samples/python/plans.py`](samples/python/plans.py)
+
+The same five experiments through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/plans.py`). It takes the C++ route, not the `RDB$SQL.EXPLAIN` detour: `Cursor.prepare(sql)` returns a `Statement` whose two properties `.plan` and `.detailed_plan` are `IStatement::getPlan(false)` and `getPlan(true)` — so, with the C++ twins, this is the only sample that prints the terse legacy `PLAN (...)` line as well as the record-source tree. The driver makes "prepared, never executed" more literal than the others: when its main transaction is idle, `prepare()` begins one, prepares, and commits it on the spot, so nothing is left open. (The first cut of the sample tripped over that: a trailing `Connection.commit()` on the then-inactive main transaction raises `AttributeError` inside the driver, where one might expect a no-op.)
+
+Verified output (trimmed to the plan flip and the hash join):
+
+```text
+== SELECT name FROM emp WHERE dept_id = 5
+legacy:  PLAN ("PUBLIC"."EMP" NATURAL)
+detailed:
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."EMP" Full Scan
+
+-- CREATE INDEX emp_dept ON emp (dept_id) --
+
+== SELECT name FROM emp WHERE dept_id = 5
+legacy:  PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."EMP_DEPT"))
+detailed:
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."EMP" Access By ID
+            -> Bitmap
+                -> Index "PUBLIC"."EMP_DEPT" Range Scan (full match)
+...
+== SELECT COUNT(*) FROM emp a JOIN emp b ON a.salary = b.salary
+legacy:  PLAN HASH ("A" NATURAL, "B" NATURAL)
+detailed:
+Select Expression
+    -> Aggregate
+        -> Filter
+            -> Hash Join (inner) (keys: 1, total key length: 4)
+                -> Table "PUBLIC"."EMP" as "A" Full Scan
+                -> Record Buffer (record length: 25)
+                    -> Table "PUBLIC"."EMP" as "B" Full Scan
+```
+
+The elided middle matches the other twins: `PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."RDB$PRIMARY2"))` with a `Unique Scan` for `id = 42`, and `PLAN SORT (JOIN ("D" NATURAL, "E" INDEX ("PUBLIC"."EMP_DEPT")))` over a `Sort (record length: 228, key length: 8)` — the UTF8 record length the Pascal run explained.
+
 ### Things to try
 
 - Add `ROWS 10` or an `ORDER BY id` to the `dept_id = 5` query and re-prepare: watch `FirstRowsStream` appear, or the plan switch to `ORDER` (index-order walk) instead of `SORT`.

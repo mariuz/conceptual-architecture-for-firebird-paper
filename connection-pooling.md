@@ -206,6 +206,27 @@ The outbound half through [fbintf](https://github.com/MWASoftware/fbintf) (vendo
 
 Verified: `before: size=5 lifetime=30s idle=0 active=0`; inside the block `idle=0 active=1` for the three `EXECUTE STATEMENT ON EXTERNAL` calls — one outbound connection; after the full commit `idle=1 active=0`; after `CLEAR ALL` back to `idle=0 active=0` — line for line the same pool arithmetic as the C++ and Rust runs.
 
+### Python sample — [`samples/python/pooling.py`](samples/python/pooling.py)
+
+Both directions through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient (`python3 samples/python/pooling.py`). The outbound half is the same SQL as every twin, with one stage added: the driver spells the two commit forms as `con.commit(retaining=True)` and `con.commit()`, so the subtlety the C++ sample only describes is printed — after `COMMIT RETAINING` the pooled connection is still `active=1`, and only the full commit resets it and parks it on the idle list. On the inbound side firebird-driver, like rsfbclient and fbintf, ships no client-side pool (pooling is left to the application or to a framework such as SQLAlchemy's `QueuePool`), so the second half — like the Rust twin's — shows what such a pool would cache: two `connect()` calls are two `MON$ATTACHMENTS` rows (counted by `MON$REMOTE_PID = os.getpid()`), one attachment keeps serving the same `CURRENT_CONNECTION`, and `close()` is a real detach.
+
+Verified output:
+
+```text
+-- outbound: the server-side EDS pool --
+before:                 size=5 lifetime=30s idle=0 active=0
+inside the block:       idle=0 active=1   (3 calls, 1 outbound connection)
+after commit retaining: size=5 lifetime=30s idle=0 active=1
+after commit:           size=5 lifetime=30s idle=1 active=0
+after CLEAR ALL:        size=5 lifetime=30s idle=0 active=0
+
+-- inbound: what a client-side pool would cache --
+opened attachments 301 and 302: 2 extra rows in MON$ATTACHMENTS
+three queries on one attachment: CURRENT_CONNECTION = [301, 301, 301]
+a.close(): 1 extra row left -- close() really detached (a pool would have kept it)
+done.
+```
+
 ### Things to try
 
 - Run `./build/pooling` twice within 30 seconds: the second run starts with `idle=1` — the pool is per **server process** and outlives your attachment. Wait past the 30-second lifetime (or run `CLEAR OLDEST`) and it starts at `idle=0` again.

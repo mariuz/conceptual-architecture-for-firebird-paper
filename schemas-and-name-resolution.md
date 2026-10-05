@@ -643,6 +643,19 @@ The same five demonstrations through [fbintf](https://github.com/MWASoftware/fbi
 
 Verified: identical resolution story — `from PUBLIC` then `from APP` as the path changes, `"APP", "SYSTEM"` after the auto-append, `APP.WHICH_ONE` still answering `from APP` (with `RDB$DEPENDENCIES` recording `APP.CUSTOMERS`) after the session flips to `PUBLIC` — and `GetPlan` reporting the resolved name in its explained form, `Select Expression -> Aggregate -> Table "PUBLIC"."CUSTOMERS" Full Scan`.
 
+### Python sample — [`samples/python/schemas.py`](samples/python/schemas.py)
+
+The same five demonstrations through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/schemas.py`). Like the JavaScript twin it makes the attachment-state point in passing: the sample's `execute()` helper commits after every statement, including each `SET SEARCH_PATH`, and the path still governs the next transaction's `SELECT`. The plans-and-errors observation is where this driver is the most generous of the wrapper family: a prepared `Statement` carries *both* forms — `.plan` (the legacy one-liner the OO-API and fb-cpp twins print) and `.detailed_plan` (the explained tree fbintf's `GetPlan` returns) — and unlike rsfbclient it keeps no client-side statement cache, so a re-run of the identical `SELECT` text after the path change is re-prepared and re-resolved.
+
+Verified output (resolution lines identical to the C++ twin's above; the plan section):
+
+```text
+plan for unqualified SELECT : PLAN ("PUBLIC"."CUSTOMERS" NATURAL)
+detailed_plan               : Select Expression
+                                  -> Aggregate
+                                      -> Table "PUBLIC"."CUSTOMERS" Full Scan
+```
+
 ### Things to try
 
 - Add the [shadowing experiment](#shadowing-and-the-hazard-search-paths-always-carry): `CREATE TABLE PUBLIC."RDB$DATABASE" (X INT)` and watch an unqualified `SELECT ... FROM RDB$DATABASE` on a fresh connection find yours; then `SET SEARCH_PATH TO SYSTEM, PUBLIC` to defuse it.

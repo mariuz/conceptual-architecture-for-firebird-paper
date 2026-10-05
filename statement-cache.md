@@ -416,6 +416,21 @@ The same four timing runs through [fbintf](https://github.com/MWASoftware/fbintf
 
 Verified: identical text hits at 0.06 ms/prepare; trailing spaces and distinct literals miss at 0.84 and 0.81 ms/prepare (a ~14× gap, with no execution cost diluting it), and byte-identical text after each unrelated `RECREATE TABLE` + commit misses at 1.32 ms/prepare — the DDL purge costing more than an ordinary miss, same ordering as every twin above.
 
+### Python sample — [`samples/python/stmt_cache.py`](samples/python/stmt_cache.py)
+
+The same four timing runs through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/stmt_cache.py`). It sits with fbintf on the clean side of the wrapper split: no client-side statement cache to disable, and a real prepare-without-execute — `Cursor.prepare(sql)` returns a `Statement` (input/output metadata decoded into Python descriptors) and `Statement.free()` releases it — so the methodology is exactly the C++ twins'. The instructive cost is the binding's own: a hit is 0.3 ms here against 0.07 ms from C++, the difference being Python + ctypes work per prepare (profiling shows ~22 status checks and the metadata descriptors built on every call), which narrows the hit-versus-miss ratio to ~4–5× without hiding it.
+
+Verified output:
+
+```text
+1. identical text             100 prepares:   31.9 ms  (0.32 ms/prepare) - hits
+2. + i trailing spaces        100 prepares:  160.6 ms  (1.61 ms/prepare) - misses
+3. distinct literal           100 prepares:  144.1 ms  (1.44 ms/prepare) - misses
+4. identical text after DDL   100 prepares:  333.0 ms  (3.33 ms/prepare) - misses
+```
+
+Same ordering as every twin: trailing spaces and a changed literal miss alike, and byte-identical text after each unrelated `RECREATE TABLE` + commit misses hardest. One run on a busy machine reported 1.16 ms/prepare for run 1 — timings are only meaningful on a quiet server, which is why the samples compare runs within one process rather than absolute numbers.
+
 ### Things to try
 
 - Change run 2 to vary *case* instead of whitespace (`Select` / `sElect`…) — same misses, same reason.

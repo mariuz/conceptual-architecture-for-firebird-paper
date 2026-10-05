@@ -222,6 +222,26 @@ The same three demonstrations through [fbintf](https://github.com/MWASoftware/fb
 
 Verified: the three-state progression prints exactly as described (`libfbclient mapped=no` → `yes` with `libEngine14 mapped=no` → both `yes`); `rows=3 max(name)=sprocket NETWORK_PROTOCOL=<null: in-process>` with `engine pid=46710, my pid=46710`; and the continuum measured at `1.40 ms` embedded (`~/fbhandson/embedded_demo_fpc.fdb`) vs `17.60 ms` remote (`localhost:employee`) attach+detach average over 5 runs — the same order-of-magnitude gap as every native run above.
 
+### Python sample — [`samples/python/embedded_demo.py`](samples/python/embedded_demo.py)
+
+The same three demonstrations through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver (`python3 samples/python/embedded_demo.py`). Like rsfbclient's native backend and fbintf — and unlike node-firebird — it is a binding of `libfbclient`, so the embedded half is nothing more than `connect()` with a path that has no `inet://` prefix (`FIREBIRD=/opt/firebird` is set in `os.environ` before the library loads). And like fb-cpp and fbintf, the client library arrives at run time — `ctypes` loads it on the driver's first `get_api()` — so `/proc/self/maps` shows the three-state ladder: nothing, then the client, then the engine after the first local attach. One effect found while writing the sample is worth knowing: the first draft closed its working attachment before the timing loop and measured embedded at **137.04 ms**, *slower* than remote — with no attachment left the embedded engine closes the database, so every timed attach re-opened the file cold. Keeping one attachment open, as the C++ twin does by scope, restores the expected gap.
+
+Verified output:
+
+```text
+before any API use:    libfbclient mapped=no, libEngine14 mapped=no
+after get_api():       libfbclient mapped=yes, libEngine14 mapped=no
+after local attach:    libfbclient mapped=yes, libEngine14 mapped=yes
+
+rows=3  max(name)=sprocket  NETWORK_PROTOCOL=<null: in-process>
+engine pid=32633, my pid=32633 — the 'server' is this process
+
+attach+detach avg over 5 runs:
+    embedded  /tmp/fbhandson/embedded_demo_py.fdb       7.17 ms
+    remote    inet://localhost/employee                84.64 ms
+done.
+```
+
 ### Things to try
 
 - Run `./build/embedded_demo` while `/opt/firebird/bin/isql /tmp/fbhandson/embedded_demo.fdb` sits attached in another shell — observe the 08001 exclusive-open error from the footnote above; then point both at a `FIREBIRD` root whose `firebird.conf` says `ServerMode = Classic` and watch them coexist.

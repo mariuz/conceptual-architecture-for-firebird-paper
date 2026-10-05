@@ -184,6 +184,34 @@ The same five plans through [fbintf](https://github.com/MWASoftware/fbintf) (ven
 
 Verified: all five access paths agree with every other run, in explained form — `Index "PUBLIC"."DOC_UPPER_TITLE" Range Scan (full match)` for the expression predicate, `Index "PUBLIC"."DOC_ACTIVE" Full Scan` for the partial, `First N Records` over `Index "PUBLIC"."DOC_ID_DESC" Full Scan` for the descending walk, a `Bitmap Or` over `DOC_NUM` and `DOC_ID_DESC` range scans for the `OR`, `Table "PUBLIC"."DOC" Full Scan` for `CONTAINING` — and the same closing count, `matched 111 rows by scanning all 3000`.
 
+### Python sample — [`samples/python/indexes.py`](samples/python/indexes.py)
+
+The same five plans through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/indexes.py`). Of all the twins this is the one that gets *both* plan forms for free, as two properties of the prepared `Statement` that `cursor.prepare(sql)` returns: `stmt.plan` is the legacy one-line `PLAN (...)` the OO-API and fb-cpp runs print (`IStatement::getPlan(false)`), and `stmt.detailed_plan` the explained tree that fbintf and rsfbclient's `RDB$SQL.EXPLAIN` workaround produce (`getPlan(true)`). The sample prints the legacy form for all five queries and adds the explained form under the `OR`, where it makes the bitmap combining visible.
+
+Verified output (trimmed):
+
+```text
+select id from doc where num = 42 or id = 7
+PLAN ("PUBLIC"."DOC" INDEX ("PUBLIC"."DOC_NUM", "PUBLIC"."DOC_ID_DESC"))
+explained:
+  Select Expression
+      -> Filter
+          -> Table "PUBLIC"."DOC" Access By ID
+              -> Bitmap Or
+                  -> Bitmap
+                      -> Index "PUBLIC"."DOC_NUM" Range Scan (full match)
+                  -> Bitmap
+                      -> Index "PUBLIC"."DOC_ID_DESC" Range Scan (full match)
+
+select id from doc where title containing 'itle 12'
+PLAN ("PUBLIC"."DOC" NATURAL)
+
+CONTAINING is correct but unindexed: matched 111 rows by scanning all 3000
+done.
+```
+
+The three plans trimmed from the top are identical to the C++ run's: `DOC_UPPER_TITLE` and `DOC_ACTIVE` as `INDEX`, `DOC_ID_DESC` as `ORDER`.
+
 ### Things to try
 
 - Drop `doc_active` and re-run: the `status = 'active'` query falls back to... check whether the optimizer picks `doc_num` (it can't) or `NATURAL` — then recreate the partial index with `WHERE status = 'done'` and watch the `'active'` query *ignore* it: a partial index only serves predicates that imply its condition.

@@ -320,6 +320,12 @@ The same six statements through [fbintf](https://github.com/MWASoftware/fbintf) 
 
 Verified: the `?` in `WHERE emp_no = ?` comes back as `param 0: SQL_SHORT, length=2` on a parsed-but-never-executed statement, both `FIRST` roles parse OK, and the failures report `Token unknown - line 1, column 1 / SELEC`, `Token unknown - line 3, column 7 / ORDER` and `Column unknown "FRST_NAME" At line 1, column 8` — the same tokens, lines and columns as the other three runs — with `CheckStatusVector` confirming `isc_dsql_token_unk_err` on both syntax errors and `isc_dsql_field_err` on the semantic one.
 
+### Python sample — [`samples/python/parser_errors.py`](samples/python/parser_errors.py)
+
+The same six statements through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/parser_errors.py`). Like fbintf and unlike the two wire-protocol drivers, it has a genuine prepare-only step — `cursor.prepare(sql)` returns a `Statement` whose `type` is a `StatementType` enum — but its public surface describes only *output* columns (`cursor.description`, after execute); the `?` parameter's descriptor is read from the OO API's `IMessageMetadata` that the driver wraps (`stmt._istmt.get_input_metadata()`), which the sample does openly as the one reach past the public API. The failure channel is the richest of the dynamic-language twins: `DatabaseError` carries the formatted status vector as its text, `sqlcode`, and the raw `gds_codes` tuple, so the sample tells `isc_dsql_token_unk_err` (syntax) from `isc_dsql_field_err` (semantic) programmatically, as fbintf's `CheckStatusVector` does.
+
+Verified: the `?` comes back as `param 0: sqltype=500 (SHORT), length=2` on a never-executed statement, both `FIRST` roles parse OK, and the failures report `Token unknown - line 1, column 1 / SELEC` and `Token unknown - line 3, column 7 / ORDER` (classified *syntax*, sqlcode -104) and `Column unknown "FRST_NAME" At line 1, column 8` (classified *semantic*, sqlcode -206) — the same tokens, lines and columns as every other run.
+
 ### Things to try
 
 - Feed the C++ sample a statement using a *reserved* word as an identifier (`SELECT order FROM rdb$database`) and compare with the non-reserved `FIRST` case; the token lists at the top of [`parse.y`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/parse.y) explain the difference.

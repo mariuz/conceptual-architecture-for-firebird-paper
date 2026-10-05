@@ -550,6 +550,40 @@ The counter-arc to the Rust section: where rsfbclient cannot reach the observer'
 
 Verified: `Trace session ID 5 started` ... `[stop ] Trace session ID 5 stopped`, with the marker's `EXECUTE_STATEMENT_FINISH` carrying `PLAN ("SYSTEM"."RDB$RELATIONS" NATURAL)`, `0 ms, 68 fetch(es)` and per-table `Natural` = 60 in between; the captured attachment reads `SYSDBA:NONE, UTF8` with `MON$REMOTE_PROCESS`-style identification of `samples/fpc/bin/trace`, and — like the fb-cpp run — the trace exposes an extra `(READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY)` transaction that fbintf's attachment machinery starts alongside the marker's `(CONCURRENCY | NOWAIT | READ_ONLY)` one, this wrapper's default TPBs read straight out of the stream.
 
+### Python sample — [`samples/python/trace_demo.py`](samples/python/trace_demo.py)
+
+The full two-service session through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/trace_demo.py` — not `trace.py`, which would shadow the standard-library module) — and the most typed of the wrapper family: the trace family are methods on `Server.trace`, no raw tags anywhere. `trace.start(config=..., name=...)` sends `isc_action_svc_trace_start` with the text in `isc_spb_trc_cfg` and returns the session id (the driver consumes the "Trace session ID n started" line itself), `readline_timed()` drains `isc_info_svc_line`, and `trace.stop(session_id=...)` on a second `Server` ends the stream. Three driver lessons came out of writing it. `connect_server()` takes the *name* of a registered server config, not a host: an unknown name like `"localhost"` silently attaches the bare local `service_mgr` — an *embedded* service manager inside the Python process — so the shared `fbsample.server()` helper registers the host first to get a real `localhost:service_mgr`. Plain iteration over the `Server` (`readline()`) asks for `isc_info_svc_to_eof`, which hands the whole log over in bulk only after the session has ended — `readline_timed(1)` is the live, line-at-a-time drain the C++ twin does by hand. And `trace.sessions`, the typed decoding of `isc_action_svc_trace_list`, fails against Firebird 6: the parser does not know the new `plugins:` line and raises `InterfaceError` (the sample catches and prints it — an honest version-skew gap).
+
+Verified output (trimmed like the C++ listing; the full stream also carries COMMIT/ROLLBACK/DETACH events):
+
+```text
+[trace] Trace session ID 5 started
+[worker] marker query says: 60
+[trace] 2026-10-05T22:24:14.1160 (665:0x7399bffa0dc0) TRACE_INIT
+[trace] 	SESSION_5 hands-on-py
+[trace] 2026-10-05T22:24:14.1160 (665:0x7399bffa0dc0) ATTACH_DATABASE
+[trace] 	/tmp/fbhandson/trace_py.fdb (ATT_28, SYSDBA:NONE, UTF8, TCPv4:127.0.0.1/56462)
+[trace] 	/usr/bin/python3.12:33325
+[trace] 2026-10-05T22:24:14.1170 (665:0x7399bffa0dc0) START_TRANSACTION
+...
+[trace] 		(TRA_17, READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY)
+...
+[trace] SELECT COUNT(*) FROM RDB$RELATIONS /* traced! */
+[trace] PLAN ("SYSTEM"."RDB$RELATIONS" NATURAL)
+[trace] 1 records fetched
+[trace]       0 ms, 68 fetch(es)
+...
+[trace] "SYSTEM"."RDB$RELATIONS"                60
+...
+[trace] 2026-10-05T22:24:14.1350 (665:0x7399bffa0dc0) TRACE_FINI
+[trace] 	SESSION_5 hands-on-py
+[list ] driver could not parse trace_list: Unexpected line in trace session list:   plugins: <default>
+[stop ] Trace session ID 5 stopped
+done.
+```
+
+Same `Natural` = 60 and 68 fetches as every twin. Like fb-cpp and fbintf, the trace exposes a driver-started `READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY` transaction (`TRA_17`) beside the marker's `CONCURRENCY | WAIT | READ_WRITE` one — firebird-driver's internal query transaction, rolled back at detach — and the remote process is the interpreter, `/usr/bin/python3.12`, not the script.
+
 ### Things to try
 
 - Misspell a config element (`log_statement_finish` → `log_statement_finnish`) and re-run: the session starts, the stream reports the parse error for that database, and the workload runs untraced — the [configuration-error posture](#trace-is-a-plugin-and-a-plugin-that-misbehaves-is-ejected) reproduced at will.

@@ -195,6 +195,25 @@ The same scenario through [fbintf](https://github.com/MWASoftware/fbintf) (vendo
 
 Verified: snapshot holds at 100 while B commits 150, read committed then sees 150, and the NO WAIT conflict raises `gds 335544336` with the same `deadlock / update conflicts with concurrent update / concurrent transaction number is` chain in `E.Message`.
 
+### Python sample — [`samples/python/transactions.py`](samples/python/transactions.py)
+
+The same scenario through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives the same libfbclient OO API as the C++ samples through ctypes (`pip install -r samples/python/requirements.txt`, then `python3 samples/python/transactions.py`). The TPB is a typed `TPB` object — `Isolation.SNAPSHOT`, `Isolation.READ_COMMITTED_RECORD_VERSION`, `lock_timeout=0` for NO WAIT — whose `get_buffer()` encodes the same `isc_tpb_*` bytes the C++ sample packs by hand, and each explicit transaction is a `TransactionManager` beside the connection's own main transaction. The conflict arrives as a `DatabaseError` carrying the whole status vector: `sqlcode` and `gds_codes` as well as the text.
+
+Verified output:
+
+```text
+A (SNAPSHOT)       sees amount = 100
+B                  committed amount = 999
+A (same SNAPSHOT)  sees amount = 100   <- still the start-of-tx version
+A (READ COMMITTED) sees amount = 999   <- the committed version
+A conflicting update failed as designed:
+    deadlock
+    -update conflicts with concurrent update
+    -concurrent transaction number is 9
+    sqlcode -913 / gds 335544336
+done.
+```
+
 ### Things to try
 
 - Change `isc_tpb_nowait` to `isc_tpb_wait` in step 3 of the C++ sample and watch the update block until `holdB` commits — then fail anyway (SNAPSHOT cannot see the new version).

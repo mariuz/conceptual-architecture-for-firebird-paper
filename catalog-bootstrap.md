@@ -366,6 +366,12 @@ The same four self-description steps through [fbintf](https://github.com/MWASoft
 
 Verified: the same fixed points as the other three runs — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `0 / 60 / 598` for formats/system relations/system columns, and after `CREATE TABLE`+`ALTER TABLE` the format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id. Incidentally the TIP landed on page 287 and the generator page on 85, matching the C++ and Rust runs on equally fresh files.
 
+### Python sample — [`samples/python/catalog.py`](samples/python/catalog.py)
+
+The same four self-description steps through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/catalog.py`). The fresh-database dance is the shared `recreate()` helper — attach and `Connection.drop_database()` if the file exists, then `create_database()` — and every listing takes its headers from `cursor.description`, overridden only where the C++ sample also renames computed columns. The `hdr_PAGES` anchor stays as primitive as in every other language: `open()`, `seek(28)` and `struct.unpack('<I', ...)` on the file the server wrote, below any driver.
+
+Verified: identical to the C++ run on an equally fresh file — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, the `RDB$PAGES` rows down to the incidental TIP on page 287 and generator page on 85, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `0 / 60 / 598` for formats/system relations/system columns, and format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id.
+
 ### Things to try
 
 - Add a third DDL statement (`ALTER TABLE t1 ALTER b TYPE VARCHAR(20)`) and watch `RDB$FORMATS` grow to format 3 — then `SELECT` the table and see all rows decode, the lazy-conversion story of [the metadata-cache document](metadata-cache.md#formats-the-on-disk-half-of-the-same-idea).

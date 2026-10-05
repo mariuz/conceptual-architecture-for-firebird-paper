@@ -459,6 +459,26 @@ The same probes through [fbintf](https://github.com/MWASoftware/fbintf) (vendore
 
 Verified: NO WAIT failed after 0.001 s with `gds 335544345: lock conflict on no wait transaction`, LOCK TIMEOUT 3 after 3.000 s with `gds 335544510: lock time-out on wait transaction` — the bare reservation-path dialect, not the record-conflict chain — and WAIT granted after 2.001 s, the moment the holder committed. The cross-update cycle sat until the scan: A failed after 10.0 s with `gds 335544336: deadlock / update conflicts with concurrent update / concurrent transaction number ...`, and B's update proceeded once the victim rolled back.
 
+### Python sample — [`samples/python/lock_manager.py`](samples/python/lock_manager.py)
+
+The same probes and the same deadlock through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/lock_manager.py`). Like the Free Pascal twin — and unlike both C++ twins, which go through `SET TRANSACTION ... RESERVING` — it takes the reservation *in the TPB itself*: `TPB.reserve_table('T1', TableShareMode.PROTECTED, TableAccessMode.LOCK_WRITE)` encodes `isc_tpb_lock_write "T1"` + `isc_tpb_protected`, and the TPB's `lock_timeout` of `0` / `3` / `-1` selects `isc_tpb_nowait` / `isc_tpb_lock_timeout` / `isc_tpb_wait`. Each probe is a `TransactionManager` whose `begin()` either returns (granted) or raises `DatabaseError` — the lock is taken at transaction start, before any statement. The deadlock act crosses two default-TPB (SNAPSHOT WAIT) updates from a `threading.Thread`; ctypes releases the GIL for the blocking call, so both waits really park in the engine at once.
+
+Verified output:
+
+```text
+holder: t1 reserved FOR PROTECTED WRITE (LCK_relation at LCK_EX)
+NO WAIT:         failed after 0.001 s: lock conflict on no wait transaction
+LOCK TIMEOUT 3:  failed after 3.001 s: lock time-out on wait transaction
+holder: committed (2 s later) -> lock released
+WAIT:            granted after 2.008 s
+building deadlock: A updates row 1, B updates row 2, then cross...
+deadlock: A failed after 10.0 s: deadlock
+deadlock: B's update proceeded after 10.0 s (A was the victim)
+the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the scan.
+```
+
+The bare reservation-path dialect again (`isc_lock_conflict` / `isc_lock_timeout`), not the record-conflict chain the node and Rust twins see. One earlier run, on a host busy with other samples, measured the timed probe at 4.8 s rather than 3.0 s: the deadline is only checked when the waiting thread wakes, so load can stretch a lock timeout.
+
 ### Things to try
 
 - While the C++ holder has `t1` reserved, run `fb_lock_print -d /tmp/fbhandson/lock_manager.fdb -o -r` *(or `-f` on the `fb_lock_*` file)*: the reservation appears as an `LCK_relation`-series request at state 6 (EX), and the LOCK TIMEOUT probe shows up as `Pending` for exactly three seconds.

@@ -460,6 +460,23 @@ The same four demonstrations through [fbintf](https://github.com/MWASoftware/fbi
 
 Verified: B fails with `-206 ... Column unknown "E"` while A reads `<null>` from the same uncommitted ALTER; B's still-open SNAPSHOT then reads `d` from an ALTER committed after its snapshot began; demo 3 raises `Engine Code: 335544351 / unsuccessful metadata update / ALTER TABLE "PUBLIC"."T" failed / newVersion: table 132 is used by transaction 71`; and `RDB$FORMATS` holds 3 shapes for `T`, the surviving row decoding as `1 | <null> | <null>`.
 
+### Python sample — [`samples/python/metadata_cache.py`](samples/python/metadata_cache.py)
+
+The same four demonstrations through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/metadata_cache.py`). Like the Rust twin it refuses the convenience the driver offers: a firebird-driver `Connection` carries an implicit *main* transaction that `con.cursor()` silently rides, so every step here runs in an explicit `TransactionManager` instead — which prepare happened inside which transaction is the experiment. B's open SNAPSHOT is a typed `TPB(isolation=Isolation.SNAPSHOT)`, and demo 3's failure is a `DatabaseError` carrying the whole status vector, so the sample can print the three gds codes behind the three-line message.
+
+Verified output (demos 1, 2 and 4 are line-for-line the C++ run):
+
+```text
+== 3. two uncommitted DDLs on one object ==
+B: ALTER failed:
+unsuccessful metadata update
+-ALTER TABLE "PUBLIC"."T" failed
+-newVersion: table 128 is used by transaction 10
+   (sqlcode -607, gds_codes [335544351, 336397287, 335544382])
+```
+
+The last line is the status vector the other twins flatten into text: `isc_no_meta_update`, `isc_dsql_alter_table_failed`, and `isc_random` — the free-text code `newVersionBusy`'s `raiseFmt` travels in.
+
 ### Things to try
 
 - In demo 2, move the `SELECT d FROM t` *before* A's second ALTER commits, keep the statement handle, and re-execute it after the commit: an already-prepared statement keeps running against the version it was compiled with — resolution is at *prepare* time, which is the precise wording the document insists on.

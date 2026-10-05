@@ -303,6 +303,42 @@ The same four query groups through [fbintf](https://github.com/MWASoftware/fbint
 
 Verified: every number matches the other twins — running totals 100/300/450 (East) and 300/550/950 (West), `LAG`'s `<null>` opening each partition, `RANK(175)` = 3 in East and 1 in West, medians 150/300, and row 2's neighbour average `125` with its own `200` excluded from the FB6 frame. `GetPlan` prints five `Window Partition` nodes over one `Table "PUBLIC"."SALES" Full Scan`, four fed by their own `Sort` with a `Record Buffer` between every pair — same shape as the Rust run's explained plan, though with wider sort keys (key lengths 56, 56, 12, 60 versus 24, 24, 12, 28 there: this sample attaches with a UTF8 client charset, and text sort keys widen with the connection charset).
 
+### Python sample — [`samples/python/windows.py`](samples/python/windows.py)
+
+The same six-row table and four query groups through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient (`python3 samples/python/windows.py`). Both plans come from the driver's statement object, no SQL detour: `cursor.prepare(sql)` returns a `Statement` whose `.plan` is the legacy `PLAN SORT (SORT (SORT (SORT ...)))` and `.detailed_plan` the explained tree. Headers are the SELECT-list aliases from `cursor.description`, and values arrive typed — `NUMERIC` as `decimal.Decimal`, the `PERCENTILE_CONT` median as a Python `float` (hence `150.0`), `LAG`'s opening NULL as `None`. The delta against the Rust twin is the running total: `SUM` over `NUMERIC(10,2)` widens to `NUMERIC(20,2)`, which travels as INT128 (SQL type 32752, scale −2), and firebird-driver decodes it into a `Decimal` with no `CAST` needed.
+
+Verified output (trimmed):
+
+```text
+== window functions ==
+REGION AMOUNT RN OVERALL_RANK RUNNING_TOTAL PREV_AMOUNT
+------ ------ -- ------------ ------------- -----------
+East   100.00 1  6            100.00        <null>
+East   200.00 3  4            300.00        100.00
+East   150.00 2  5            450.00        200.00
+West   300.00 2  2            300.00        <null>
+West   250.00 1  3            550.00        300.00
+West   400.00 3  1            950.00        250.00
+
+plan:PLAN SORT (SORT (SORT (SORT ("PUBLIC"."SALES" NATURAL))))
+...
+== PERCENTILE_CONT median / hypothetical RANK(175) ==
+REGION MEDIAN RANK_OF_175
+------ ------ -----------
+East   150.0  3
+West   300.0  1
+
+== FB6 frame EXCLUDE CURRENT ROW (neighbours' average) ==
+ID AMOUNT NEIGHBOUR_AVG
+-- ------ -------------
+1  100.00 200.00
+2  200.00 125.00
+3  150.00 250.00
+...
+```
+
+The `.detailed_plan` printed between them has the same shape as the Rust and Free Pascal runs — five `Window Partition` nodes over one `Table "PUBLIC"."SALES" Full Scan`, four fed by their own `Sort` (key lengths 56, 56, 12, 60, matching the Free Pascal run because this sample also attaches with a UTF8 client charset) — and `FILTER`/`LISTAGG`/`STDDEV_POP` give East `1`, `100.00,150.00,200.00`, `40.82` and West `3`, `250.00,300.00,400.00`, `62.36`.
+
 ### Things to try
 
 - Change the FB6 exclusion to `EXCLUDE TIES` or `EXCLUDE GROUP` after adding a duplicate amount — the frame drops peers instead of the current row.

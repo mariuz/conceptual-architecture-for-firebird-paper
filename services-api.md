@@ -520,6 +520,30 @@ The same session through [fbintf](https://github.com/MWASoftware/fbintf) (vendor
 
 Verified: server version `LI-T6.0.0.2076 Firebird 6.0 fd83f03`, then the same 74 gbak lines the C++ and JS runs saw — `gbak:readied database /tmp/fbhandson/services_fpc.fdb for backup` through `gbak:closing file, committing, and finishing. 3072 bytes written` — drained in 75 `Query()` polls (the 75th returns the empty line that ends the loop), with `/tmp/fbhandson/services_fpc.fbk` written on the server, owned by the server's user. One correction to the sample's closing printout, which claims both other twins shell out to gbak: in this collection only the Rust twin truly lacks the Services API — node-firebird speaks the opcodes, just re-implemented in JavaScript rather than through fbclient.
 
+### Python sample — [`samples/python/services.py`](samples/python/services.py)
+
+The same session through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which — like fbintf — drives the *real* Services API through libfbclient (`python3 samples/python/services.py`). It maps the API onto typed objects: `connect_server()` builds the `SPB_ATTACH`, `Server.info` answers the information items as properties (`architecture`, `home_directory`, `security_database`; `get_info(SrvInfoCode.SERVER_VERSION)` for the raw string, while `info.version` reduces it to a semver), and `Server.database.backup(database=, backup=, verbose=True)` assembles the `isc_action_svc_backup` SPB. The drain is kept visible on purpose: `readline_timed()` is exactly one `isc_info_svc_line` query (passing `callback=` to `backup()` would hide the same loop inside the driver). The instructive trap was the attach itself: `connect_server()` takes the *name* of a registered server config, not a host, and an unknown name like `"localhost"` silently attaches the bare local `service_mgr` — an **embedded** service manager running `BURP_main` inside the Python process. The first run "worked", 74 lines and all, but the `.fbk` came out owned by the *client's* user — the operational rule of this document, inverted, and the file owner is what gave it away. The shared `fbsample.server()` helper now registers the host (`driver_config.register_server`) so the attach really is `localhost:service_mgr`, which the sample prints first.
+
+Verified output (middle trimmed):
+
+```text
+service       : localhost:service_mgr
+server version: LI-T6.0.0.2182 Firebird 6.0 3e1aacb (info.version = 6.0.0.2182)
+architecture  : Firebird/Linux/AMD/Intel/x64
+home directory: /opt/firebird/
+security db   : /opt/firebird/security6.fdb
+backup started (verbose) - draining the 1 KB ring buffer:
+  gbak:readied database /tmp/fbhandson/services_py.fdb for backup
+  gbak:creating file /tmp/fbhandson/services_py.fbk
+  gbak:starting transaction
+  ...
+  gbak:closing file, committing, and finishing. 3072 bytes written
+done: 74 gbak lines drained in 75 query() polls
+the file /tmp/fbhandson/services_py.fbk now exists on the SERVER, owned by the server's user
+```
+
+The same 74 lines in 75 polls as the C++ and Pascal twins, and this time `ls -l` agrees: `-rw-r--r-- firebird firebird 3072 /tmp/fbhandson/services_py.fbk`.
+
 ### Things to try
 
 - Drop `isc_spb_verbose` from the C++ start block: the backup completes in a handful of polls with almost no lines — the non-verbose escape hatch from [the pipe section](#the-service-thread-and-the-1-kb-pipe).

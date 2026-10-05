@@ -208,6 +208,35 @@ The same probe through [fbintf](https://github.com/MWASoftware/fbintf) (vendored
 
 Verified: the describe table lists `SQL_INT128` (code 32752, scale 0 and −8), `SQL_DEC34` (32762), `SQL_TIMESTAMP_TZ` (32754), `SQL_BOOLEAN`, `SQL_TEXT`, `SQL_VARYING`; typed fetches return the max INT128 `170141183460469231731687303715884105727` and `123456789012345678901234567890.12345678` exactly, `C_TSTZ` as `2026-07-21 12:00:00 Europe/Bucharest` (zone id 65088, dst offset 180 min), and the DECFLOAT bug prints the wrong `123456789012345678901234567.8901234` against the engine's correct rendering.
 
+### Python sample — [`samples/python/migration.py`](samples/python/migration.py)
+
+The same probe through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/migration.py`), on three faces: the described wire codes (read from the `IMessageMetadata` the driver wraps, beside the DB-API `cursor.description` it publishes), the native Python values, and the server-side `CAST ... AS VARCHAR` fallback. Like fbintf, it sits at the far end of the wrapper spectrum from node-firebird and rsfbclient — every type arrives natively *and exactly*: `INT128`, `NUMERIC(38,8)` and `DECFLOAT(34)` as `decimal.Decimal` (the DECFLOAT digits that fbintf's decoder corrupts arrive intact here), `TIMESTAMP WITH TIME ZONE` as an aware `datetime` whose `tzinfo` is the named zone itself (not just the +03:00 offset), `BOOLEAN` as `bool`, OCTETS as `bytes`. The one lag is in the metadata the DB-API layer publishes: `cursor.description`'s `type_code` is `None` for `INT128`, `float` for `DECFLOAT` and `str` for OCTETS, although the values come back as `Decimal` and `bytes` — a migration tool that maps target types from `description` would choose the wrong ones.
+
+Verified output (trimmed):
+
+```text
+column     code wire type        length scale   cursor.description type_code
+C_INT128  32752 SQL_INT128           16     0   None
+C_NUM     32752 SQL_INT128           16    -8   None
+C_DEC     32762 SQL_DEC34            16     0   float
+C_TSTZ    32754 SQL_TIMESTAMP_TZ     12     0   datetime
+C_BOOL    32764 SQL_BOOLEAN           1     0   bool
+C_UUID      452 SQL_TEXT             16     0   str
+C_VC        448 SQL_VARYING          80     0   str
+
+same row fetched natively:
+
+  C_INT128 -> Decimal  170141183460469231731687303715884105727
+  C_NUM    -> Decimal  123456789012345678901234567890.12345678
+  C_DEC    -> Decimal  12345678901.23456789012345678901234
+  C_TSTZ   -> datetime 2026-07-21 12:00:00+03:00 [tzfile('/usr/share/zoneinfo/Europe/Bucharest')]
+  C_BOOL   -> bool     True
+  C_UUID   -> bytes    f8ec2c4f-5862-4e27-8fe1-9861a15b4729
+  C_VC     -> str      naïve ütf8 text
+```
+
+The text face that follows is the C++ run's to the character (`2026-07-21 12:00:00.0000 Europe/Bucharest`, `TRUE`, the same UUID upper-cased by `UUID_TO_CHAR`).
+
 ### Things to try
 
 - Change the connection `encoding` to `'NONE'` in the JS sample and re-probe `C_UUID` — a 16-byte `Buffer` now, no error: charset coercion happens client-side, per connection.

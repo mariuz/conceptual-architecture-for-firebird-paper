@@ -178,6 +178,35 @@ Both halves of the experiment once more, through [fbintf](https://github.com/MWA
 
 Verified: both plans print `Sort (record length: 430, key length: 408)` under a `Refetch` node; the big sort peaks at 1 unlinked `fb_sort_*` file of exactly 73400320 bytes with MON$ growth of +67964928 over a 28217344-byte idle; the small sort shows 0 scratch files, 0 bytes, and +19836928 of in-memory growth — the same threshold signature as all four twins above.
 
+### Python sample — [`samples/python/sorting.py`](samples/python/sorting.py)
+
+The same experiment through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/sorting.py`). The watcher is a plain `threading.Thread` on its own attachment — the driver releases the GIL inside its ctypes calls, so it keeps polling while the main thread is blocked in the fetch that performs the sort — and each MON$ poll is a fresh read-only `TransactionManager` built from a typed `TPB`. The plan surface is the most complete of the wrapper family: the prepared `Statement` offers both `.plan` (the legacy `PLAN SORT (...)`) and `.detailed_plan`, whose Sort node carries the record and key lengths. The scratch half is the honest gap — not of the driver but of privilege: the unlinked `fb_sort_*` files are visible only in the server's `/proc/<pid>/fd`, which needs the server's uid or root, and this run had neither (`FB_SORT_SUDO=1` makes the sample use `sudo -n` like the C++ twin). So it falls back to a root-free witness: an unlinked file still occupies its blocks, and the free space of the scratch filesystem (`/tmp`, the default `TempDirectories`) drops by the spill while the big sort runs.
+
+Verified output:
+
+```text
+bulk: 200000 rows, 400-byte ASCII key -> ~82 MB of sort data
+server pid 665, database memory allocated while idle: 26025984 bytes
+
+big sort (200k rows, ~82 MB)
+  PLAN SORT ("PUBLIC"."BULK" NATURAL)
+  -> Sort (record length: 430, key length: 408)
+  top row id = 41552
+  /proc/665/fd not readable; peak drop of free space on /tmp: 73408512 bytes
+  peak database MON$MEMORY_ALLOCATED: 94384128 bytes (+68358144 over idle)
+
+small sort (20k rows, ~8 MB)
+  PLAN SORT ("PUBLIC"."BULK" NATURAL)
+  -> Sort (record length: 430, key length: 408)
+  top row id = 15690
+  /proc/665/fd not readable; peak drop of free space on /tmp: 0 bytes
+  peak database MON$MEMORY_ALLOCATED: 34639872 bytes (+8613888 over idle)
+
+done.
+```
+
+The free-space drop of 73408512 bytes is the twins' 73400320-byte scratch file plus two 4 KB filesystem blocks of noise — the spill measured from outside the process, without reading its fd table — and the big sort's MON$ growth (+68 MB) matches every other twin. (The fallback measures the whole filesystem, so another process writing to `/tmp` at the same moment would show up in it.)
+
 ### Things to try
 
 - Drop the `desc` and `first 1` and fetch everything: the numbers barely move — the sort is a pipeline breaker, so the *open* pays for the whole sort whether you fetch one row or all 200,000.

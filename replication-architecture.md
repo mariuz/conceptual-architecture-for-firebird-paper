@@ -312,6 +312,28 @@ The same publication state walk through [fbintf](https://github.com/MWASoftware/
 
 Verified: the identical four-state progression — `RDB$DEFAULT` at `active=0 auto_enable=0` with `(no tables in the publication)`, then `active=1`, then `published table: PUBLIC.REPL_ORDERS`, then both `PUBLIC.REPL_ORDERS` and `PUBLIC.REPL_SCRATCH` with `auto_enable=1` after `INCLUDE ALL` — ending in `MON$DATABASE.MON$REPLICA_MODE = 0` (not a replica: this side publishes).
 
+### Python sample — [`samples/python/replication.py`](samples/python/replication.py)
+
+The same state walk through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/replication.py`). The DDL side is as plain as in every twin — each step a statement plus `Connection.commit()` on the driver's main transaction, each reset step a `try`/`except DatabaseError` with a rollback, `TRIM(...)` in the read-backs for the `CHAR(63)` columns. Where it adds something is the replica question: besides `MON$DATABASE.MON$REPLICA_MODE` it asks the attachment directly, `Connection.info.get_info(DbInfoCode.REPLICA_MODE)`, which sends the `isc_info_replica_mode` database-info item and decodes the answer into the typed `ReplicaMode` enum — the same fact from the API rather than from a monitoring snapshot. (The driver can also *set* replica mode through the DPB, `set_db_replica` / `isc_dpb_set_db_replica`; the sample leaves this scratch database a primary.)
+
+Verified output:
+
+```text
+-- initial state (publication exists but is inactive)
+RDB$DEFAULT   ACTIVE_FLAG 0   AUTO_ENABLE 0    published: (none)
+-- after ENABLE PUBLICATION
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: (none)
+-- after INCLUDE TABLE REPL_ORDERS
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: PUBLIC.REPL_ORDERS
+-- after INCLUDE ALL (auto-enable: future tables join automatically)
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 1    published: PUBLIC.REPL_ORDERS, PUBLIC.REPL_SCRATCH
+
+MON$DATABASE.MON$REPLICA_MODE         = 0
+info.get_info(DbInfoCode.REPLICA_MODE) = <ReplicaMode.NONE: 0>
+
+done.
+```
+
 ### Things to try
 
 - Create a new table *after* `INCLUDE ALL` and re-read `RDB$PUBLICATION_TABLES` — `RDB$AUTO_ENABLE` means it appears without any further DDL.

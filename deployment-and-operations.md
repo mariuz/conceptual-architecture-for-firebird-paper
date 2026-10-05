@@ -211,6 +211,32 @@ The same three layers through [fbintf](https://github.com/MWASoftware/fbintf) (v
 
 Verified: the same self-portrait against the shared `employee` database — ODS `14.0`, page size `8192`, sweep interval `20000`, forced writes `1`, `ServerMode Super` among 69 `RDB$CONFIG` settings all `false`, the explicitly-set table again empty, and engine `6.0.0` over `TCPv4` with `ChaCha64` from `127.0.0.1`.
 
+### Python sample — [`samples/python/deployment.py`](samples/python/deployment.py)
+
+The same three SQL layers through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient (`python3 samples/python/deployment.py`), plus two layers that need no SQL at all, because the driver exposes both info APIs as typed properties. `con.info` answers from the attachment's `isc_info_*` items — `page_size`, `ods`, `page_cache_size`, `sweep_interval`, and `write_mode` as an enum (`SYNC` is forced writes on) — and `srv.info`, on a `service_mgr` attachment, answers the questions an operator would otherwise ask a shell on the server: the install's home directory, security database, lock and message directories, and which database files are attached right now. (As in the [backup twin](backup-and-recovery.md#python-sample--samplespythonbackuppy), the sample registers the host with `driver_config` before `connect_server()`; an unregistered name silently reaches the *embedded* service manager of the Python process instead of the server's.) As in the fb-cpp, Rust and Free Pascal runs, conversion is client-side, so `RDB$CONFIG_IS_SET` prints as Python's `False`.
+
+Verified: the SQL layers match the other runs — `/opt/firebird/examples/empbuild/employee.fdb`, ODS `14.0`, page size `8192`, 2048 buffers, sweep interval `20000`, forced writes `1`, `ServerMode Super`, engine `6.0.0` over `TCPv4` with `ChaCha64` — with one deployment drift since those runs, which is exactly what this document says `RDB$CONFIG` is for: this server now reports 70 settings, and the "explicitly set" table is no longer empty but shows `ExternalFileAccess = Restrict /tmp/fbhandson` with source `firebird.conf`. The two driver-only layers:
+
+```text
+== con.info: the same facts as isc_info_* items, no SQL ==
+  name                   /opt/firebird/examples/empbuild/employee.fdb
+  ODS                    14.0
+  page size              8192
+  page cache size        2048
+  sweep interval         20000
+  write mode             SYNC
+  pages allocated        401
+
+== srv.info: the install tree, from the service manager ==
+  server version         6.0.0.2182
+  architecture           Firebird/Linux/AMD/Intel/x64
+  home directory         /opt/firebird/
+  security database      /opt/firebird/security6.fdb
+  lock directory         /tmp/firebird/
+  message directory      /opt/firebird/
+  attached databases     /opt/firebird/examples/empbuild/employee.fdb
+```
+
 ### Things to try
 
 - Run the C++ sample with an `xnet://` or `inet6://` URL (or embedded, with a direct path and `FIREBIRD=` set) and watch `NETWORK_PROTOCOL`, `CLIENT_ADDRESS` and `WIRE_CRYPT_PLUGIN` change while `RDB$CONFIG` stays identical — deployment facts vs session facts.

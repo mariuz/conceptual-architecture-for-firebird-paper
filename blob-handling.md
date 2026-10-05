@@ -300,6 +300,39 @@ The same scenario through [fbintf](https://github.com/MWASoftware/fbintf) (vendo
 
 Verified: the three `IBlob.Write` calls come back in a single `IBlob.Read` of 40 bytes (`"first segmentsecond, longer segmentthird"`), while `GetInfo` still proves the on-disk structure — `3 segments, longest 22, total 40 bytes, type 0 (0=segmented)`; `RDB$FIELDS` shows `DATA` subtype 0 charset `<null>` and `NOTE` subtype 1 `UTF8`; `BLOB_APPEND` yields `17` octets, `17` chars, `part1-part2-part3` — the same 17 bytes as the other three runs.
 
+### Python sample — [`samples/python/blobs.py`](samples/python/blobs.py)
+
+The same scenario through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient (`python3 samples/python/blobs.py`), whose blob model is chosen by the *Python value* bound to the parameter: a `str` or `bytes` becomes a **segmented** blob written in 64 KB `putSegment()` calls, while any file-like object (anything with `.read()`) becomes a **stream** blob with one `putSegment()` per `read()` — so a ten-line `SegmentSource` class yielding the three pieces writes the C++ sample's three segments, but into a stream blob. On fetch, columns named in `cursor.stream_blobs` (or longer than `stream_blob_threshold`) come back as a `BlobReader`, a standard Python file object with `read()`/`readline()`/`seek()`/`tell()` plus `.length` and `.blob_type`; everything else is materialised into `str` (text) or `bytes` (binary), which is why `BLOB_APPEND`'s result needs no `CAST`. The honest gaps sit where the Free Pascal twin's do: `read()` coalesces segments, so boundaries are invisible, and the `isc_info_blob_num_segments`/`max_segment` statistics are asked for internally (to size the driver's reads) but not surfaced. `seek()` is Firebird's rule made visible — it works on the stream blob and is refused on the segmented one — and because `BlobReader` caps every read at the blob's `.length`, the read-past-the-remainder trap the fb-cpp twin hit ([firebird#9101](https://github.com/FirebirdSQL/firebird/issues/9101)) does not surface here.
+
+Verified output:
+
+```text
+id 1: file-like value, 3 read() calls -> 3 putSegment()s, stream blob
+id 2: str value -> segmented blob
+
+id 1: BlobReader, length 40, STREAM blob, mode 'r'
+  read(): 'first segmentsecond, longer segmentthird'
+  seek(35) + read(): 'third'
+
+id 2: BlobReader, length 40, SEGMENTED blob, mode 'r'
+  read(): 'first segmentsecond, longer segmentthird'
+  seek(35) refused: invalid BLOB type for operation
+
+id 3: bytes, 256 bytes, round-trip intact: True
+
+-- column subtypes (RDB$FIELDS) --
+FIELD SUBTYPE CHARSET
+----- ------- -------
+DATA  0       <null>
+NOTE  1       UTF8
+
+-- BLOB_APPEND result --
+ID OCTETS CHARS CONTENT
+-- ------ ----- -----------------
+4  17     17    part1-part2-part3
+done.
+```
+
 ### Things to try
 
 - Grow the C++ text blob (e.g. 64 putSegment calls of 4 KB) and watch `getInfo` report the level change indirectly: re-run `gstat -r` on the table and see blob pages appear, then compare `Average record length` — it stays ~15 bytes no matter how big the blobs get.

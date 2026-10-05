@@ -712,6 +712,30 @@ The same scenario through [fbintf](https://github.com/MWASoftware/fbintf) (vendo
 
 Verified: same 3-vs-1 collation split, `UPPER('café èñ ß')` → `CAFÉ ÈÑ ß`, sort orders `cafe CAFE Café` (CI_AI) vs `CAFE Café cafe` (binary), and the same row over two connections: `lc_ctype=UTF8` receives `len= 5  43 61 66 C3 A9` with the column described as charset `UTF8`, `lc_ctype=NONE` receives the raw stored `len= 4  43 61 66 E9` with the column described as `WIN1252`.
 
+### Python sample — [`samples/python/intl.py`](samples/python/intl.py)
+
+The same scenario through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/intl.py`). As in rsfbclient, `connect(..., charset=...)` does double duty: it is the `isc_dpb_lc_ctype` sent to the server *and* the codec the driver decodes text with — `'UTF8'` maps to Python's `utf_8`, while `'NONE'` maps to the client locale's preferred encoding (UTF-8 on this host). So the NONE connection lands where the Rust twin does: the untransliterated WIN1252 byte `E9` reaches a UTF-8 decode and fails. What Python adds is that the failure keeps the evidence — `UnicodeDecodeError.object` is the undecodable value exactly as it arrived — so the sample still hex-dumps the wire bytes from public API, no raw buffer needed. (On a host whose locale encoding is single-byte, the same run would instead *succeed* with a locale-dependent string — the NONE pitfall node-firebird shows.)
+
+Verified output:
+
+```text
+rows matching 'cafe' with UNICODE_CI_AI : 3
+rows matching 'cafe' with UCS_BASIC     : 1
+UPPER('café èñ ß')                      : CAFÉ ÈÑ ß
+
+ORDER BY name_ci_ai: cafe  CAFE  Café
+ORDER BY name_bin  : CAFE  Café  cafe    (binary: uppercase codepoints first)
+
+SELECT name_win FROM t WHERE name_bin = 'Café' - same row, two connections:
+  charset=UTF8:    len= 5  43 61 66 C3 A9   'Café'
+  charset=NONE:    len= 4  43 61 66 E9   UnicodeDecodeError: unexpected end of data (utf-8)
+  (charset NONE decodes with the locale codec: UTF-8)
+  -> the column stores E9 (WIN1252); the UTF8 connection receives the
+     transliterated C3 A9, the NONE connection the raw stored byte.
+
+done.
+```
+
 ### Things to try
 
 - Add `COLLATE UNICODE_CI` (case- but not accent-insensitive) as a third column: `'cafe'` then matches 2 of the 3 rows — the missing middle step between the sample's 3 and 1.

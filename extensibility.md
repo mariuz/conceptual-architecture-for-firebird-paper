@@ -224,6 +224,12 @@ The same UDR walk through [fbintf](https://github.com/MWASoftware/fbintf) (vendo
 
 Verified: `gen_rows(1, 5)` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)` (fbintf reports the computed column's generated name `F_1`, where the C++ run trimmed the header), and the plugin roster matches the other runs — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
 
+### Python sample — [`samples/python/extensibility.py`](samples/python/extensibility.py)
+
+The same UDR walk through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/extensibility.py`). The lesson of the other twins holds a fifth time: the `EXTERNAL NAME 'udrcpp_example!gen_rows' ENGINE udr` bindings are plain `cursor.execute` DDL, `gen_rows(1, 5)` a plain fetch loop and `sum_args` a scalar query. What the driver adds to the client idiom is `cursor.description` — the DB-API view of the statement's output metadata — which supplies the isql-style column headers the C++ sample builds from `IMessageMetadata`.
+
+Verified: `gen_rows(1, 5)` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, and the `RDB$CONFIG` roster is identical to the C++ run — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
+
 ### Things to try
 
 - Declare more of the shipped module: `gen_rows2` (same logic via typed `FB_UDR_MESSAGE`s), `mult`, or the `replicate` UDR *trigger* ([`extern/firebird/examples/udr/`](extern/firebird/examples/udr/) shows each declaration in a comment above its implementation).

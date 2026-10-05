@@ -556,6 +556,32 @@ The same four module types through [fbintf](https://github.com/MWASoftware/fbint
 
 Verified: `NEW_ID = 1` and `2` from the two hires, 2 audit rows from the trigger, `raises(10)` streaming `5500.00` / `6600.00`, and the failing hire raising `gds 335544517` with the identical chain — `exception 1`, `"PUBLIC"."LOW_SALARY"`, `salary below minimum`, `At procedure "PUBLIC"."HIRE" line: 4, col: 29` — fbintf's one rendering delta being an `Engine Code: 335544517` line prefixed above the chain.
 
+### Python sample — [`samples/python/psql.py`](samples/python/psql.py)
+
+The same four module types through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/psql.py`). The driver names the executable-vs-selectable divide twice. As an API: `Cursor.call_procedure('hire', [...])` builds `EXECUTE PROCEDURE hire ?,?` and returns the single output message as a tuple — no fetch, no cursor (DB-API's `callproc` would make you `fetchone()` it) — while `raises(10)` is an ordinary `execute` + fetch over `SUSPEND`ed rows. And as metadata: `Cursor.prepare(sql).type` reports `StatementType.EXEC_PROCEDURE` versus `SELECT`, the same property fb-cpp exposes. Like fbintf and unlike rsfbclient, `NUMERIC(10,2)` stays exact — `decimal.Decimal('5500.00')` — and the exception is a `DatabaseError` whose text is the status-vector chain and whose `sqlcode`/`gds_codes` carry the numbers.
+
+Verified output:
+
+```text
+call_procedure(hire, 'Ada', 5000)          -> NEW_ID = 1
+call_procedure(hire, 'Grace', 6000)        -> NEW_ID = 2
+audit_log rows (trigger emp_bi):              2
+cur.prepare('EXECUTE PROCEDURE hire(?, ?)').type = EXEC_PROCEDURE
+cur.prepare('SELECT * FROM raises(?)').type = SELECT
+
+SELECT * FROM raises(10):
+   (1, 'Ada', Decimal('5500.00'))
+   (2, 'Grace', Decimal('6600.00'))
+
+call_procedure(hire, 'Poorpay', 500) ->
+exception 1
+-"PUBLIC"."LOW_SALARY"
+-salary below minimum
+-At procedure "PUBLIC"."HIRE" line: 4, col: 29
+(sqlcode -836, gds 335544517)
+done.
+```
+
 ### Things to try
 
 - Add a nested call (`hire` invoked from an `EXECUTE BLOCK`, or from a second procedure) and watch the stack trace grow to multiple `At procedure ... At block` lines — the `dbginfo` machinery described in the [BLR document](blr-intermediate-language.md#both-directions-of-translation).

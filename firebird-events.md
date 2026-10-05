@@ -217,6 +217,21 @@ The same three semantics through [fbintf](https://github.com/MWASoftware/fbintf)
 
 Verified: `PASS` — the primer post is delivered with count 1, `delivered count = 0` after `POST_EVENT` + `ROLLBACK`, still `0` before the `COMMIT` of the triple post, and `delivered count = 3 (correct - one delivery, count 3)` after it.
 
+### Python sample — [`samples/python/events.py`](samples/python/events.py)
+
+The same three semantics through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient through ctypes (`python3 samples/python/events.py`). Like fb-cpp's `EventListener`, `Connection.event_collector(['demo_event'])` automates the client-side dance. Its `begin()` queues the interest and opens the auxiliary connection. The collector's own thread then swallows the baseline delivery, runs `isc_event_counts` on each later one and re-queues the one-shot interest. The resulting deltas *accumulate* in a `{name: count}` dict until `flush()`, and `wait(timeout)` blocks until something arrives and returns that dict. So the sample's checkpoints are just `wait` followed by `flush`. Two driver details are worth knowing. Under the hood this is the legacy ISC API (`isc_event_block`/`isc_que_events`/`isc_event_counts` on a database handle), not the OO API's `IAttachment::queEvents` that the C++ sample uses. And despite its docstring, `wait()` returns the zero-filled dict on timeout, not `None`.
+
+Verified output:
+
+```text
+listener registered for 'demo_event' (baseline consumed by EventCollector)
+after POST_EVENT + ROLLBACK: delivered count = 0  (correct - rollback swallows posts)
+3 x POST_EVENT executed, not yet committed - waiting briefly...
+before COMMIT: delivered count = 0  (correct - delivery is commit-time)
+after COMMIT: delivered count = 3  (correct - one delivery, count 3)
+PASS
+```
+
 ### Things to try
 
 - Set `EVENTS_DEMO_PAUSE_MS=5000` and, during the pause, list the demo process's sockets (`ss -tnp | grep events_demo`): two attachments, **three** TCP connections — the third is the aux channel to a non-3050 ephemeral port, the [`RemoteAuxPort` firewall pitfall](#the-wire-the-auxiliary-connection) made visible.

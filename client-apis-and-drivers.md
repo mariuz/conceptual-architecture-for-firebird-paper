@@ -83,7 +83,7 @@ Both paths reach the same server; the choice is a trade-off between zero-depende
 | **C / C++** | fbclient OO API / ISC API | native (is the library) | [`Interface.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/include/firebird/Interface.h) / [`ibase.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/include/firebird/ibase.h); the samples here |
 | **Java** | [Jaybird](https://github.com/FirebirdSQL/jaybird) (JDBC) | **pure** (+ optional native) | Pure-Java wire protocol; the reference JDBC driver |
 | **.NET** | [FirebirdSql.Data.FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (ADO.NET) | **pure** | Managed provider ([NuGet](https://www.nuget.org/packages/FirebirdSql.Data.FirebirdClient)); Entity Framework support |
-| **Python** | [firebird-driver](https://github.com/FirebirdSQL/python3-driver) | native (OO API via ctypes) | Official; [PyPI](https://pypi.org/project/firebird-driver/); DB-API 2.0 |
+| **Python** | [firebird-driver](https://github.com/FirebirdSQL/python3-driver) | native (OO API via ctypes) | Official; [PyPI](https://pypi.org/project/firebird-driver/); DB-API 2.0; used by the Python samples |
 | **Node.js / TS** | [node-firebird](https://github.com/hgourvest/node-firebird) | **pure** JS | Path B; used by the samples |
 | | [node-firebird-driver-native](https://github.com/asfernandes/node-firebird-drivers) | native (OO API) | TypeScript, wraps fbclient |
 | **PHP** | [PDO_Firebird](https://www.php.net/manual/en/ref.pdo-firebird.php) | native | Bundled PDO driver |
@@ -191,6 +191,23 @@ Verified: both backends report `engine version = 6.0.0` — the native line anno
 The same query through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at [`extern/fbintf`](extern/fbintf)), MWA Software's Firebird Pascal API — the layer under IBX (`make -C samples/fpc bin/api_styles && samples/fpc/bin/api_styles`) — and its contribution to this document is that fbintf *vendors both C APIs* of the [two-API section](#two-c-apis-oo-and-isc): `TFB25ClientAPI` built on the `isc_*` entry points and XSQLDA, `TFB30ClientAPI` built on `IMaster`, both hidden behind the one `IFirebirdAPI` interface, with the loader auto-selecting the OO binding whenever fbclient exports `fb_get_master_interface`. The sample subclasses the loader (`TLegacyOnlyLibrary`, overriding `GetFirebird3API` to return nil) to force the legacy fallback next to the default, then runs one identical `RunQuery` procedure through both — the same `AllocateDPB`/`OpenDatabase`/`OpenCursorAtStart` Pascal code driving XSQLDA descriptors in one half and `IMessageMetadata` in the other, against the same Y-valve in the same process. Where the C++ sample writes the two liturgies out by hand, fbintf shows them fully abstracted: the style becomes a loader decision, not a coding style.
 
 Verified: the legacy binding reports `GetImplementationVersion = 2.5, OO master interface used = FALSE` — the API *level* it models, not the library it drives — and still answers `engine version = 6.0.0`; the default binding reports `6.0` / `TRUE` and the same `6.0.0`, closing with `same engine, same Y-valve, two API styles behind one IFirebirdAPI`.
+
+### Python sample — [`samples/python/api_styles.py`](samples/python/api_styles.py)
+
+The Python twin through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own driver and the Python row of the [driver table](#the-driver-ecosystem-by-language) (`python3 samples/python/api_styles.py`). firebird-driver is a **Path A** driver — a `ctypes` binding of `libfbclient`'s OO API — and because `ctypes` can call any exported C function, one Python file reaches *all three* rungs of this document's ladder against the one library the driver loaded (`get_api().client_library`). The **ISC** rung is the C++ liturgy transcribed into `ctypes`: the DPB built byte by byte, a 20-slot status vector walked with `fb_interpret`, `ibase.h`'s `XSQLDA`/`XSQLVAR` re-declared as `ctypes.Structure`s field for field, and a `Varying` struct the caller points `sqldata` at (`SQL_VARYING + 1` for the null indicator). The **OO** rung is the driver's own `firebird.driver.interfaces` layer — `master.get_dispatcher()` is the Y-valve, an `IXpbBuilder` makes the DPB, failed calls raise `DatabaseError` instead of filling a vector, and `IMessageMetadata.get_offset()` replaces the XSQLDA — and the **driver** rung is the DB-API 2.0 surface built on top of it: `connect()`, `cursor().execute().fetchone()`. Where fbintf turns the API style into a loader decision, firebird-driver lets you step down a level at will, because each layer is exported.
+
+Verified output:
+
+```text
+libfbclient: /opt/firebird/lib/libfbclient.so
+
+[ISC API] engine version = 6.0.0
+[OO API ] engine version = 6.0.0
+[driver ] engine version = 6.0.0
+same engine, same Y-valve, three API levels. done.
+```
+
+The ISC rung's error path is live too: pointed at `/nonexistent/x.fdb`, `check()` prints `ISC error in isc_attach_database:` followed by the three `fb_interpret` lines of the status vector (`I/O error during "open" operation ...`, `Error while trying to open file`, `No such file or directory`).
 
 ### Things to try
 

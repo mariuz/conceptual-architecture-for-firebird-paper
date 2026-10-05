@@ -414,6 +414,38 @@ The same walk through [fbintf](https://github.com/MWASoftware/fbintf) (vendored 
 
 Verified: the redirection signature holds — groups 1/2/3 (4, 2 and 1 pools) all report `allocated = 0` against the database pool's 28 479 488 mapped bytes, with the one `cmp` pool that crossed the threshold mapping exactly 65 536. The worker's transaction pool grows from `used=13600` to `used=20848` under the uncommitted 3000-row UPDATE, and after rollback the attachment's `used` falls from 78 912 to 57 984 — 20 928 bytes, the dead transaction pool's 20 848 plus 80 bytes of unrelated attachment-pool churn in this run, so the roll-up is visible but not byte-exact here.
 
+### Python sample — [`samples/python/memory_pools.py`](samples/python/memory_pools.py)
+
+The same walk through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/memory_pools.py`). The MON$ freshness rule shapes it like the Rust and Pascal twins — every observation commits the monitor connection's main transaction, so each read is a fresh snapshot — while the worker's growing transaction is an explicit `TransactionManager`. The instructive diff is where the ids come from: instead of asking SQL for `current_connection`/`current_transaction`, the sample reads them from info calls — `worker.info.id` (`isc_info_attachment_id`) and `tm.info.id` (`isc_info_tra_id`) — and binds them as `?` parameters. A third info call, `worker.info.current_memory` (`isc_info_current_memory`), reads the database-level usage counter without any MON$ snapshot, landing within ~120 KB of the `MON$DATABASE` row read a moment earlier.
+
+Verified output:
+
+```text
+-- per-level summary (0=db 1=att 2=tra 3=stmt 5=cmp; used > 0 with allocated = 0: parent redirection)
+GROUP POOLS USED       ALLOCATED  WITH_OWN_EXTENTS
+0     1     22705184   26288128   1
+1     4     273328     0          0
+2     1     99856      0          0
+3     1     20976      0          0
+5     1     34848      65536      1
+
+-- worker's pool chain (attachment 3, transaction 7; before the update)
+  database pool:           used=22757952   allocated=26419200
+  (con.info.current_memory 22635280)
+  worker attachment pool:  used=68528      allocated=0
+  worker transaction pool: used=10624      allocated=0
+
+-- after an uncommitted 3000-row UPDATE in that transaction
+  worker attachment pool:  used=76352      allocated=0
+  worker transaction pool: used=18448      allocated=0
+
+-- after rollback (transaction pool destroyed with its undo log)
+  worker attachment pool:  used=57904      allocated=0
+  attachment used fell by 18448; the dead transaction pool held 18448
+```
+
+The redirection signature (groups 1/2/3 all `allocated = 0`, the one `cmp` pool mapping exactly 65 536 bytes) and the byte-exact nested roll-up both repeat on this independent run.
+
 ### Things to try
 
 - Prepare (without executing) twenty distinct statements on one connection and re-run the group summary: group 5 (`cmp_statement`) pools multiply, and each that grows past ~48 KB maps its own 64 KB extent — `PARENT_REDIRECT_THRESHOLD` found empirically.

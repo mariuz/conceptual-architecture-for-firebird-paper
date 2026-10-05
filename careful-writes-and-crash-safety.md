@@ -280,6 +280,22 @@ The same engine-kill experiment through [fbintf](https://github.com/MWASoftware/
 
 Verified: the file grew `2260992 -> 7782400` bytes of uncommitted work before the `SIGKILL` to engine pid 46678; re-attach plus both counts took 35 ms, and the counts read `committed marker rows : 1 <- survived the crash` and `uncommitted rows : 0 <- rolled back by visibility, not replay` — the same verdict, and the same order of magnitude of instant reattach, as the C++ and Rust engine-kill runs.
 
+### Python sample — [`samples/python/careful_writes.py`](samples/python/careful_writes.py)
+
+The same engine-kill experiment through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient (`python3 samples/python/careful_writes.py`). Because the driver is a binding of `libfbclient` rather than a wire-protocol reimplementation, the embedded engine is just a connection string away: `create_database('/tmp/fbhandson/careful_writes_py.fdb')` with no `inet://` prefix (and `FIREBIRD=/opt/firebird` set in `os.environ` before the driver loads) puts the engine inside the writer process, so this twin reaches the C++ failure domain, not node-firebird's. Where C++ `fork()`s, the parent re-runs its own script with `--writer` through `subprocess.Popen`, polls `os.stat().st_size` while the child flushes pages of the uncommitted 500,000-row `execute block`, and delivers `SIGKILL` with `Popen.kill()`; re-attaching is a plain `connect()` on the same path, with no recovery call anywhere in the driver's API to make.
+
+Verified output:
+
+```text
+[writer 30963] marker row committed (forced writes on)
+file grew 917504 -> 3497984 bytes; SIGKILL to engine pid 30963
+re-attach + both counts took 170 ms
+committed marker rows : 1   <- survived the crash
+uncommitted rows      : 0   <- rolled back by visibility, not replay
+```
+
+About 2.5 MB of the dead transaction's pages were on disk at the moment of death; the 170 ms includes loading the embedded engine into the parent for the first time, and still no recovery phase.
+
 ### Things to try
 
 - Rerun the C++ sample and then `gfix -v -full -user SYSDBA /tmp/fbhandson/careful_writes.fdb` (embedded, so run it with `FIREBIRD=/opt/firebird` while no server has the file): like the [live test](#crash-safety-live), you may see orphan-page warnings — allocated-but-never-linked pages, the designed leftover — and zero corruption errors.

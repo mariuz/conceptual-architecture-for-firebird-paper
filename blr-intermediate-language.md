@@ -469,6 +469,40 @@ The same read through [fbintf](https://github.com/MWASoftware/fbintf) (vendored 
 
 Verified: `FULL_NAME`'s BLR is the identical 37 bytes (`05 27 27 17 00 09 4C ...`) as the C++, JavaScript and Rust runs, decoding to nested `blr_concatenate` over `blr_field context 0, 'LAST_NAME'`, the `", "` `blr_text2` literal and `FIRST_NAME`, ending in `blr_eoc`; `GET_EMP_PROJ` is 155 bytes opening with `blr_version5, blr_begin`, then `blr_message 0, 2 fields: blr_short(scale 0) blr_short(scale 0)` and `blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)` — a fourth client stack, byte-for-byte the same stored artifact.
 
+### Python sample — [`samples/python/blr.py`](samples/python/blr.py)
+
+The same read through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient (`python3 samples/python/blr.py`). Fetching is the shortest of all the twins: a non-text blob — and BLR is sub_type 2 — comes back from `fetchone()` as a plain Python `bytes` object, with no blob handle, no segment loop and no server-side `CAST`; the attachment uses `charset='NONE'`, like the Free Pascal twin's DPB, so nothing is transliterated. The driver ships no BLR opcode table, so the sample takes the C++ twin's `#include` one step further: at startup it parses `firebird/impl/blr.h` itself with one regular expression (378 `blr_*` `#define`s from the installed header), falling back to a transcribed table only when no header is installed — the header really is the specification here, read at run time.
+
+Verified output:
+
+```text
+(opcodes: 378 blr_* defines parsed from /opt/firebird/include/firebird/impl/blr.h)
+
+== computed column EMPLOYEE.FULL_NAME — RDB$FIELDS.RDB$COMPUTED_BLR
+(python type: bytes)
+05 27 27 17 00 09 4c 41 53 54 5f 4e 41 4d 45 15
+0f 00 00 02 00 2c 20 17 00 0a 46 49 52 53 54 5f
+4e 41 4d 45 4c (37 bytes total)
+blr_version5
+   blr_concatenate
+      blr_concatenate
+         blr_field context 0, 'LAST_NAME'
+         blr_literal blr_text2 charset 0, len 2, ", "
+      blr_field context 0, 'FIRST_NAME'
+blr_eoc
+
+== procedure GET_EMP_PROJ — RDB$PROCEDURES.RDB$PROCEDURE_BLR
+05 02 04 00 02 00 07 00 07 00 04 01 03 00 0f 00
+00 05 00 07 00 07 00 0c 00 02 03 00 00 0f 00 00
+... (155 bytes total)
+blr_version5, blr_begin
+blr_message 0, 2 fields: blr_short(scale 0) blr_short(scale 0)
+blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)
+... 132 more bytes — see isql SET BLOB ALL for the full dump
+```
+
+A fifth client stack, byte-for-byte the same stored artifact.
+
 ### Things to try
 
 - Point the sample at your own scratch database, create `CREATE TABLE t (a INT, b COMPUTED BY (a * 2 + 1))`, and decode the arithmetic: you will meet `blr_multiply`/`blr_add` (prefix, two operands each) and a `blr_literal blr_long`.

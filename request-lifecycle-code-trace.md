@@ -416,6 +416,24 @@ The same instrumented round trip through [fbintf](https://github.com/MWASoftware
 
 Verified: prepare at 0.11 ms with `statement type = DDL`, execute at 58.28 ms with the same `+20` catalog record inserts (page marks `+130`), `RDB$RELATIONS has TRACE_DEMO = 1` inside the writing transaction, and commit at 13.74 ms draining `+16` page writes (`+2250` fetches over the whole trip) — the counters matching the other twins to within run-to-run noise (they report `+14` writes; the deltas ride whatever the cache happens to hold).
 
+### Python sample — [`samples/python/request_lifecycle.py`](samples/python/request_lifecycle.py)
+
+The same instrumented round trip through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/request_lifecycle.py`). Like the OO API and fbintf, it keeps the three phases apart: `Cursor.prepare(sql)` returns a `Statement` (Stages 1–5) whose `.type` is the typed `StatementType.DDL`, `Cursor.execute(stmt)` runs it (Stages 6–8), `TransactionManager.commit()` ends it (Stage 9). A `Connection` carries any number of `TransactionManager`s besides its implicit main transaction, so each MON$ sample is a fresh transaction on the same attachment — no second connection as in the Rust twin — and one more fresh transaction gives the outside-view visibility check from the same attachment, as in node-firebird.
+
+Verified output:
+
+```text
+prepare    0.34 ms   statement type = DDL
+execute  328.89 ms   catalog record inserts: +20, page marks: +133
+         in this tx:  RDB$RELATIONS has TRACE_DEMO = 1
+         other tx:    RDB$RELATIONS has TRACE_DEMO = 0  (TRA_commit has not happened)
+commit   107.70 ms   page writes: +18  (fetches: +2243 over the whole trip)
+         other tx:    RDB$RELATIONS has TRACE_DEMO = 1
+done.
+```
+
+The counters are the reproducible part — the same `+20` catalog record inserts, page marks and writes within noise of the other twins; the milliseconds are not (this run shared the host with other sample runs, and execute and commit took several times the C++ figures).
+
 ### Things to try
 
 - Add a column or a second index to the `CREATE TABLE` and watch the record-insert delta grow by exactly the extra catalog rows.

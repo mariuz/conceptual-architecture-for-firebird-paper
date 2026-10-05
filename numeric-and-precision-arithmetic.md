@@ -182,6 +182,32 @@ The same four experiments through [fbintf](https://github.com/MWASoftware/fbintf
 
 Verified: the residue is `5.55111512312578E-17` in DOUBLE PRECISION and `0` in DECFLOAT(34); the NUMERIC(18,4) column describes as type 580 `SQL_INT64` scale −4, `getRawValue` returns `123456789` with `getScale` −4 (`123456789 * 10^-4 = 12345.6789` via `getAsString`) while `AsInt64` returns the rescaled `12345`; INT128 max prints in full via `AsBCD` and max+1 raises `gds 335544321` (numeric overflow); DECFLOAT 1/0 raises `gds 335545139` (`Decimal float divide by zero`) by default and returns the engine-rendered `Infinity` after `SET DECFLOAT TRAPS TO`.
 
+### Python sample — [`samples/python/numerics.py`](samples/python/numerics.py)
+
+The same four experiments through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/numerics.py`). Python is the one twin language whose standard library already has the engine's exact types, and the driver uses them: `NUMERIC` decodes to `decimal.Decimal`, `INT128` to an arbitrary-precision `int` (compared against `2**127-1` in Python), `DECFLOAT` to `Decimal` with `Infinity` as a real special value — so the 2⁵³ trap the JS and Rust twins fall into, and the `TBCD` gap the Pascal twin works around, simply do not arise. The other side of that convenience is the raw fetch: `cursor.description` reports only the Python type and the scale (and precision 0 for an expression column), so the wire type and message bytes are reached through the statement's *private* `_out_desc`/`_out_buffer` — the `ItemMetadata` the driver unpacks from. The sample adds a 4b the other twins lack: the trap setting carried in the DPB (`isc_dpb_decfloat_traps`, via a registered database config's `decfloat_traps`) instead of `SET DECFLOAT TRAPS TO`.
+
+Verified output:
+
+```text
+(0.1+0.2)-0.3 in DOUBLE PRECISION : 5.551115123125783e-17  (float)
+(0.1+0.2)-0.3 in DECFLOAT(34)     : Decimal('0.0')  (== 0: True)
+
+NUMERIC(18,4) wire format: type=580 (SQL_INT64), length=8, scale=-4
+message bytes (little-endian)  : 15 cd 5b 07 00 00 00 00
+raw integer                    : 123456789
+value = raw * 10^scale         : 123456789 * 10^-4 = Decimal('12345.6789')
+cursor.description             : (<class 'decimal.Decimal'>, 20, 8, 0, -4, False)
+
+INT128 max  : 170141183460469231731687303715884105727 (== 2**127-1: True)
+INT128 max+1: arithmetic exception, numeric overflow, or string truncation (sqlcode -802)
+
+1/0 with default traps     : Decimal float divide by zero.  The code attempted to divide a DECFLOAT value by zero.
+1/0 with traps cleared     : Decimal('Infinity')
+1/0 with DPB traps='Inexact' : Decimal('Infinity')
+
+done.
+```
+
 ### Things to try
 
 - Add `SET DECFLOAT ROUND CEILING` before a `SELECT CAST(1 AS DECFLOAT(16))/3*3` in either sample — the result becomes `1.000000000000001` (the doc's rounding-mode demo).

@@ -249,6 +249,29 @@ The fourth driver attitude, through [fbintf](https://github.com/MWASoftware/fbin
 
 Verified: the wire numbers match both C++ twins exactly — `days=61239 time=576000000 zone id=65361` for the named-zone literal, `time=612000000 zone id=1139` for the offset — and `ITimeZoneServices` maps 65361 to `America/New_York` with an effective offset of -240 minutes (EDT) and 1139 to `-05:00` at -300 minutes; the decoded line re-derives the local wall time `2026-07-18 12:00:00 America/New_York` like `IUtil` did. The DST pair (`17:00` winter, `16:00` summer UTC), the `EQUAL` verdict, and `CURRENT_TIMESTAMP` jumping from 11:56 `Etc/UTC` to 20:56 `Asia/Tokyo` after `SET TIME ZONE` all match.
 
+### Python sample — [`samples/python/temporal.py`](samples/python/temporal.py)
+
+The fifth driver attitude, through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/temporal.py`): it *keeps* the zone. A `TIMESTAMP WITH TIME ZONE` arrives as an aware `datetime.datetime` decoded by the same `IUtil::decodeTimeStampTz` the C++ sample calls by hand, and its `tzinfo` is a `dateutil` zone that remembers the Firebird name (`tzinfo._timezone_`) — a named region becomes a `tzfile`, a bare offset a `tzstr`. The cursor never exposes the fetched message buffer, so the wire struct is shown by handing the value back to `IUtil::encodeTimeStampTz` (the driver's internal `_util`) — a round trip, but it reproduces the C++ numbers exactly. Two things to notice: the UTC offset Python prints (`-04:00`) is computed by the *client's* tzdata (`/usr/share/zoneinfo`), not the engine's ICU, and an `AT TIME ZONE 'Etc/UTC'` result prints as `+00:00` — Python's `str()` shows the offset, not the region. The session zone can also be chosen at attach time: `connect(session_time_zone=...)` writes `isc_dpb_session_time_zone`, the first entry of the priority order [above](#the-session-time-zone).
+
+Verified output (this run's server OS zone is `Europe/Bucharest`, hence the first session-zone line):
+
+```text
+named-zone literal:
+  python value: 2026-07-18T12:00:00-04:00  zone=America/New_York  (tzfile)
+  as the struct: UTC days=61239 time=576000000  zone id=65361
+offset literal:
+  python value: 2026-07-18T12:00:00-05:00  zone=-05:00  (tzstr)
+  as the struct: UTC days=61239 time=612000000  zone id=1139
+
+NY 12:00 in UTC, winter: 2026-01-18 17:00:00+00:00
+NY 12:00 in UTC, summer: 2026-07-18 16:00:00+00:00
+10:00 -02:00 = 09:00 -03:00 ? EQUAL
+
+session zone: Europe/Bucharest   CURRENT_TIMESTAMP: 2026-10-05 22:15:13.028000+03:00
+session zone: Asia/Tokyo         CURRENT_TIMESTAMP: 2026-10-06 04:15:13.033000+09:00
+DPB zone    : America/Sao_Paulo  CURRENT_TIMESTAMP: 2026-10-05 16:15:13.159000-03:00
+```
+
 ### Things to try
 
 - Change the C++ named-zone literal to `2026-11-01 01:30:00 America/New_York` — the doubled DST-overlap hour — and check which of the two possible UTC instants the wire struct holds (the docs promise the *first*, pre-transition occurrence).

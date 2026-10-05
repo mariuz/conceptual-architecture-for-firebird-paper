@@ -181,6 +181,28 @@ Both phases through [fbintf](https://github.com/MWASoftware/fbintf) (vendored at
 
 Verified: phase 1 (one SuperServer shared cache) reads = 51 and 59 per worker; phase 2 (two embedded engines with private caches over one file) reads = 1048 and 1052 — the same roughly 20-fold coherency price as the C++ and Rust runs — while writes stay near 900 in both topologies (877/874 vs 908/907), and every checker line reads `final: id=1 v=300` / `id=2 v=300 (expected 300)`: not one update lost in either topology.
 
+### Python sample — [`samples/python/page_cache.py`](samples/python/page_cache.py)
+
+Both phases through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver (`python3 samples/python/page_cache.py`). Because the driver loads libfbclient through ctypes rather than speaking the wire protocol itself, it sits with the C++, Rust-native and Pascal twins, not with node-firebird: the provider is chosen by the connection string alone, so `inet://localhost//tmp/fbhandson/page_cache_srv_py.fdb` reaches the SuperServer's shared cache and the bare path `/tmp/fbhandson/page_cache_emb_py.fdb` makes the child process a full embedded engine. The choreography is `subprocess.Popen([sys.executable, __file__, '--worker', ...])` — the parent never imports a connection — and phase 2's children get `FIREBIRD` pointed at a SuperClassic sandbox (`/tmp/fbhandson/fbemb_py`) the sample builds with `os.symlink`, through the `env=` of `Popen`; it has to be in the environment before the child loads libfbclient, which is why it is a process boundary and not a Python variable.
+
+Verified output:
+
+```text
+phase 1: two client processes, ONE SuperServer shared cache
+  worker pid 30001  row 2: 300 commits | page fetches=14695  reads=84   writes=850
+  worker pid 30000  row 1: 300 commits | page fetches=6229   reads=30   writes=809
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+phase 2: two EMBEDDED engine processes, PRIVATE page caches
+  worker pid 30090  row 2: 300 commits | page fetches=16586  reads=1035 writes=909
+  worker pid 30089  row 1: 300 commits | page fetches=16376  reads=1029 writes=904
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+same workload - the private caches paid for coherency in disk I/O.
+```
+
+The same roughly 20-fold jump in physical reads as every other twin that can reach phase 2, with writes near 850–900 in both topologies and no update lost.
+
 ### Things to try
 
 - Give the two rows their own pages (`create table t (id int primary key, v int, pad char(4000))` forces ~one row per 8K page) and rerun: phase 2's `reads` collapse — no shared page, no ping-pong, the protocol goes quiet.

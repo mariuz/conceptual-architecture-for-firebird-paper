@@ -281,6 +281,35 @@ The full four-step scenario through [fbintf](https://github.com/MWASoftware/fbin
 
 Verified: the same layer-by-layer story — `auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4` on the admin and both `HANDSON_USER` attachments, `HANDSON_USER`/`Srp`/`false` in `SEC$USERS`, 1 visible attachment without the role and 2 with `role=HANDSON_MONITOR` — and the failed login raising `gds 335544472` with `Your user name and password are not defined. Ask your database administrator to set up a Firebird login`, fbintf's rendering delta being an `Engine Code: 335544472` line prefixed above the message.
 
+### Python sample — [`samples/python/security.py`](samples/python/security.py)
+
+The full four-step scenario through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/security.py`), under its own names (`PY_USER`, `PY_MONITOR`) so it can run beside the other twins. The role is one keyword argument — `connect(dsn, user=..., password=..., role="PY_MONITOR")` writes the `isc_dpb_sql_role_name` the OO-API sample inserts by hand — and because the driver is fbclient-based the wire is `ChaCha64`, not the pure-JS driver's `Arc4`. The deferred-at-commit user management dictates the same structure as every other twin: `CREATE USER` is committed on its own before the role is granted, and the idempotent cleanup is execute-commit-and-rollback-on-failure, since `DROP USER` of a missing user only fails at `COMMIT`. The wrong password surfaces as a `DatabaseError` whose `sqlcode` and `gds_codes` carry the structured chain beside the text.
+
+Verified output:
+
+```text
+admin attachment:      user=SYSDBA auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=NONE
+
+SEC$USERS (the security database, through the virtual view):
+    USER             PLUGIN   ADMIN
+    PY_USER          Srp      False
+    SYSDBA           Srp      True
+
+admin sees 1 user attachments in MON$ATTACHMENTS
+user, no role:         user=PY_USER auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=NONE
+  -> sees 1 attachment(s): only its own
+user + role:           user=PY_USER auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=PY_MONITOR
+  -> sees 2 attachments: MONITOR_ANY_ATTACHMENT at work
+
+failed login (wrong password) produces:
+    sqlcode -902 / gds (335544472,)
+    Your user name and password are not defined. Ask your database administrator to set up a Firebird login.
+
+temporary user and role dropped. done.
+```
+
+`SEC$ADMIN` arrives as a Python `bool` (`False`/`True`), and the failed login shows in one line what the Rust twin flattens and the fb-cpp twin types: SQLCODE `-902` and gds `335544472` (`isc_login`).
+
 ### Things to try
 
 - Grant `HANDSON_MONITOR` more bits — `set system privileges to MONITOR_ANY_ATTACHMENT, USE_GSTAT_UTILITY` — and re-run the doc's `fbsvcmgr ... action_db_stats` as `HANDSON_USER`: the [services-api document's layer-2 rejection](services-api.md#authorization-two-independent-layers) turns into success.

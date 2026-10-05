@@ -450,6 +450,43 @@ The same session through [fbintf](https://github.com/MWASoftware/fbintf) (vendor
 
 Verified: the identical seven-operator hash-join tree (`Hash Join (inner) (keys: 1, total key length: 4)`, fetch counters 5001/10001) and the same PSQL ranking — the indexed lookup on line 8 dominating at 14,847,827 ns over 20,000 executions (742 ns average) with the `WHILE` on line 6 counting 20,001. Unlike the Rust run's all-ones wrinkle, the column numbers are real here — loop-body statements at column 5, declarations at column 3 — because the Pascal source joins its lines with `#10` without stripping the indentation the profiler then reports.
 
+### Python sample — [`samples/python/profiler.py`](samples/python/profiler.py)
+
+The same session through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over the same libfbclient OO API (`python3 samples/python/profiler.py`) — the fifth proof that a SQL-package control surface loses nothing in any driver. `START_SESSION`'s id comes back as a Python `int` and is bound as an ordinary `?` parameter into both views. The autonomous-flush pitfall takes a driver-specific shape here: a firebird-driver `Connection` runs every plain `cursor()` on an implicit *main* transaction (SNAPSHOT by default), so the sample must end it with a real `Connection.commit()` after `FINISH_SESSION` — `commit(retaining=True)` would keep the pre-flush snapshot and read back nothing, the OO-API sample's original mistake. And like the Pascal twin, the column numbers are real: the procedure is a triple-quoted string that keeps its indentation.
+
+Verified output:
+
+```text
+profile session 1 finished and flushed
+
+record sources of the join (PLG$PROF_RECORD_SOURCE_STATS_VIEW):
+ACCESS_PATH                                               OPENS FETCHES TOTAL_NS
+--------------------------------------------------------- ----- ------- --------
+Select Expression                                         1     2       3800
+  -> Aggregate                                            1     2       4100
+    -> Filter                                             1     5001    317500
+      -> Hash Join (inner) (keys: 1, total key length: 4) 1     5001    309600
+        -> Table "PUBLIC"."NUMS" as "A" Full Scan         1     5001    137900
+        -> Record Buffer (record length: 25)              1     10001   249300
+          -> Table "PUBLIC"."NUMS" as "B" Full Scan       1     5001    123500
+
+hotspot procedure, per PSQL line (PLG$PROF_PSQL_STATS_VIEW):
+LINE_NUM COLUMN_NUM COUNTER TOTAL_NS AVG_NS
+-------- ---------- ------- -------- ------
+8        5          20000   3282100  164
+9        5          20000   224100   11
+10       5          20000   186400   9
+6        3          20001   54000    2
+3        3          1       3600     3600
+5        3          1       500      500
+2        3          1       100      100
+12       3          1       100      100
+
+done.
+```
+
+The counters match every other twin — 5001/10001 fetches through the hash join, line 8 at 20,000 executions, the `WHILE` on line 6 at 20,001 — while the times, on yet another warm run, again prove only the ranking: line 8 still dominates, at 3.3 ms.
+
 ### Things to try
 
 - Add an index on `nums.val`, rerun, and watch the `Hash Join` in the captured plan tree become a nested loop with an `Index Scan` — the profiler as a before/after harness for the [optimizer](query-optimizer-and-execution.md).

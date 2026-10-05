@@ -906,6 +906,34 @@ The same negotiated-session report through [fbintf](https://github.com/MWASoftwa
 
 Verified: `fbintf 1.4.9 loaded libfbclient 6.0 -> Firebird 3+ OO API selected (HasMasterIntf = TRUE)`, and the engine records the identical session the C++ clients get — `Srp256`, wire protocol `P20`, wire crypt `ChaCha64`, client version `LI-T6.0.0.2076 Firebird 6.0 fd83f03` — where the pure-JS and pure-Rust re-implementations above sit at protocol 13 and Arc4. The `IAttachment` echo agrees: `TCPv4`, `Srp256`, security database `Default`, ODS major 14.
 
+### Python sample — [`samples/python/protocol.py`](samples/python/protocol.py)
+
+The same negotiated-session report through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver (`python3 samples/python/protocol.py`). On the [driver-strategy](client-apis-and-drivers.md#two-ways-to-build-a-driver) axis it stands with fbintf, not with node-firebird or rsfbclient-rust: it has no wire implementation at all, only `ctypes` bindings of libfbclient's OO API, so the one `connect()` call hands the whole `op_connect` / `Srp256` / `op_crypt` handshake to the Remote provider the C++ twins use — and the engine records an identical session. The sample prints the C++ sample's four `SYSTEM`-context answers, then the Free Pascal twin's `MON$ATTACHMENTS` row, then a client-side view no other twin shows: `con.info.firebird_version` (the `isc_info_firebird_version` item) returns one version line *per layer the request crossed* — the engine, then the server's and the client's Remote layers, each stamped with transport, host and the negotiated protocol version (`/tcp (host)/P20`).
+
+Verified output:
+
+```text
+attached to inet://localhost/employee
+engine version : 6.0.0
+protocol       : TCPv4
+wire crypt     : ChaCha64
+authenticated  : SYSDBA
+
+MON$ATTACHMENTS, as the server recorded the handshake:
+   auth method    : Srp256   <- SRP proof, password never sent
+   wire protocol  : P20   <- highest version both sides speak
+   wire crypt     : ChaCha64   <- keyed from the SRP session key
+   client version : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+
+the client side, without a query (isc_info_firebird_version):
+   LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+   LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P20:C
+   LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P20:C
+detached. bye
+```
+
+Protocol `P20` and `ChaCha64`, as for the C++ and Pascal clients, where the pure-JavaScript and pure-Rust re-implementations sit at protocol 13 with Arc4.
+
 ### Things to try
 
 - In `srp-handshake.js`, offer only `Srp` instead of `Srp256,Srp` in `CNCT_plugin_list` — the server accepts and the proof drops to SHA-1: the downgrade the in-tree README [warns about](#what-srp256-improves), performed by hand.

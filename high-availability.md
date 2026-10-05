@@ -240,6 +240,27 @@ The same lifecycle through [fbintf](https://github.com/MWASoftware/fbintf) (vend
 
 Verified: on its reused scratch pair (`ha.fdb`/`ha_fpc.shd`) the shadow registers as `/tmp/fbhandson/ha_fpc.shd shadow_number=1 flags=1` and appears at `3604480` bytes against the main file's `3719168`; this pass shows the reuse effect the Rust note predicted, taken one step further — the main file has enough free pages from earlier runs that it does not grow at all during the 5000 inserts (`3719168` before and after) while the shadow still advances to `3670016`; after `DROP SHADOW 1 DELETE FILE` the shadow is gone (`-1 bytes`) and `RDB$FILES rows left: 0`.
 
+### Python sample — [`samples/python/ha.py`](samples/python/ha.py)
+
+The same lifecycle through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/ha.py`). As in every twin, `CREATE SHADOW 1 '...'` and `DROP SHADOW 1 DELETE FILE` are ordinary DSQL through `cursor.execute` and need nothing from the driver; the client idiom is Python's — `os.stat` plays `stat()`, and instead of an idempotent `DROP SHADOW` on entry the sample starts from a fresh scratch database (`ha_py.fdb`/`ha_py.shd`), since dropping a database drops its shadow with it. Starting fresh is what makes the numbers comparable: they match the two C++ runs byte for byte.
+
+Verified output:
+
+```text
+CREATE SHADOW 1 done - the engine dumped every page to the mirror
+
+RDB$FILES: /tmp/fbhandson/ha_py.shd  shadow_number=1  flags=1
+
+after CREATE SHADOW:         main =  2564096 bytes, shadow =  2433024 bytes
+after 5000 inserts:          main =  2899968 bytes, shadow =  2818048 bytes
+
+DROP SHADOW 1 DELETE FILE done
+after DROP SHADOW:           main =  2899968 bytes, shadow =       -1 bytes
+
+RDB$FILES rows left: 0
+done.
+```
+
 ### Things to try
 
 - Create the shadow with `CREATE SHADOW 1 AUTO` vs `MANUAL` and read `RDB$FILE_FLAGS` again — the flag bits encode the [conditional/manual modes](#firebird-ha-building-blocks) that decide what happens when the shadow becomes unavailable.

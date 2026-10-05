@@ -1,7 +1,7 @@
 # Samples
 
-Runnable C++ and JavaScript examples that exercise the architecture
-described in the [paper](../README.md). The C++ programs use the modern
+Runnable C++, JavaScript, Rust, Free Pascal and Python examples that
+exercise the architecture described in the [paper](../README.md). The C++ programs use the modern
 object-oriented client API (`firebird/Interface.h`) that is the supported
 interface in Firebird 3 and later, including the Firebird 6 development
 branch; the JavaScript programs use [node-firebird](https://github.com/hgourvest/node-firebird),
@@ -70,6 +70,21 @@ and debugging"** section built on a pair of samples here:
   is no Services API (the trace twin is the only one that cannot run its
   document's demonstration at all) and no plan API (the twins use Firebird
   6's `RDB$SQL.EXPLAIN` instead).
+- **`python/<topic>.py`** — the Python twin, written against
+  [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the
+  FirebirdSQL project's own Python driver, sharing
+  [`python/fbsample.py`](python/fbsample.py) (attach / create / scratch
+  databases, query helpers, error reporting). It drives the same
+  libfbclient OO API as the C++ samples through ctypes, so it reaches
+  nearly everything the C++ twin does: typed `TPB` / DPB builders with
+  explicit `TransactionManager` objects, the Services API
+  (`connect_server`: backup, trace, user and info services), events,
+  statement plans, the info calls, INT128/DECFLOAT as `Decimal` and
+  time-zone-aware temporals. Errors arrive as `DatabaseError` with the
+  whole status vector (`sqlcode`, `gds_codes`, the text). Three twins are
+  named `threading_demo.py`, `trace_demo.py` and `types_demo.py`, because
+  a module named `threading`, `trace` or `types` would shadow the standard
+  library for every sample in the directory.
 
 Each document's Hands-on section shows its pair's *verified* output, a
 "things to try" list, and gdb breakpoints into the engine functions the
@@ -248,6 +263,22 @@ The first build compiles rsfbclient from crates.io; the `linking` feature
 links `libfbclient` at build time, so `firebird-dev` (or an equivalent
 client install) must be present. Scratch databases go to
 `/tmp/fbhandson/<topic>_rust.fdb` like the other twins.
+
+## Python samples
+
+The [`python/`](python/) directory holds the per-document twins in
+Python. With Python 3.9+ and the Firebird client library installed:
+
+```sh
+python3 -m venv ~/.venvs/fbsamples
+~/.venvs/fbsamples/bin/pip install -r samples/python/requirements.txt
+~/.venvs/fbsamples/bin/python samples/python/transactions.py   # or any other <topic>.py
+```
+
+`fbsample.py` loads `/opt/firebird/lib/libfbclient.so` when it exists (the
+Firebird 6 install the documents assume); set `FB_CLIENT_LIBRARY` to use
+another client library, and `FB_HOST` for another server. Scratch
+databases go to `/tmp/fbhandson/<topic>_py.fdb` like the other twins.
 
 ## Debugging
 

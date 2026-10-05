@@ -236,6 +236,27 @@ The same walk through [fbintf](https://github.com/MWASoftware/fbintf) (vendored 
 
 Verified: OIT 40 / OAT 41 / NEXT 42 and `page_buffers=2048` from `MON$DATABASE`; the hierarchy join finds attachment 19 (SYSDBA), tx 41, with `SQL_HEAD` showing the marker query itself. The freeze holds exactly — `seq_reads=18469 idx_reads=1605 page_fetches=76011` identical before and after the 10 000-row `COUNT(*)` scan and the point lookup — then the new transaction reads `seq_reads=28469` (+10 000, the full scan) and `idx_reads=1638`, inserts flat at 10 023 and `page_reads` flat at 195.
 
+### Python sample — [`samples/python/monitoring.py`](samples/python/monitoring.py)
+
+The same walk through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/monitoring.py`). The snapshot trap of the JavaScript and Rust twins does not arise: a firebird-driver connection runs every statement in its main transaction until `commit()`, so holding the snapshot open across the workload is the default and the refresh is one `con.commit()`. What the driver adds is the *other* monitoring channel, side by side with MON$: the attachment info calls — `con.info.fetches` (`isc_info_fetches`) and `con.info.get_table_access_stats()` (`isc_info_read_seq_count` and friends, keyed by relation id) — are answered live by the engine rather than from a snapshot, so inside the very transaction where MON$ stands frozen they show the workload at once.
+
+Verified output:
+
+```text
+MON$ snapshot 1:                       seq_reads=17838  idx_reads=1600  inserts=10023  page_fetches=75232
+info calls, before the workload:       info.fetches=75885  MON_WORK sequential reads=0
+
+... running workload: SELECT COUNT(*) full scan + indexed lookup ...
+count = 10000, point = 4242
+
+same transaction: STILL snapshot 1:    seq_reads=17838  idx_reads=1600  inserts=10023  page_fetches=75232
+info calls, same moment: live:         info.fetches=86212  MON_WORK sequential reads=10000
+
+new transaction: fresh snapshot:       seq_reads=27838  idx_reads=1633  inserts=10023  page_fetches=85850
+```
+
+Above the trimmed lines, `MON$DATABASE` reported OIT 17 / OAT 18 / NEXT 18 with `page_buffers=2048`, and the hierarchy join found attachment 7 (SYSDBA), tx 18, its statement the marker query itself. The freeze and the `+10 000` full-scan delta match every other run; the info-call line is the new evidence — `MON_WORK sequential reads` jumps from 0 to exactly 10 000 while the MON$ row is still frozen.
+
 ### Things to try
 
 - Open a second connection running `SELECT COUNT(*) FROM MON_WORK` in a loop and re-run the sample: the hierarchy query (drop the `WHERE ... = CURRENT_CONNECTION`) now shows two attachments, and their statements' `MON$SQL_TEXT` side by side.

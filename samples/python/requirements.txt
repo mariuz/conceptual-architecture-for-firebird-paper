@@ -1,0 +1,1 @@
+firebird-driver>=2.0

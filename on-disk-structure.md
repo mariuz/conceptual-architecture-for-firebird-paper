@@ -532,6 +532,40 @@ The same two acts through [fbintf](https://github.com/MWASoftware/fbintf) (vendo
 
 Verified: all three views agree — `MON$DATABASE`, `GetODSMajorVersion` and the disk each report ODS 14 at page size 8192 (`hdr_ods_version @18 = 0x800E`, FIREBIRD flag set), `isc_info_allocation = 294 pages` matches the census's 294-page count exactly, and the header markers next 35 / OIT 34 / OAT 35 / OST 35 equal `MON$DATABASE`'s row after the warm-up commits. `hdr_PAGES = 3`, `hdr_flags 0x12 (force_write SQL_dialect_3)`, and the census is the familiar skeleton: 40 pointer, 97 data, 40 root and 106 index pages, one each of header/PIP/TIP/generators/SCN.
 
+### Python sample — [`samples/python/ods_header.py`](samples/python/ods_header.py)
+
+The same acts through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/ods_header.py`; it reads the server-owned file, so run it on the server machine as a member of the `firebird` group — e.g. under `sg firebird -c ...`). Like fbintf it adds the info-API view, and it closes fbintf's hole: `Connection.info` decodes `isc_database_info` into typed properties — `ods_version`/`ods_minor_version`, `page_size`, `pages_allocated` — *including* the 64-bit transaction markers `oit`/`oat`/`ost`/`next_transaction` (info tags 104–107), and `info.get_info(DbInfoCode.DB_GUID)` returns the GUID as text. The file act is `struct.unpack_from('<H'/'<I'/'<Q', ...)` at the `ods.h` offsets — no driver anywhere, as in every twin. Its census prints type 0 as well, and that settles a small puzzle in the tables above: the "294 pages" the C++ twins report includes **6 unformatted (type 0) pages** that their census loop simply never prints (their rows sum to 288) — the same preallocated-but-unformatted page state the JavaScript twin saw ten of.
+
+Verified output (after a few runs, hence the markers; header lines elided):
+
+```text
+-- server's view (MON$DATABASE) --
+page_size ods_major ods_minor oit oat ost next = 8192 14 0 10 11 11 11
+
+-- the same through the info API (Connection.info) --
+ods 14.0  page_size 8192  pages_allocated 294
+oit 10  oat 11  ost 11  next 11  guid {9F14D987-5384-4011-BD23-93305806C365}
+
+-- header page, parsed from /tmp/fbhandson/ods_py.fdb (offsets per ods.h) --
+pag_type      @0   = 1 (pag_header)
+hdr_page_size @16  = 8192
+hdr_ods_version @18 = 0x800e -> ODS 14 (FIREBIRD flag 0x8000 set), minor @20 = 0
+...
+hdr_next_transaction   @40 = 11
+hdr_oldest_transaction @48 = 10 (OIT)
+...
+hdr_guid      @84  = {9F14D987-5384-4011-BD23-93305806C365}
+
+-- page-type census: 294 pages of 8192 bytes --
+  type  0  undefined                  6
+  type  1  pag_header                 1
+  ...
+  type  7  pag_index (b-tree)       106
+  ...
+```
+
+All three views agree — SQL, info API and disk — on ODS 14, 8192-byte pages, the markers and (info API vs `hdr_guid`) the GUID; `pages_allocated` 294 equals the census count, and the formatted pages are the familiar skeleton (40 pointer, 97 data, 40 root, 106 index, one each of header/PIP/TIP/generators/SCN).
+
 ### Things to try
 
 - Point both samples at a copy of `employee.fdb` (`gbak` it, or use any restored copy) and compare the census: user data changes the data/index page mix, not the fixed skeleton.

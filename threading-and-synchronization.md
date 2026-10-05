@@ -382,6 +382,25 @@ The same census through [fbintf](https://github.com/MWASoftware/fbintf) (vendore
 
 Verified: 9 threads with one attachment open, 19 with the twelve extras (`13 user attachments, 1 distinct server pid`), and still 19 one second after the workers detach — pooled, not destroyed, the retention signature of every twin above. The closing `MON$ATTACHMENTS` table shows `Cache Writer` and `Garbage Collector` as `MON$SYSTEM_FLAG = 1` attachments with `<internal>` in place of a remote process, and the sample's own SYSDBA row carries `MON$REMOTE_PROCESS = .../samples/fpc/bin/threading`.
 
+### Python sample — [`samples/python/threading_demo.py`](samples/python/threading_demo.py)
+
+The same census through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/threading_demo.py` — not `threading.py`, which would shadow the standard-library module it imports). Twelve `threading.Thread` workers each open their own attachment: the driver declares DB-API `threadsafety = 1` — threads may share the module, not a connection — so the rsfbclient borrow-checker rule and the fbintf convention are, here, a documented contract checked by nobody. The GIL is not the obstacle it looks like: the driver's ctypes calls release it, so the twelve attaches genuinely overlap on the wire, and the concurrency that matters is server-side anyway. A semaphore replaces the C++ twin's fixed one-second sleep, so the "during" census is taken only once all twelve have attached and queried.
+
+Verified output:
+
+```text
+driver threadsafety = 1
+engine process: pid 665, 8 threads (1 attachment open)
+with 12 extra attachments: 19 threads | 13 user attachments, 1 distinct server pid
+after they detach:        19 threads (pooled, not destroyed)
+  ID SYS  USER               REMOTE_PROCESS
+   1   1  Cache Writer       <internal>
+   2   1  Garbage Collector  <internal>
+   3   0  SYSDBA             /usr/bin/python3.12
+```
+
+The same retention signature as every twin (8 → 19 → 19). One delta in the last row: where the compiled twins' `MON$REMOTE_PROCESS` names the sample binary, here it names the *interpreter* — the monitoring tables see the process, not the script.
+
 ### Things to try
 
 - Raise the worker count above the pool size (e.g. 40) and watch the thread count climb by exactly the shortfall.

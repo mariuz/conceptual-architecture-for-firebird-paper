@@ -291,6 +291,34 @@ The same two-providers proof through [fbintf](https://github.com/MWASoftware/fbi
 
 Verified: attachment [1] reports `NETWORK_PROTOCOL : TCPv4` and `MON$SERVER_PID : 690` against a client pid of 46634; attachment [2] (`/tmp/fbhandson/arch_embedded_fpc.fdb`) reports `NETWORK_PROTOCOL : (null)` and `MON$SERVER_PID : 46634 (this process is pid 46634 -- the engine runs IN this process)` — the same server pid 690 and same in-process verdict as the C++ and Rust native runs.
 
+### Python sample — [`samples/python/architecture_comparison.py`](samples/python/architecture_comparison.py)
+
+The same two attachments through [firebird-driver](https://github.com/FirebirdSQL/python3-driver) (`python3 samples/python/architecture_comparison.py`). Like fbintf and rsfbclient's native backend — and unlike node-firebird — firebird-driver is a ctypes binding of `libfbclient`, not a wire-protocol reimplementation, so `connect()` hands the connection string straight to the Y-valve and both halves of the comparison are reachable from the same call: `inet://localhost/employee` goes to the Remote provider, the bare path `/tmp/fbhandson/arch_embedded_py.fdb` (created with `create_database()` on first run) loads the Engine provider into the Python interpreter itself. The twin adds one question the SQL cannot ask: `con.info.firebird_version` (the `isc_info_firebird_version` item) returns one line *per layer the request crossed* — three remotely (the engine, the server's Remote listener, the client's Remote provider, each tagged `/tcp (host)/P20`), a single line embedded, where there is no wire to cross.
+
+Verified output:
+
+```text
+One libfbclient, two providers behind the Y-valve.
+
+[1] Remote provider (client-server):
+    connection string : inet://localhost/employee
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : TCPv4
+    MON$SERVER_PID    : 665   (this process is pid 28223)
+    info version      : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+                        LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P20:C
+                        LI-T6.0.0.2182 Firebird 6.0 3e1aacb/tcp (DESKTOP-7TOU7BU)/P20:C
+
+[2] Engine provider (embedded, no server):
+    connection string : /tmp/fbhandson/arch_embedded_py.fdb
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : <null>
+    MON$SERVER_PID    : 28223   (this process is pid 28223 -- the engine runs IN this process)
+    info version      : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+
+done.
+```
+
 ### Things to try
 
 - Point both attachments at databases of your own and diff the full `MON$ATTACHMENTS` row (`MON$REMOTE_PROTOCOL`, `MON$REMOTE_PROCESS`, `MON$AUTH_METHOD`) between the two providers — embedded also skips server authentication entirely.

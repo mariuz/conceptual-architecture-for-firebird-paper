@@ -194,6 +194,27 @@ The same experiment through [fbintf](https://github.com/MWASoftware/fbintf) (ven
 
 Verified: the pinned snapshot reads `val = 0` through all twelve updates (`upd` 12→24, `imgc=10`, `backreads` 18→50 — cumulative counters again, this database has prior runs behind it, `expunges` starting at 18); the post-release cleanup lands as `imgc` 10→11 and the delete as `expunges` 18→19, echoing the Rust run's collector choice; and the header counters expose an already-frozen OIT: `OIT=32` before *and* after the rollback while OAT/OST/Next move 125→127 — a stump from an earlier run is still pinning the OIT at 32, so this run's new stump lands invisibly behind it — the very freeze the C++ section demonstrated, persisting across runs until a sweep.
 
+### Python sample — [`samples/python/gc_sweep.py`](samples/python/gc_sweep.py)
+
+The same experiment through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver, which drives libfbclient's OO API through ctypes (`python3 samples/python/gc_sweep.py`), on a freshly recreated database so the counters start from zero. Where rsfbclient's typed configuration had no way to say `no_auto_undo`, firebird-driver's `TPB` object has it as a keyword — `TPB(isolation=Isolation.SNAPSHOT, no_auto_undo=True)` — and two more levers come for free: the four header counters are info calls on the attachment (`con.info.oit`/`oat`/`ost`/`next_transaction`, `isc_info_oldest_transaction` and friends) instead of a `MON$DATABASE` query, and the sweep that the C++ sample can only recommend is one Services call, `srv.database.sweep(database=...)`, after which the OIT steps past the stump. One driver trap surfaced on the way: `connect_server('localhost')` treats its argument as a *configured server name* and, finding none, silently falls back to a **local** (embedded) service manager — whose engine instance then collides with the server's exclusive file lock, *"Database already opened with engine instance, incompatible with current"*, the [layer-1 refusal](page-cache-coherency.md) exactly. The shared `fbsample.server()` helper registers the host in `driver_config` first, so the sweep runs inside the server.
+
+Verified output:
+
+```text
+pinned SNAPSHOT reads val = 0
+before updates:                    upd=47   imgc=0   purges=0   expunges=0   backreads=0
+after 12 updates (snapshot open):  upd=59   imgc=10  purges=0   expunges=0   backreads=32
+pinned SNAPSHOT still reads val = 0
+snapshot released; new reader sees val = 12
+after release + scan + 1.5s:       upd=59   imgc=10  purges=1   expunges=0   backreads=35
+after DELETE + scan + 1.5s:        upd=59   imgc=10  purges=1   expunges=1   backreads=37
+header counters before rollback:   OIT=27 OAT=28 OST=28 Next=28 (sweep interval 20000)
+after no_auto_undo rollback:       OIT=28 OAT=29 OST=29 Next=29 (sweep interval 20000)
+after srv.database.sweep():        OIT=29 OAT=31 OST=31 Next=31 (sweep interval 20000)
+```
+
+The record-stats trajectory is the C++ run's to the counter (`imgc=10`, one `purge`, one `expunge`), and the header line before the rollback is too (`OIT=27 ... Next=28`). After the rollback the counters advance by one where the C++ run's advance by two, because info calls start no transaction of their own. The stump is transaction 28. The rollback freezes the OIT on it, and the sweep moves the OIT on to 29.
+
 ### Things to try
 
 - Set the updates loop to 100: `imgc` grows to ~98 but `max versions` stays 2 (check with `fbsvcmgr localhost:service_mgr -user SYSDBA -password masterkey action_db_stats dbname /tmp/fbhandson/gc_sweep.fdb sts_record_versions`).

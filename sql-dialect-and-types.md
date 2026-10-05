@@ -440,6 +440,32 @@ The same showcase through [fbintf](https://github.com/MWASoftware/fbintf) (vendo
 
 Verified: the metadata table names all five codes — `32764 = SQL_BOOLEAN`, `32752 = SQL_INT128`, `32762 = SQL_DEC34`, `32754 = SQL_TIMESTAMP_TZ`, `448 = SQL_VARYING`; the typed round-trip returns all 39 digits of INT128 max through `TBCD`, `0.1` exactly, and `2026-07-21 12:00:00 Europe/Bucharest (dst offset 180 min, zone id 65088)`; the CHECK fires as gds 335544347 with the same `validation error for column "PUBLIC"."SHOWCASE"."MAIL"` text; and the client-side `AsString` renders the same timestamp as `21-7-26 12:00:00.0000 +03:00` — offset, not name, the formatting asymmetry stated above.
 
+### Python sample — [`samples/python/types_demo.py`](samples/python/types_demo.py)
+
+The same showcase through [firebird-driver](https://github.com/FirebirdSQL/python3-driver), the FirebirdSQL project's own Python driver over libfbclient's OO API (`python3 samples/python/types_demo.py` — not `types.py`, which would shadow the standard-library module, the same clash that renamed the Pascal twin). Python sits at the top of the ladder with fbintf, and with less ceremony: every headline type arrives as a native value — `BOOLEAN` as `bool`, `INT128` as a plain `int` (Python integers are unbounded, so `2**127 - 1` compares exactly with no Boost or `TBCD`), `DECFLOAT(34)` as `decimal.Decimal` (an exact `0.1`, and visibly *not* equal to the float `0.1`), and `TIMESTAMP WITH TIME ZONE` as an aware `datetime` that keeps the zone *name*. The domain violation is a `DatabaseError` carrying `sqlcode` and `gds_codes`. Two honest seams: the wire codes come from the driver's per-column `ItemMetadata` (an `SQLDataType` enum, so it names them itself), which the driver documents as internal and reaches only as `Statement._out_desc`; and the public DB-API `cursor.description` is *wrong* for the FB4 types — its type code says `None` for `INT128` and `float` for `DECFLOAT(34)` even though the fetched values are `int` and `Decimal`. Trust the values, not the description.
+
+Verified output:
+
+```text
+domain CHECK rejected 'not-an-address':
+    sqlcode -625, gds 335544347: validation error for column "PUBLIC"."SHOWCASE"."MAIL", value "not-an-address"
+
+column  wire type (ItemMetadata.datatype)   python type
+------  ------------------------------   -----------
+FLAG    32764 = BOOLEAN                bool
+BIG     32752 = INT128                 None
+MONEY   32762 = DEC34                  float
+BORN    32754 = TIMESTAMP_TZ           datetime
+MAIL      448 = VARYING                str
+
+typed round-trip:
+  FLAG  True
+  BIG   170141183460469231731687303715884105727  == 2**127 - 1 ? True
+  MONEY Decimal('0.1')  == Decimal("0.1") exactly ? True  (and 0.1 float? False)
+  BORN  2026-07-21T12:00:00+03:00  zone=Europe/Bucharest
+  MAIL  'user@example.com'
+```
+
 ### Things to try
 
 - Add an `INT128` overflow: insert `1.7e38` cast to `INT128`, or `SELECT 170141183460469231731687303715884105727 + 1` — watch dialect-3 exact arithmetic refuse instead of wrapping.
