@@ -1,6 +1,6 @@
 # Samples
 
-Runnable C++, JavaScript, Rust, Free Pascal and Python examples that
+Runnable C++, JavaScript, Rust, Free Pascal, Python and Go examples that
 exercise the architecture described in the [paper](../README.md). The C++ programs use the modern
 object-oriented client API (`firebird/Interface.h`) that is the supported
 interface in Firebird 3 and later, including the Firebird 6 development
@@ -85,6 +85,21 @@ and debugging"** section built on a pair of samples here:
   named `threading_demo.py`, `trace_demo.py` and `types_demo.py`, because
   a module named `threading`, `trace` or `types` would shadow the standard
   library for every sample in the directory.
+- **`go/<topic>/main.go`** — the Go twin, written against
+  [firebirdsql](https://github.com/nakagami/firebirdsql) (one Go module,
+  one `package main` directory per topic, sharing
+  [`go/fbsample`](go/fbsample/fbsample.go)). Like node-firebird and
+  rsfbclient's pure-Rust backend it is an independent, pure-Go
+  implementation of the wire protocol — no libfbclient at all — speaking
+  protocols 10–19 with Srp256 and ChaCha64/Arc4 wire crypt. Behind
+  `database/sql` it carries its own Services managers (backup,
+  maintenance, nbackup, trace, users), events, DECFLOAT and time zones,
+  and structured `*firebirdsql.FbError` values (`SQLCode`, `SQLState`, the
+  whole `GDSCodes` vector). Its deltas teach too: isolation is
+  `database/sql`'s levels mapped onto fixed TPBs, all WAIT (no arbitrary
+  TPB, no SNAPSHOT NO WAIT); there is no embedded mode; and
+  `database/sql` pools connections, so `fbsample` pins each `*sql.DB` to
+  one connection to make it exactly one attachment.
 
 Each document's Hands-on section shows its pair's *verified* output, a
 "things to try" list, and gdb breakpoints into the engine functions the
@@ -279,6 +294,20 @@ python3 -m venv ~/.venvs/fbsamples
 Firebird 6 install the documents assume); set `FB_CLIENT_LIBRARY` to use
 another client library, and `FB_HOST` for another server. Scratch
 databases go to `/tmp/fbhandson/<topic>_py.fdb` like the other twins.
+
+## Go samples
+
+The [`go/`](go/) directory holds the per-document twins in Go. With Go
+1.22+ (no Firebird client library needed — the driver is pure Go):
+
+```sh
+cd samples/go
+go run ./transactions        # or any other ./<topic>
+```
+
+The first run downloads the driver into the module cache. Scratch
+databases go to `/tmp/fbhandson/<topic>_go.fdb` like the other twins;
+`FB_HOST`, `ISC_USER` and `ISC_PASSWORD` override the defaults.
 
 ## Debugging
 

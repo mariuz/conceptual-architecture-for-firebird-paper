@@ -326,6 +326,47 @@ The same six statements through [firebird-driver](https://github.com/FirebirdSQL
 
 Verified: the `?` comes back as `param 0: sqltype=500 (SHORT), length=2` on a never-executed statement, both `FIRST` roles parse OK, and the failures report `Token unknown - line 1, column 1 / SELEC` and `Token unknown - line 3, column 7 / ORDER` (classified *syntax*, sqlcode -104) and `Column unknown "FRST_NAME" At line 1, column 8` (classified *semantic*, sqlcode -206) — the same tokens, lines and columns as every other run.
 
+### Go sample — [`samples/go/parser_errors/main.go`](samples/go/parser_errors/main.go)
+
+The same six statements through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./parser_errors`). It sits between the two camps: `db.Prepare` *is* a genuine prepare-only step — the driver sends `op_prepare_statement` immediately, so the three bad strings fail in `Prepare` without anything executing — but it publishes nothing the prepare response describes: `driver.Stmt.NumInput()` returns `-1`, and there is no statement type or input descriptor, so the C++ run's `sqltype=500` for the `?` is out of reach. The good statements are therefore executed (the `?` bound to `2`) and described through `rows.ColumnTypes()` — name, the driver's type name (`SHORT`, `VARYING`, `LONG`) and its *display* length, `6` for a `SMALLINT` rather than the 2-byte wire length. The error channel is the strong part: a failed prepare returns `*firebirdsql.FbError` with the formatted status vector (one entry per line, without isql's leading dashes), `SQLCode` and the raw `GDSCodes`, which the sample searches for `isc_dsql_token_unk_err` or `isc_dsql_field_err` to tell syntax from semantics, as the Python and fbintf twins do.
+
+Verified output:
+
+```text
+---- SELECT first_name FROM employee WHERE emp_no = ?
+  parsed OK: bound args=1, output columns=1
+    column 0: FIRST_NAME VARYING(15) = Robert
+---- SELECT FIRST 1 emp_no FROM employee
+  parsed OK: bound args=0, output columns=1
+    column 0: EMP_NO SHORT(6) = 2
+---- SELECT first FROM (SELECT 1 AS first FROM rdb$database)
+  parsed OK: bound args=0, output columns=1
+    column 0: FIRST LONG(11) = 1
+---- SELEC 1 FROM rdb$database
+  prepare failed (syntax; sqlcode -104):
+Dynamic SQL Error
+SQL error code = -104
+Token unknown - line 1, column 1
+SELEC
+---- SELECT emp_no
+FROM employee
+WHERE ORDER BY 1
+  prepare failed (syntax; sqlcode -104):
+Dynamic SQL Error
+SQL error code = -104
+Token unknown - line 3, column 7
+ORDER
+---- SELECT frst_name
+FROM employee
+  prepare failed (semantic; sqlcode -206):
+Dynamic SQL Error
+SQL error code = -206
+Column unknown
+"FRST_NAME"
+At line 1, column 8
+done.
+```
+
 ### Things to try
 
 - Feed the C++ sample a statement using a *reserved* word as an identifier (`SELECT order FROM rdb$database`) and compare with the non-reserved `FIRST` case; the token lists at the top of [`parse.y`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/parse.y) explain the difference.

@@ -479,6 +479,26 @@ the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the s
 
 The bare reservation-path dialect again (`isc_lock_conflict` / `isc_lock_timeout`), not the record-conflict chain the node and Rust twins see. One earlier run, on a host busy with other samples, measured the timed probe at 4.8 s rather than 3.0 s: the deadline is only checked when the waiting thread wakes, so load can stretch a lock timeout.
 
+### Go sample — [`samples/go/lock_manager/main.go`](samples/go/lock_manager/main.go)
+
+The same probes and the same deadlock through [firebirdsql](https://github.com/nakagami/firebirdsql), the pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./lock_manager`). It shares node-firebird's and rsfbclient's gap and then some: no `RESERVING`, no custom TPB at all — `database/sql`'s isolation levels map onto fixed TPBs, every one of them WAIT — so it probes through row conflicts, and each `lck_wait` mode is reached the Go way. NO WAIT is the driver's own `LevelReadCommittedNoWait` (`isc_tpb_nowait`); WAIT is `sql.LevelReadCommitted`. There is no `isc_tpb_lock_timeout` to set, so the timed probe is a **client** deadline instead: a WAIT transaction run under `context.WithTimeout(3 s)`, whose expiry makes the driver's cancel watcher send `op_cancel` — and the engine abandons the lock wait with `isc_cancelled` rather than `isc_lock_timeout`. Same stopwatch, different owner of the clock. The deadlock act crosses two SNAPSHOT WAIT updates from two goroutines.
+
+Verified output:
+
+```text
+holder: row 1 updated, uncommitted (LCK_tra held)
+NO WAIT:         failed after 0.009 s: deadlock, update conflicts with concurrent update, concurrent transaction number is 11 (gds [335544336 335544451 335544878])
+DEADLINE 3 s:    failed after 3.003 s: operation was cancelled (gds [335544794])
+holder: committed (2 s later) -> lock released
+WAIT:            granted after 2.014 s
+building deadlock: A updates row 1, B updates row 2, then cross...
+deadlock: A failed after 10.0 s: deadlock
+deadlock: B's update proceeded after 10.0 s (A was the victim)
+the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the scan.
+```
+
+The record-conflict dialect again, now as a structured `*firebirdsql.FbError` whose `GDSCodes` carry the whole chain; the 10.0 s deadlock is the scan interval once more — the cycle was complete after 0.3 s.
+
 ### Things to try
 
 - While the C++ holder has `t1` reserved, run `fb_lock_print -d /tmp/fbhandson/lock_manager.fdb -o -r` *(or `-f` on the `fb_lock_*` file)*: the reservation appears as an `LCK_relation`-series request at state 6 (EX), and the LOCK TIMEOUT probe shows up as `Pending` for exactly three seconds.

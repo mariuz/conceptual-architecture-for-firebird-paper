@@ -334,6 +334,35 @@ info.get_info(DbInfoCode.REPLICA_MODE) = <ReplicaMode.NONE: 0>
 done.
 ```
 
+### Go sample — [`samples/go/replication/main.go`](samples/go/replication/main.go)
+
+The same state walk through [firebirdsql](https://github.com/nakagami/firebirdsql), the pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./replication`). The DDL half is the plainest of all the twins. Each step is a `db.Exec` on the driver's commit-retaining autocommit transaction. The reset ignores each failing `DROP`/`DISABLE` error, since a failed statement dooms only itself. The read-backs `TRIM` the `CHAR(63)` columns at the source. Where this twin goes further is the *other* end of the relationship, which no other sample touches. firebirdsql ships a Services `MaintenanceManager`, and its `SetReplicaMode` sends `isc_spb_prp_replica_mode`, the `gfix -replica` switch, over the service manager. So the sample turns its scratch database into a read-only replica, attaches to it, and turns it back into a primary. Python only *reads* replica mode, through `isc_info_replica_mode`.
+
+Verified output:
+
+```text
+-- initial state (publication exists but is inactive)
+RDB$DEFAULT   ACTIVE_FLAG 0   AUTO_ENABLE 0    published: (none)
+-- after ENABLE PUBLICATION
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: (none)
+-- after INCLUDE TABLE REPL_ORDERS
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: PUBLIC.REPL_ORDERS
+-- after INCLUDE ALL (auto-enable: future tables join automatically)
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 1    published: PUBLIC.REPL_ORDERS, PUBLIC.REPL_SCRATCH
+
+MON$REPLICA_MODE = 0  (0 = not a replica: this side publishes)
+
+-- Services: MaintenanceManager.SetReplicaMode(ReplicaModeReadOnly)
+MON$REPLICA_MODE = 1  (1 = read-only replica)
+user INSERT on the replica: attempted update during read-only transaction
+-- Services: MaintenanceManager.SetReplicaMode(ReplicaModeNone)
+MON$REPLICA_MODE = 0  (a primary again)
+
+done.
+```
+
+Note *how* the replica refuses the user's write. The error is not replication-specific. It is `isc_read_only_trans`, the same error a `READ ONLY` transaction gets, because on a read-only replica the engine starts every user transaction read-only and exempts only the replicator's own attachment. A replica is "read-only for everyone except the replicator", and the client sees the first half of that sentence.
+
 ### Things to try
 
 - Create a new table *after* `INCLUDE ALL` and re-read `RDB$PUBLICATION_TABLES` — `RDB$AUTO_ENABLE` means it appears without any further DDL.

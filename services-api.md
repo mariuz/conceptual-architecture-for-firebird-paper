@@ -544,6 +544,30 @@ the file /tmp/fbhandson/services_py.fbk now exists on the SERVER, owned by the s
 
 The same 74 lines in 75 polls as the C++ and Pascal twins, and this time `ls -l` agrees: `-rw-r--r-- firebird firebird 3072 /tmp/fbhandson/services_py.fbk`.
 
+### Go sample — [`samples/go/services/main.go`](samples/go/services/main.go)
+
+The same session through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./services`). Like node-firebird it speaks the Services protocol itself — `op_service_attach`, `op_service_start`, `op_service_info` — with no libfbclient, so there is no embedded `service_mgr` to attach by mistake: `NewServiceManager("localhost", ...)` can only mean the remote one, and its wire is ChaCha64 like any attachment. The information items are typed methods (`GetServerVersionString`, `GetArchitecture`, `GetHomeDir`, `GetSecurityDatabasePath`). For the action, `BackupManager.Backup(db, fbk, options, verboseChan)` would hide the drain behind a channel, so the sample keeps it visible: it writes the `isc_action_svc_backup` SPB with the driver's exported `XPBWriter` (spelling out the tag values, which the driver does not export) and calls `ServiceManager.GetString()` — one `isc_info_svc_line` query per call, with a "data not ready" answer re-asked inside the call after 10 ms. It ends by `stat`-ing the `.fbk`, the check that caught the Python twin's embedded-service trap.
+
+Verified output (middle trimmed):
+
+```text
+service       : localhost:service_mgr (wire cipher ChaCha64)
+server version: LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+architecture  : Firebird/Linux/AMD/Intel/x64
+home directory: /opt/firebird/
+security db   : /opt/firebird/security6.fdb
+backup started (verbose) - draining the 1 KB ring buffer:
+  gbak:readied database /tmp/fbhandson/services_go.fdb for backup
+  gbak:creating file /tmp/fbhandson/services_go.fbk
+  gbak:starting transaction
+  ...
+  gbak:closing file, committing, and finishing. 3072 bytes written
+done: 74 gbak lines drained in 75 GetString() polls
+the file /tmp/fbhandson/services_go.fbk now exists on the SERVER: 3072 bytes, owned by firebird
+```
+
+The same 74 lines in 75 polls as the C++, Pascal and Python twins, and the owner is the server's user, as the document's operational rule says it must be.
+
 ### Things to try
 
 - Drop `isc_spb_verbose` from the C++ start block: the backup completes in a handful of polls with almost no lines — the non-verbose escape hatch from [the pipe section](#the-service-thread-and-the-1-kb-pipe).

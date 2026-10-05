@@ -261,6 +261,29 @@ RDB$FILES rows left: 0
 done.
 ```
 
+### Go sample — [`samples/go/ha/main.go`](samples/go/ha/main.go)
+
+The same lifecycle through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./ha`). The shadow needs nothing from a driver, so a client with no libfbclient at all reproduces it: `CREATE SHADOW 1 '...'` and `DROP SHADOW 1 DELETE FILE` are ordinary `db.Exec` DSQL, `os.Stat` plays `stat()`, and, like the Python twin, the sample starts from a fresh scratch database (`ha_go.fdb`/`ha_go.shd`) so its sizes are comparable. What the Go driver adds is the shadow's *service* half: its `MaintenanceManager` carries `ActivateShadow` and `KillShadow` (the `gfix -activate`/`-kill` verbs of the recovery path), named in the sample's comment because showing them needs a lost main file.
+
+Verified output:
+
+```text
+CREATE SHADOW 1 done - the engine dumped every page to the mirror
+
+RDB$FILES: /tmp/fbhandson/ha_go.shd  shadow_number=1  flags=1
+
+after CREATE SHADOW:         main =  2564096 bytes, shadow =  2433024 bytes
+after 5000 inserts:          main =  2899968 bytes, shadow =  2818048 bytes
+
+DROP SHADOW 1 DELETE FILE done
+after DROP SHADOW:           main =  2899968 bytes, shadow =       -1 bytes
+
+RDB$FILES rows left: 0
+done.
+```
+
+The sizes match the C++ and Python runs byte for byte.
+
 ### Things to try
 
 - Create the shadow with `CREATE SHADOW 1 AUTO` vs `MANUAL` and read `RDB$FILE_FLAGS` again — the flag bits encode the [conditional/manual modes](#firebird-ha-building-blocks) that decide what happens when the shadow becomes unavailable.

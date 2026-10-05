@@ -830,6 +830,39 @@ Select Expression
 
 The elided middle matches the other twins: `PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."RDB$PRIMARY2"))` with a `Unique Scan` for `id = 42`, and `PLAN SORT (JOIN ("D" NATURAL, "E" INDEX ("PUBLIC"."EMP_DEPT")))` over a `Sort (record length: 228, key length: 8)` — the UTF8 record length the Pascal run explained.
 
+### Go sample — [`samples/go/plans/main.go`](samples/go/plans/main.go)
+
+The same five experiments through [firebirdsql](https://github.com/nakagami/firebirdsql), the pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./plans`). The driver defines `isc_info_sql_get_plan` but never sends it — its `op_info_sql` is internal — so it joins node-firebird and rsfbclient on the `RDB$SQL.EXPLAIN` route, and the legacy `PLAN (...)` one-liner stays out of reach. Two Go details shape the code. `ACCESS_PATH` is a BLOB and firebirdsql fetches blob contents itself, so it scans straight into a `[]byte` — no `CAST` to `VARCHAR` as in the Rust twin. And the sample reads one more column the other EXPLAIN twins leave unread: `CARDINALITY`, the optimizer's own row estimate per operator, printed beside each line.
+
+Verified output (trimmed to the plan flip and the hash join):
+
+```text
+== SELECT name FROM emp WHERE dept_id = 5
+   Select Expression
+       -> Filter   [est. 3 rows]
+           -> Table "PUBLIC"."EMP" Full Scan   [est. 2723 rows]
+
+-- CREATE INDEX emp_dept ON emp (dept_id) --
+
+== SELECT name FROM emp WHERE dept_id = 5
+   Select Expression
+       -> Filter   [est. 136 rows]
+           -> Table "PUBLIC"."EMP" Access By ID
+               -> Bitmap
+                   -> Index "PUBLIC"."EMP_DEPT" Range Scan (full match)   [est. 136 rows]
+...
+== SELECT COUNT(*) FROM emp a JOIN emp b ON a.salary = b.salary
+   Select Expression
+       -> Aggregate   [est. 1 rows]
+           -> Filter   [est. 7413 rows]
+               -> Hash Join (inner) (keys: 1, total key length: 4)   [est. 7413 rows]
+                   -> Table "PUBLIC"."EMP" as "A" Full Scan   [est. 2723 rows]
+                   -> Record Buffer (record length: 25)   [est. 2723 rows]
+                       -> Table "PUBLIC"."EMP" as "B" Full Scan   [est. 2723 rows]
+```
+
+The estimates are the [cost model](#access-path-selection) showing its inputs. The table really holds 2,000 rows but is estimated at 2,723: the number comes from data pages times records per page, not from a count. Without an index the filter falls back to a default selectivity (3 rows). Once `EMP_DEPT` exists, its fresh statistics (1/20 selectivity) give 136. The elided middle matches the other twins: a `Unique Scan` on `RDB$PRIMARY2` estimated at 1 row, and `Sort (record length: 228, key length: 8)` over the nested loop.
+
 ### Things to try
 
 - Add `ROWS 10` or an `ORDER BY id` to the `dept_id = 5` query and re-prepare: watch `FirstRowsStream` appear, or the plan switch to `ORDER` (index-order walk) instead of `SORT`.

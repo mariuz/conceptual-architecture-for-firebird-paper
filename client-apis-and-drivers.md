@@ -88,7 +88,7 @@ Both paths reach the same server; the choice is a trade-off between zero-depende
 | | [node-firebird-driver-native](https://github.com/asfernandes/node-firebird-drivers) | native (OO API) | TypeScript, wraps fbclient |
 | **PHP** | [PDO_Firebird](https://www.php.net/manual/en/ref.pdo-firebird.php) | native | Bundled PDO driver |
 | **Perl** | [DBD::Firebird](https://github.com/pilcrow/perl-dbd-firebird) | native | DBI driver |
-| **Go** | [nakagami/firebirdsql](https://pkg.go.dev/github.com/nakagami/firebirdsql) | **pure** Go | `database/sql` driver |
+| **Go** | [nakagami/firebirdsql](https://pkg.go.dev/github.com/nakagami/firebirdsql) | **pure** Go | Path B; `database/sql` driver with its own Services, events and batch extras; used by the Go samples |
 | **Delphi / C++Builder** | FireDAC / IBX | native | Native VCL/FMX access |
 | **ODBC** | [Firebird ODBC driver](https://github.com/FirebirdSQL/firebird-odbc-driver) | native | For ODBC-consuming tools |
 
@@ -208,6 +208,33 @@ same engine, same Y-valve, three API levels. done.
 ```
 
 The ISC rung's error path is live too: pointed at `/nonexistent/x.fdb`, `check()` prints `ISC error in isc_attach_database:` followed by the three `fb_interpret` lines of the status vector (`I/O error during "open" operation ...`, `Error while trying to open file`, `No such file or directory`).
+
+### Go sample — [`samples/go/api_styles/main.go`](samples/go/api_styles/main.go)
+
+The Go twin through [firebirdsql](https://github.com/nakagami/firebirdsql), the Go row of the [driver table](#the-driver-ecosystem-by-language) (`cd samples/go && go run ./api_styles`). firebirdsql is a **Path B** driver, a pure-Go implementation of the wire protocol, Srp256 and ChaCha64 wire crypt. It loads no `libfbclient`, so there is no ISC/OO pair to climb down to. Its levels are Go's own:
+
+- **`database/sql`**: the portable, pooled surface, with typed `Scan`.
+- **The driver connection.** Reached through `sql.Conn.Raw`, this is `database/sql/driver`'s raw `Prepare` → `Query` → `Next(dest []driver.Value)` row protocol. Under `charset=NONE` the VARCHAR arrives as raw `[]uint8`, which `database/sql` had silently converted to a string. The driver's extras live at this level too: `ProtocolVersion()`, `WireCipher()`, and `ExecImmediate` (`op_execute_immediate`, with no statement handle).
+- **The Services API**, which the same driver also speaks itself.
+
+The error model is the status vector as a Go value: `*firebirdsql.FbError` carries the GDS codes, SQLCODE and SQLSTATE that the C++ ISC half reads out of `ISC_STATUS` slots with `fb_interpret`.
+
+Verified output:
+
+```text
+[database/sql ] engine version = 6.0.0
+[driver.Conn  ] engine version = 6.0.0   (driver.Value []uint8; protocol 19, ChaCha64, no libfbclient)
+[driver.Conn  ] ExecImmediate("set decfloat round half_even") ok
+[service_mgr  ] server version = LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+[error model  ] attach /nonexistent/x.fdb ->
+    I/O error during "open" operation for file "//nonexistent/x.fdb"
+    Error while trying to open file
+    No such file or directory
+    GDSCodes [335544344 335544734]  SQLCode -902  SQLState 08001
+one wire protocol, no client library, three Go levels. done.
+```
+
+The three message lines are the ones the Python twin's `fb_interpret` walk prints for the same failure, decoded here by Go code that only shares the wire format with `libfbclient`.
 
 ### Things to try
 

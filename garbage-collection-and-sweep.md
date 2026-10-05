@@ -215,6 +215,28 @@ after srv.database.sweep():        OIT=29 OAT=31 OST=31 Next=31 (sweep interval 
 
 The record-stats trajectory is the C++ run's to the counter (`imgc=10`, one `purge`, one `expunge`), and the header line before the rollback is too (`OIT=27 ... Next=28`). After the rollback the counters advance by one where the C++ run's advance by two, because info calls start no transaction of their own. The stump is transaction 28. The rollback freezes the OIT on it, and the sweep moves the OIT on to 29.
 
+### Go sample — [`samples/go/gc_sweep/main.go`](samples/go/gc_sweep/main.go)
+
+The same experiment through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./gc_sweep`), on a freshly recreated database. The pin is `database/sql`'s `LevelRepeatableRead`, which the driver maps to `isc_tpb_concurrency`, and every counter peek is its own committed `*sql.Tx`. The stump is where the driver's fixed TPBs stop. No `database/sql` level carries `isc_tpb_no_auto_undo`, and there is no raw-TPB escape hatch, so, as in the Rust twin, the sample shows the absence instead: an ordinary rollback undoes its work in memory and is booked as committed, and the OIT keeps moving. What the pure-Go driver does carry is the sweep the C++ sample can only recommend. `firebirdsql.NewMaintenanceManager(...).Sweep(path)` is the Services API's `gfix -sweep`, run inside the server. It needs no `Close`, because each manager call opens and closes its own service attachment.
+
+Verified output:
+
+```text
+pinned SNAPSHOT reads val = 0
+before updates:                    upd=47   imgc=0   purges=0   expunges=0   backreads=0
+after 12 updates (snapshot open):  upd=59   imgc=10  purges=0   expunges=0   backreads=32
+pinned SNAPSHOT still reads val = 0
+snapshot released; new reader sees val = 12
+after release + scan + 1.5s:       upd=59   imgc=10  purges=1   expunges=0   backreads=35
+after DELETE + scan + 1.5s:        upd=59   imgc=10  purges=1   expunges=1   backreads=37
+header counters before rollback:   OIT=26 OAT=27 OST=27 Next=27 (sweep interval 20000)
+after (auto-undo) rollback:        OIT=28 OAT=29 OST=29 Next=29 (sweep interval 20000)
+one transaction later:             OIT=29 OAT=30 OST=30 Next=30 (sweep interval 20000)
+after MaintenanceManager.Sweep():  OIT=32 OAT=33 OST=33 Next=33 (sweep interval 20000)
+```
+
+The record-stats trajectory matches the C++ and Python runs counter for counter: `imgc=10`, one `purge`, one `expunge`. The header lines show the absence. The OIT keeps its usual one-transaction lag behind `Next` throughout. The rolled-back transaction is number 28, and one committed peek later the OIT has moved past it to 29 with no sweep, so the rollback was booked as committed. The C++ run's `no_auto_undo` stump instead held the OIT two behind `Next`. Here the sweep has no stump to clear and only moves the counters on.
+
 ### Things to try
 
 - Set the updates loop to 100: `imgc` grows to ~98 but `max versions` stays 2 (check with `fbsvcmgr localhost:service_mgr -user SYSDBA -password masterkey action_db_stats dbname /tmp/fbhandson/gc_sweep.fdb sts_record_versions`).

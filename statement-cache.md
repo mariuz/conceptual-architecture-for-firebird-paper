@@ -431,6 +431,19 @@ Verified output:
 
 Same ordering as every twin: trailing spaces and a changed literal miss alike, and byte-identical text after each unrelated `RECREATE TABLE` + commit misses hardest. One run on a busy machine reported 1.16 ms/prepare for run 1 — timings are only meaningful on a quiet server, which is why the samples compare runs within one process rather than absolute numbers.
 
+### Go sample — [`samples/go/stmt_cache/main.go`](samples/go/stmt_cache/main.go)
+
+The same four timing runs through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./stmt_cache`). It too sits on the clean side of the wrapper split: `database/sql` keeps no statement cache of its own, `tx.Prepare` is a real prepare-without-execute (`op_allocate` + `op_prepare` with the metadata request) and `Stmt.Close` sends `op_free_statement(DSQL_drop)`. Two `database/sql` details shape the sample. The prepares run inside an explicit `Tx`, because in the driver's autocommit mode every `Stmt.Close` would also `COMMIT RETAINING`. And while that `Tx` is open it owns the (pinned) connection, so run 4's `RECREATE TABLE` comes from a *second attachment* — which sharpens the lesson rather than blurring it: the cache is per-database, so another attachment's DDL commit (here an autocommit `COMMIT RETAINING`, which runs the deferred work too) purges this attachment's entries. With no libfbclient and no interpreter in between, a hit costs 0.17 ms — closer to the C++ twins than to the Python one.
+
+Verified output:
+
+```text
+1. identical text             100 prepares:   16.8 ms  (0.17 ms/prepare) - hits
+2. + i trailing spaces        100 prepares:  115.7 ms  (1.16 ms/prepare) - misses
+3. distinct literal           100 prepares:  114.3 ms  (1.14 ms/prepare) - misses
+4. identical text after DDL   100 prepares:  288.9 ms  (2.89 ms/prepare) - misses
+```
+
 ### Things to try
 
 - Change run 2 to vary *case* instead of whitespace (`Select` / `sElect`…) — same misses, same reason.

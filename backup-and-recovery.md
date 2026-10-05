@@ -207,6 +207,19 @@ The same round trip through [firebird-driver](https://github.com/FirebirdSQL/pyt
 
 Verified: with the source attachment still open, the backup ends with `gbak:3 records written` and `closing file, committing, and finishing. 3072 bytes written`; the restore reports `backup version is 12`, `3 records restored`, and defers the primary key until `activating and creating deferred index "PUBLIC"."RDB$PRIMARY1"`; the final check of `/tmp/fbhandson/backup_py_restored.fdb` prints `restored database says: 3 rows, max name = gamma` — the same log and verdict as the other four runs.
 
+### Go sample — [`samples/go/backup/main.go`](samples/go/backup/main.go)
+
+The same round trip through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./backup`). Of the wire-only drivers it sits with node-firebird, not rsfbclient: it reimplements `op_service_attach`/`op_service_start`/`op_service_info` in Go, so neither a gbak binary nor `libfbclient` is involved. `firebirdsql.NewBackupManager` builds the `isc_action_svc_backup`/`_restore` SPBs from option structs (`NewBackupOptions()`, `NewRestoreOptions(WithReplace())`).
+
+Two things differ from the other twins:
+
+- **Each call opens its own service attachment.** Every `Backup` or `Restore` opens and closes its own `service_mgr` attachment, where the C++ twin reuses one for both actions.
+- **gbak's log arrives on a Go channel.** The `isc_info_svc_line` drain feeds a channel that the *caller* owns. The operation runs in a goroutine and closes the channel when done, while the main goroutine ranges over the lines.
+
+As in every twin, the backup runs while the source attachment is still open.
+
+Verified (log trimmed; it matches the C++ run line for line): the backup ends with `gbak:3 records written` and `gbak:closing file, committing, and finishing. 3072 bytes written`. The restore reports `backup version is 12`, `created database /tmp/fbhandson/backup_go_restored.fdb, page_size 8192 bytes` and `3 records restored`, and it defers the primary key until `activating and creating deferred index "PUBLIC"."RDB$PRIMARY1"`. The final in-driver check prints `restored database says: 3 rows, max name = gamma`. The driver also ships an `NBackupManager` (`isc_action_svc_nbak`/`_nrest`/`_nfix`) for the [physical-backup path](#nbackup-physical-incremental-backup), which this round trip does not exercise.
+
 ### Things to try
 
 - Add `start->insertTag(&st, isc_spb_bkp_metadata_only)` (C++) or `metadataonly: true` (JS) and compare the `.fbk` sizes and the restore log — structure without data, the `-SKIP_DATA` idea from the [gbak section](#gbak-logical-backup).

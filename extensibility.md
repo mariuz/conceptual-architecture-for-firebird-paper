@@ -230,6 +230,12 @@ The same UDR walk through [firebird-driver](https://github.com/FirebirdSQL/pytho
 
 Verified: `gen_rows(1, 5)` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, and the `RDB$CONFIG` roster is identical to the C++ run — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
 
+### Go sample — [`samples/go/extensibility/main.go`](samples/go/extensibility/main.go)
+
+The same UDR walk through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./extensibility`). It confirms the JavaScript section's lesson from a fourth independent client of the protocol: no libfbclient is anywhere in the process, yet nothing is lost, because `EXTERNAL NAME 'udrcpp_example!gen_rows' ENGINE udr` is plain DDL through `db.Exec` and both calls are plain queries — the native module is loaded by the server's `udr_engine`, not by the client. The isql-style headers come from `rows.Columns()`, `database/sql`'s view of the statement's output metadata, and the scalar `sum_args` call scans into an `any`.
+
+Verified: `gen_rows(1, 5)` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, and the `RDB$CONFIG` roster is identical to the C++ run — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
+
 ### Things to try
 
 - Declare more of the shipped module: `gen_rows2` (same logic via typed `FB_UDR_MESSAGE`s), `mult`, or the `replicate` UDR *trigger* ([`extern/firebird/examples/udr/`](extern/firebird/examples/udr/) shows each declaration in a comment above its implementation).

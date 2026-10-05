@@ -333,6 +333,42 @@ ID OCTETS CHARS CONTENT
 done.
 ```
 
+### Go sample — [`samples/go/blobs/main.go`](samples/go/blobs/main.go)
+
+The same scenario through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./blobs`). Like rsfbclient, it treats a blob as a whole value: a column scans into a `string` or `[]byte`, a parameter binds like any other value, and there is no blob handle, segment or `getInfo` in the API. The size rule underneath is in the driver source. A value shorter than 32767 bytes travels as a plain text parameter that the *server* coerces into the blob. A longer value becomes `op_create_blob2` plus `op_put_segment` calls of exactly 32000 bytes.
+
+Since Go cannot see the segments, the twin reads them from the other side, in SQL. An `EXECUTE BLOCK` walks a stored blob with `RDB$BLOB_UTIL.OPEN_BLOB` and `READ_DATA(h, NULL)`, which returns one segment per call. The walk shows the driver's own write segmentation: 32000 + 8000 bytes for a 40000-byte string. It also shows that the nearest SQL substitute for the C++ twin's three `putSegment()` calls does not keep boundaries. Three `BLOB_APPEND`s onto `RDB$BLOB_UTIL.NEW_BLOB(false, true)`, a segmented blob, are coalesced by the engine into **one** 40-byte segment.
+
+The size rule also has a trap. A *short* `[]byte` travels as text in the connection charset too. Binary data that is not valid UTF8 is therefore refused on a `charset=UTF8` attachment with `Malformed string`, even with a `CAST(? AS VARBINARY(256))`. The sample stores it through a second, `charset=NONE` attachment instead.
+
+Verified output:
+
+```text
+id 1: 3 BLOB_APPENDs onto RDB$BLOB_UTIL.NEW_BLOB(segmented) - Go has no putSegment
+  Go sees one string: "first segmentsecond, longer segmentthird" (40 bytes)
+  RDB$BLOB_UTIL.READ_DATA(h, NULL), one segment per call - BLOB_APPEND coalesced them:
+  segment #1:    40 bytes  "first segmentsecond, longer se"
+
+id 2: a 40000-byte Go string parameter (>= 32767: op_create_blob2 + op_put_segment)
+  segment #1: 32000 bytes  "012345678901234567890123456789"
+  segment #2:  8000 bytes  "012345678901234567890123456789"
+
+id 3: 256 binary bytes on the charset=UTF8 attachment -> Malformed string
+      same []byte on a charset=NONE attachment -> stored
+      read back as []byte: 256 bytes, round-trip intact: true
+  segment #1:   256 bytes  "000102030405060708090A0B"
+
+-- column subtypes (RDB$FIELDS) --
+FIELD SUBTYPE CHARSET
+----- ------- -------
+DATA  0       <null>
+NOTE  1       UTF8
+
+-- BLOB_APPEND result --
+id 4: 17 octets, 17 chars, "part1-part2-part3"
+done.
+```
+
 ### Things to try
 
 - Grow the C++ text blob (e.g. 64 putSegment calls of 4 KB) and watch `getInfo` report the level change indirectly: re-run `gstat -r` on the table and see blob pages appear, then compare `Average record length` — it stays ~15 bytes no matter how big the blobs get.

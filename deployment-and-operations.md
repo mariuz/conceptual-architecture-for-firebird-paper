@@ -237,6 +237,48 @@ Verified: the SQL layers match the other runs — `/opt/firebird/examples/empbui
   attached databases     /opt/firebird/examples/empbuild/employee.fdb
 ```
 
+### Go sample — [`samples/go/deployment/main.go`](samples/go/deployment/main.go)
+
+The same three SQL layers through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./deployment`), plus the service-manager layer that the Python twin reaches through `srv.info`. Here it comes from the driver's own `ServiceManager` (`GetServerVersionString`, `GetArchitecture`, `GetHomeDir`, `GetSecurityDatabasePath`, `GetLockFileDir`, `GetMsgFileDir`, `GetSvrDbInfo`), so a Go client with no `libfbclient` installed can still see where and how the server is installed. The session facts belong to this client. Unlike node-firebird, which gets `Arc4`, firebirdsql negotiates **`ChaCha64`**, like `libfbclient`, for both the database and the service attachment. `RDB$CONFIG_IS_SET` arrives as a Go `bool`, so it is rendered client-side as `false`.
+
+Verified output (excerpt):
+
+```text
+== RDB$CONFIG: effective configuration (selected of 70 settings) ==
+RDB$CONFIG_NAME     RDB$CONFIG_VALUE            RDB$CONFIG_IS_SET
+------------------- --------------------------- -----------------
+DatabaseAccess      Full                        false
+DefaultDbCachePages 2048                        false
+MaxParallelWorkers  1                           false
+SecurityDatabase    /opt/firebird/security6.fdb false
+ServerMode          Super                       false
+WireCrypt           <null>                      false
+
+== settings explicitly set in config files ==
+RDB$CONFIG_NAME    RDB$CONFIG_VALUE        RDB$CONFIG_SOURCE
+------------------ ----------------------- -----------------
+ExternalFileAccess Restrict /tmp/fbhandson firebird.conf
+
+== SYSTEM context: this engine, this session ==
+  ENGINE_VERSION         6.0.0
+  DB_NAME                /opt/firebird/examples/empbuild/employee.fdb
+  NETWORK_PROTOCOL       TCPv4
+  WIRE_CRYPT_PLUGIN      ChaCha64
+  CLIENT_ADDRESS         127.0.0.1/35636
+
+== service_mgr: the install tree, from firebirdsql's ServiceManager ==
+  server version         LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+  architecture           Firebird/Linux/AMD/Intel/x64
+  home directory         /opt/firebird/
+  security database      /opt/firebird/security6.fdb
+  lock directory         /tmp/firebird/
+  message directory      /opt/firebird/
+  attached now           1 attachments, 1 databases: /opt/firebird/examples/empbuild/employee.fdb
+  service wire cipher    ChaCha64
+```
+
+The `MON$DATABASE` layer matches the other runs: ODS `14.0`, page size `8192`, 2048 buffers, sweep interval `20000`, forced writes `1`. The explicitly-set table shows the same `ExternalFileAccess` drift that the Python run found.
+
 ### Things to try
 
 - Run the C++ sample with an `xnet://` or `inet6://` URL (or embedded, with a direct path and `FIREBIRD=` set) and watch `NETWORK_PROTOCOL`, `CLIENT_ADDRESS` and `WIRE_CRYPT_PLUGIN` change while `RDB$CONFIG` stays identical — deployment facts vs session facts.

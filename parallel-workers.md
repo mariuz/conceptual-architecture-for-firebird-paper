@@ -380,6 +380,40 @@ done.
 
 The facts match every other run: the clamp to 1, 4 pointer pages, three `<Worker>` attachments plus the user's own, and the workers still pooled after the build. The build time does not match. 34 s against the C++ runs' ~10.5 s was measured on the same one-core machine while other jobs shared it, with a Python poller competing for that core. As with the other twins, the number proves that the workers engaged, not that the build got faster.
 
+### Go sample — [`samples/go/parallel_workers/main.go`](samples/go/parallel_workers/main.go)
+
+The same question through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./parallel_workers`, about 1 min). Here both of the C++ sample's doors are closed. The driver builds its DPB from a fixed list with no `isc_dpb_parallel_workers`, so phase A cannot even ask and reads the clamp as data. It has no embedded engine either, so phase B runs the node-firebird experiment instead: `CREATE INDEX` on the same 200,000-row, 4-pointer-page table against the live server, with a goroutine polling `MON$ATTACHMENTS`, and it reports the honest zero. The sample then opens a third door, which the Go driver's Services layer makes easy. `BackupManager.Backup(..., WithBackupParallelWorkers(4))` puts `isc_spb_bkp_parallel_workers` in the SPB, and the server honours it. The reason is that gbak's parallel backup does not use the engine's worker pool. The in-server gbak opens its own reader attachments, which share one snapshot ([`backup.epp`](extern/firebird/src/burp/backup.epp), [`BurpTasks.cpp`](extern/firebird/src/burp/BurpTasks.cpp)), and nothing bounds them by `MaxParallelWorkers`. The poller watches them appear as ordinary user attachments.
+
+Two driver details shape the code. First, each poll is a real `Begin()`/`Commit()`, because a bare `db.QueryRow` auto-commits with COMMIT RETAINING, which keeps the MON$ snapshot frozen (as the [monitoring twin](monitoring-and-tuning.md) measures). Second, the bulk insert and the `CREATE INDEX` run in explicit transactions. firebirdsql reads the auto-commit COMMIT RETAINING reply with a fixed 10 s deadline. A first version that auto-committed the 200,000-row insert therefore died with `i/o timeout`, while an explicit `Commit()` waits as long as it takes. This matters for `CREATE INDEX` too, since the index is built at commit.
+
+Verified output:
+
+```text
+[A] server attach (firebirdsql's DPB has no isc_dpb_parallel_workers)
+    server config: ParallelWorkers = 1, MaxParallelWorkers = 1; granted MON$PARALLEL_WORKERS = 1
+
+[B] CREATE INDEX on the live server, MON$ATTACHMENTS polled meanwhile
+    parade table: 200000 rows of 180 incompressible bytes, 4 pointer pages
+    create index: 34044 ms; '<Worker>' attachments seen in 903 polls: 0
+    zero, as configured: MaxParallelWorkers = 1 caps the engine's worker pool
+
+[C] BackupManager.Backup(..., WithBackupParallelWorkers(4)) of the same database
+    verbose: gbak:use up to 4 parallel workers
+    gbak's own attachments seen in 11 polls: up to 4
+    MON$ATTACHMENTS at the widest moment:
+        1   Cache Writer  (system_flag 1)
+        2   Garbage Collector  (system_flag 1)
+        3   SYSDBA  (system_flag 0)   <- this sample
+        4   SYSDBA  (system_flag 0)   <- the poller
+        5   SYSDBA  (system_flag 0)
+        6   SYSDBA  (system_flag 0)
+        7   SYSDBA  (system_flag 0)
+        8   SYSDBA  (system_flag 0)
+done.
+```
+
+Compare the two parallel rosters. The C++ embedded run's helpers are `<Worker>` attachments with `system_flag 1`, drawn from the engine pool that `MaxParallelWorkers` caps. gbak's four are plain `SYSDBA` user attachments (attachments 5 to 8), and the server's `MaxParallelWorkers = 1` does not limit them. This is utility-level parallelism, and a client that cannot reconfigure the server can still request it. (On this shared one-core machine the build and backup times prove nothing about speed.)
+
 ### Things to try
 
 - In the C++ sample's private root, set `ParallelWorkers = 8` and watch `getMaxWorkers()` cap the width at the pointer-page count instead (the output already prints both numbers).

@@ -257,6 +257,30 @@ new transaction: fresh snapshot:       seq_reads=27838  idx_reads=1633  inserts=
 
 Above the trimmed lines, `MON$DATABASE` reported OIT 17 / OAT 18 / NEXT 18 with `page_buffers=2048`, and the hierarchy join found attachment 7 (SYSDBA), tx 18, its statement the marker query itself. The freeze and the `+10 000` full-scan delta match every other run; the info-call line is the new evidence — `MON_WORK sequential reads` jumps from 0 to exactly 10 000 while the MON$ row is still frozen.
 
+### Go sample — [`samples/go/monitoring/main.go`](samples/go/monitoring/main.go)
+
+The same walk through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./monitoring`). The JavaScript lesson applies at first sight. Outside a `*sql.Tx`, every statement auto-commits, so the freeze is staged inside an explicit `db.BeginTx(LevelRepeatableRead)`. The Go driver then adds a twist of its own, which the sample measures. firebirdsql auto-commits with **COMMIT RETAINING** on one long-lived transaction rather than with a new transaction per statement. COMMIT RETAINING keeps the transaction context, and the MON$ snapshot is part of it, so plain `db.QueryRow` calls *also* stay frozen across a workload. Only a real transaction boundary refreshes them. A pure-wire driver has no attachment info calls, so the Python twin's second, live channel (`isc_info_fetches`, per-table read counts) is out of reach.
+
+Verified output (trimmed):
+
+```text
+MON$ snapshot 1:                       seq_reads=16513  idx_reads=1288  inserts=13655  page_fetches=105413
+
+... running workload: SELECT COUNT(*) full scan + indexed lookup ...
+count = 10000, point = 4242
+
+same transaction: STILL snapshot 1:    seq_reads=16513  idx_reads=1288  inserts=13655  page_fetches=105413
+
+auto-commit, first MON$ read: fresh    seq_reads=27293  idx_reads=1324  inserts=13655  page_fetches=116951
+
+... same workload outside a Tx (auto-commit = COMMIT RETAINING) ...
+count = 10000, point = 4242
+auto-commit, after workload: STILL     seq_reads=27293  idx_reads=1324  inserts=13655  page_fetches=116951
+explicit new transaction: fresh        seq_reads=37293  idx_reads=1325  inserts=13655  page_fetches=127255
+```
+
+Above the trimmed lines, `MON$DATABASE` reported OIT 5 / OAT 6 / NEXT 7 with `page_buffers=2048`. The hierarchy join found attachment 3 (SYSDBA), tx 7, and its statement was the marker query itself. The freeze inside the explicit transaction matches every other run. The second freeze is the new evidence. Under auto-commit the counters stand still through a whole 10 000-row scan. The explicit transaction that follows then reads exactly `+10 000` sequential reads.
+
 ### Things to try
 
 - Open a second connection running `SELECT COUNT(*) FROM MON_WORK` in a loop and re-run the sample: the hierarchy query (drop the `WHERE ... = CURRENT_CONNECTION`) now shows two attachments, and their statements' `MON$SQL_TEXT` side by side.

@@ -584,6 +584,45 @@ done.
 
 Same `Natural` = 60 and 68 fetches as every twin. Like fb-cpp and fbintf, the trace exposes a driver-started `READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY` transaction (`TRA_17`) beside the marker's `CONCURRENCY | WAIT | READ_WRITE` one — firebird-driver's internal query transaction, rolled back at detach — and the remote process is the interpreter, `/usr/bin/python3.12`, not the script.
 
+### Go sample — [`samples/go/trace/main.go`](samples/go/trace/main.go)
+
+The full two-service session through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./trace`) — and the one wrapper whose trace API owns the *lifecycle*, not just the calls. `TraceManager.StartWithName(name, config)` sends `isc_action_svc_trace_start` with the text in `isc_spb_trc_cfg`, parses the "Trace session ID n started" reply into `TraceSession.ID()` and keeps that service attachment as the session's one stream; `WaitStrings(ch)` drains `isc_info_svc_line` into a Go channel that the main goroutine prints from; and `Stop()` opens its *own* service attachment for `isc_action_svc_trace_stop` and refuses a reply naming another session — so "service B" is the manager's doing, and the worker is just a goroutine. `List()` returns `isc_action_svc_trace_list` as raw text, which sidesteps the Python driver's version-skew failure: there is no parser to trip on Firebird 6's new `plugins:` line.
+
+Verified output (trimmed like the other listings; the full stream also carries the COMMIT/ROLLBACK/DETACH events):
+
+```text
+[trace] Trace session ID 1 started
+[worker] marker query says: 60
+[trace] 2026-10-05T22:36:47.1830 (665:0x7399c9571dc0) TRACE_INIT
+[trace] 	SESSION_1 hands-on-go
+[trace] 2026-10-05T22:36:47.1830 (665:0x7399c9571dc0) ATTACH_DATABASE
+[trace] 	/tmp/fbhandson/trace_go.fdb (ATT_4, SYSDBA:NONE, UTF8, TCPv4:127.0.0.1/49732)
+[trace] 	/tmp/go-build2622510908/b001/exe/trace:46175
+[trace] 2026-10-05T22:36:47.1870 (665:0x7399c9571dc0) START_TRANSACTION
+...
+[trace] 		(TRA_6, READ_COMMITTED | READ_CONSISTENCY | WAIT | READ_WRITE)
+...
+[trace] SELECT COUNT(*) FROM RDB$RELATIONS /* traced! */
+[trace] PLAN ("SYSTEM"."RDB$RELATIONS" NATURAL)
+[trace] 1 records fetched
+[trace]       0 ms, 68 fetch(es)
+...
+[trace] "SYSTEM"."RDB$RELATIONS"                60
+...
+[trace] 2026-10-05T22:36:47.1890 (665:0x7399c9571dc0) TRACE_FINI
+[trace] 	SESSION_1 hands-on-go
+[list ] Session ID: 1
+[list ]   name:    hands-on-go
+[list ]   user:    SYSDBA
+[list ]   date:    2026-10-05 22:36:46
+[list ]   flags:   active, local, trace
+[list ]   plugins: <default>
+[stop ] Trace session ID 1 stopped
+done.
+```
+
+Same `Natural` = 60 and 68 fetches as every twin. The marker's transaction is worth a second look: `database/sql`'s default `Begin()` makes the driver send `read_committed, rec_version`, yet the trace reports `READ_CONSISTENCY` — the server's `ReadConsistency = 1` overriding the client's request, visible only from this side. The full stream also shows a `READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY` transaction (`TRA_1`) rolled back at detach, although every TPB this driver sends on this path is read-write.
+
 ### Things to try
 
 - Misspell a config element (`log_statement_finish` → `log_statement_finnish`) and re-run: the session starts, the stream reports the parse error for that database, and the workload runs untraced — the [configuration-error posture](#trace-is-a-plugin-and-a-plugin-that-misbehaves-is-ejected) reproduced at will.

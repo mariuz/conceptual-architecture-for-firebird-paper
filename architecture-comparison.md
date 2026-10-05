@@ -319,6 +319,34 @@ One libfbclient, two providers behind the Y-valve.
 done.
 ```
 
+### Go sample — [`samples/go/architecture_comparison/main.go`](samples/go/architecture_comparison/main.go)
+
+The same three questions through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./architecture_comparison`). Like node-firebird and rsfbclient's pure-Rust backend it holds only the client-server half of the comparison, and the twin makes the point by trying the embedded leg anyway: the bare path `/tmp/fbhandson/arch_go.fdb` does not load anything into the Go process. It is sent over TCP to the server, which resolves and creates the file with *its* rights, and the engine answers `TCPv4` and the server's pid for both attachments. In exchange the wire client can say something about itself that the SQL cannot: through `sql.Conn.Raw` the driver connection reports the protocol version it negotiated and the wire cipher. That is protocol 19 with ChaCha64 here, where the native clients above report `P20`, because the protocol level is a property of the client implementation and not of the server.
+
+Verified output:
+
+```text
+One pure-Go wire client: no Y-valve, no providers, always a server.
+
+[1] Alias over the wire (client-server):
+    connection string : employee
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : TCPv4
+    MON$SERVER_PID    : 665   (this process is pid 37894 -- a different process: the server's)
+    wire              : protocol 19, cipher ChaCha64
+
+[2] "Local" path - still resolved by the server:
+    connection string : /tmp/fbhandson/arch_go.fdb
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : TCPv4
+    MON$SERVER_PID    : 665   (this process is pid 37894 -- a different process: the server's)
+    wire              : protocol 19, cipher ChaCha64
+
+No embedded attachment: the Engine provider lives in libfbclient,
+which this driver never loads.
+done.
+```
+
 ### Things to try
 
 - Point both attachments at databases of your own and diff the full `MON$ATTACHMENTS` row (`MON$REMOTE_PROTOCOL`, `MON$REMOTE_PROCESS`, `MON$AUTH_METHOD`) between the two providers — embedded also skips server authentication entirely.

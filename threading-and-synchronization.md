@@ -401,6 +401,24 @@ after they detach:        19 threads (pooled, not destroyed)
 
 The same retention signature as every twin (8 → 19 → 19). One delta in the last row: where the compiled twins' `MON$REMOTE_PROCESS` names the sample binary, here it names the *interpreter* — the monitoring tables see the process, not the script.
 
+### Go sample — [`samples/go/threading/main.go`](samples/go/threading/main.go)
+
+The same census through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./threading`). Go turns the twins' rule around: where every other twin opens twelve connections by hand, one per thread, here twelve goroutines *share* one `*sql.DB` — `database/sql`'s pool is goroutine-safe — and each takes a dedicated `*sql.Conn`; the pool, allowed twelve open connections and finding none idle, dials one attachment per concurrent demand. "One attachment per worker" is the pool's doing, and returning a `Conn` only parks it: it is `pool.Close()` that detaches them. A `sync.WaitGroup` plays the Python twin's semaphore, so the "during" census is taken once all twelve have attached and queried. One trap on the way, worth knowing for any monitoring code in Go: the census runs in explicit transactions, because MON$ snapshots are per-transaction and the driver's autocommit is `COMMIT RETAINING`, which keeps the *first* snapshot alive — the first draft, querying through autocommit, reported "1 user attachment" with all twelve open.
+
+Verified output (on a server whose pool earlier runs had already grown, hence 19 threads before as well as during — the twelve attachments were served entirely from retained threads):
+
+```text
+engine process: pid 665, 19 threads (1 attachment open)
+with 12 extra attachments: 19 threads | 13 user attachments, 1 distinct server pid
+after they detach:        19 threads (pooled, not destroyed)
+  ID SYS  USER               REMOTE_PROCESS
+   4   0  SYSDBA             /tmp/go-build1120201973/b001/exe/threading
+   5   1  Cache Writer       <internal>
+   6   1  Garbage Collector  <internal>
+```
+
+`MON$REMOTE_PROCESS` names the binary `go run` built in its cache — and only because the sample re-attaches after creating: the driver's create DPB carries no `isc_dpb_process_name`, its attach DPB does.
+
 ### Things to try
 
 - Raise the worker count above the pool size (e.g. 40) and watch the thread count climb by exactly the shortfall.

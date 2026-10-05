@@ -167,7 +167,7 @@ A meta-theme sits above these: the **embedded-vs-server split**. Again and again
 
 - **Source of truth:** the [`extern/firebird`](extern/firebird) submodule (Firebird 6 `master`) — headers, docs and code are cited throughout, not paraphrased from memory.
 - **Live verification:** query plans, `gstat`/`gfix` output, concurrent-transaction behavior, replication, UDR execution, collations, the connection pool and more were run against a real Firebird 6 server and the actual output is quoted.
-- **Runnable code:** [`samples/`](samples/) — verified samples per subsystem document in C++, JavaScript, Rust, Free Pascal and Python (each document's **Hands-on** section shows their real output, things to try, and gdb breakpoints into the engine, per the [debugging guide](debugging-firebird.md)) — plus the original OO-API clients, the from-scratch SRP/Arc4 wire handshake, and [`tools/grammar_to_mermaid.py`](tools/grammar_to_mermaid.py) (the grammar-diagram generator), with generated [`diagrams/`](diagrams/).
+- **Runnable code:** [`samples/`](samples/) — verified samples per subsystem document in C++, JavaScript, Rust, Free Pascal, Python and Go (each document's **Hands-on** section shows their real output, things to try, and gdb breakpoints into the engine, per the [debugging guide](debugging-firebird.md)) — plus the original OO-API clients, the from-scratch SRP/Arc4 wire handshake, and [`tools/grammar_to_mermaid.py`](tools/grammar_to_mermaid.py) (the grammar-diagram generator), with generated [`diagrams/`](diagrams/).
 - **Every external link checked**, and every Mermaid diagram validated with the parser before commit.
 
 This guide is the entry point; the [main paper](README.md) is the beginning of the story.

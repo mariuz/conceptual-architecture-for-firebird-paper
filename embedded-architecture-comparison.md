@@ -242,6 +242,34 @@ attach+detach avg over 5 runs:
 done.
 ```
 
+### Go sample — [`samples/go/embedded_demo/main.go`](samples/go/embedded_demo/main.go)
+
+The twin through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./embedded_demo`). Like node-firebird it has no embedded mode, and it runs all three steps anyway to show what happens instead:
+
+1. `/proc/self/maps` never gains a Firebird library, before the attach, after it or at exit. Not even `libfbclient` is loaded.
+2. The "local" scratch database is created and served by the server process: `NETWORK_PROTOCOL` is `TCPv4`, and `MON$SERVER_PID` is not the program's own pid.
+3. The timing table has no embedded row. It does find something the native runs blur together. The local-path attach (about 5 ms) is several times faster than the `employee` attach (about 26 ms), even though *both are TCP*. The reason is that the program's first attachment holds the scratch database open, while `employee` is opened cold by every attach. Holding `employee` open with a second attachment brings its attach time down to the same 5–6 ms. This is the effect the Python twin found from the embedded side: much of the gap is the engine opening a database, not the socket.
+
+The only knob left to a wire client is the wire itself, and the server refuses to turn that one: `wire_crypt=false` fails because the server's default is `WireCrypt = Required`.
+
+Verified output:
+
+```text
+before attach: libfbclient mapped=no, libEngine14 mapped=no
+after  attach: libfbclient mapped=no, libEngine14 mapped=no
+
+rows=3  max(name)=sprocket  NETWORK_PROTOCOL=TCPv4
+engine pid=665, my pid=49976 - the engine is the server's, the path was resolved there
+
+attach+detach avg over 5 runs (every one over TCP, no embedded row):
+    local path                 /tmp/fbhandson/embedded_demo_go.fdb    5.13 ms
+    remote                     employee                             26.29 ms
+    remote, db kept open       employee                              5.65 ms
+    remote, wire_crypt=false   refused: Incompatible wire encryption levels requested on client and server
+at exit:       libfbclient mapped=no, libEngine14 mapped=no
+done.
+```
+
 ### Things to try
 
 - Run `./build/embedded_demo` while `/opt/firebird/bin/isql /tmp/fbhandson/embedded_demo.fdb` sits attached in another shell — observe the 08001 exclusive-open error from the footnote above; then point both at a `FIREBIRD` root whose `firebird.conf` says `ServerMode = Classic` and watch them coexist.

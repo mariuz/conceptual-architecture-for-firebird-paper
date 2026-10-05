@@ -566,6 +566,54 @@ hdr_guid      @84  = {9F14D987-5384-4011-BD23-93305806C365}
 
 All three views agree — SQL, info API and disk — on ODS 14, 8192-byte pages, the markers and (info API vs `hdr_guid`) the GUID; `pages_allocated` 294 equals the census count, and the formatted pages are the familiar skeleton (40 pointer, 97 data, 40 root, 106 index, one each of header/PIP/TIP/generators/SCN).
 
+### Go sample — [`samples/go/ods_header/main.go`](samples/go/ods_header/main.go)
+
+The same acts through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./ods_header`; like the Python twin it reads the server-owned file, so run it on the server machine with read access to it — under `sg firebird -c ...` if needed). The driver has no public database-info call — it sends `isc_info_ods_version` only as its `Ping` — so its middle view is a different one from fbintf's and firebird-driver's: the driver's own `ServiceManager.GetDbStatsString(..., WithOnlyHeaderPages())`, i.e. `isc_action_svc_db_stats` with `sts_hdr_pages` — **`gstat -h` executed by the server** and streamed back over a service connection. The file act is `encoding/binary.LittleEndian` at the `ods.h` offsets, and the census matches the Python twin's exactly, six unformatted pages included. One driver habit shows up here: its `firebirdsql_createdb` name always sends `isc_dpb_overwrite`, so the scratch database is re-created on every run (a new GUID each time) instead of "attach or create".
+
+Verified output:
+
+```text
+-- server's view (MON$DATABASE) --
+page_size ods_major ods_minor oit oat ost next = 8192 14 0 4 5 5 5
+
+-- the same through the Services API (gstat -h, server-side) --
+  Page size 8192
+  ODS version 14.0
+  Oldest transaction 4
+  Oldest active 5
+  Oldest snapshot 5
+  Next transaction 5
+  Database GUID: {019B5C48-6486-4F03-AED5-8FBAFBA28199}
+
+-- header page, parsed from /tmp/fbhandson/ods_go.fdb (offsets per ods.h) --
+pag_type      @0   = 1 (pag_header)
+pag_flags     @1   = 0
+hdr_page_size @16  = 8192
+hdr_ods_version @18 = 0x800e -> ODS 14 (FIREBIRD flag 0x8000 set), minor @20 = 0
+hdr_flags     @22  = 0x12 (force_write SQL_dialect_3)
+hdr_PAGES     @28  = 3   <- pointer page of RDB$PAGES (catalog bootstrap anchor)
+hdr_next_transaction   @40 = 7
+hdr_oldest_transaction @48 = 5 (OIT)
+hdr_oldest_active      @56 = 6 (OAT)
+hdr_oldest_snapshot    @64 = 6 (OST)
+hdr_guid      @84  = {019B5C48-6486-4F03-AED5-8FBAFBA28199}
+
+-- page-type census: 294 pages of 8192 bytes --
+  type  0  undefined                  6
+  type  1  pag_header                 1
+  type  2  pag_pages (PIP)            1
+  type  3  pag_transactions (TIP)     1
+  type  4  pag_pointer               40
+  type  5  pag_data                  97
+  type  6  pag_root                  40
+  type  7  pag_index (b-tree)       106
+  type  9  pag_ids (generators)       1
+  type 10  pag_scns                   1
+done.
+```
+
+The three views are three moments, and the markers say so: SQL and `gstat -h` agree (next 5), while the file, read last, is two transactions further on (next 7) — work done after the `MON$` read, including the server's own attachment for the statistics service. Page size, ODS 14.0, the GUID and the 294-page skeleton agree everywhere.
+
 ### Things to try
 
 - Point both samples at a copy of `employee.fdb` (`gbak` it, or use any restored copy) and compare the census: user data changes the data/index page mix, not the fixed skeleton.

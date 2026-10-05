@@ -339,6 +339,39 @@ ID AMOUNT NEIGHBOUR_AVG
 
 The `.detailed_plan` printed between them has the same shape as the Rust and Free Pascal runs — five `Window Partition` nodes over one `Table "PUBLIC"."SALES" Full Scan`, four fed by their own `Sort` (key lengths 56, 56, 12, 60, matching the Free Pascal run because this sample also attaches with a UTF8 client charset) — and `FILTER`/`LISTAGG`/`STDDEV_POP` give East `1`, `100.00,150.00,200.00`, `40.82` and West `3`, `250.00,300.00,400.00`, `62.36`.
 
+### Go sample — [`samples/go/windows/main.go`](samples/go/windows/main.go)
+
+The same six-row table and four query groups through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./windows`). Window functions are plain SQL, so the differences are in decoding and in the plan. The driver hands every scaled `NUMERIC` back as an exact decimal *string*, INT128 included, so the running `SUM` (widened to `NUMERIC(20,2)`) arrives as `100.00` with no `CAST`. The Rust twin needs that `CAST`, and Python gets a `Decimal`. `PERCENTILE_CONT` is a DOUBLE and so a Go `float64`, which prints as `150`. Neither `database/sql` nor the driver has a plan API, so, as in the Rust twin, the plan is read in SQL from Firebird 6's `RDB$SQL.EXPLAIN`. The headers are the SELECT-list aliases, taken from `Rows.Columns()`.
+
+Verified output (trimmed):
+
+```text
+== window functions ==
+REGION AMOUNT RN OVERALL_RANK RUNNING_TOTAL PREV_AMOUNT
+------ ------ -- ------------ ------------- -----------
+East   100.00 1  6            100.00        <null>
+East   200.00 3  4            300.00        100.00
+East   150.00 2  5            450.00        200.00
+West   300.00 2  2            300.00        <null>
+West   250.00 1  3            550.00        300.00
+West   400.00 3  1            950.00        250.00
+
+plan (RDB$SQL.EXPLAIN - firebirdsql has no plan API):
+  Select Expression
+    -> Window
+      -> Window Partition
+        -> Record Buffer (record length: 325)
+          -> Sort (record length: 338, key length: 56)
+...
+== PERCENTILE_CONT median / hypothetical RANK(175) ==
+REGION MEDIAN RANK_OF_175
+------ ------ -----------
+East   150    3
+West   300    1
+```
+
+The explained plan has the same five `Window Partition` nodes as the Rust, Free Pascal and Python runs, over one `Table "PUBLIC"."SALES" Full Scan`. Its sort keys are 56, 56, 12 and 60 bytes, the UTF8 widths, because this twin also attaches with `charset=UTF8`. The other results match the earlier twins: `FILTER`/`LISTAGG`/`STDDEV_POP` give East `1`, `100.00,150.00,200.00`, `40.82` and West `3`, `250.00,300.00,400.00`, `62.36`, and row 2's neighbour average is `125.00`.
+
 ### Things to try
 
 - Change the FB6 exclusion to `EXCLUDE TIES` or `EXCLUDE GROUP` after adding a duplicate amount — the frame drops peers instead of the current row.

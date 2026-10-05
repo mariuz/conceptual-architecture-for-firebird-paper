@@ -310,6 +310,33 @@ temporary user and role dropped. done.
 
 `SEC$ADMIN` arrives as a Python `bool` (`False`/`True`), and the failed login shows in one line what the Rust twin flattens and the fb-cpp twin types: SQLCODE `-902` and gds `335544472` (`isc_login`).
 
+### Go sample — [`samples/go/security/main.go`](samples/go/security/main.go)
+
+The same four steps through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./security`), under its own names (`GO_USER`, `GO_MONITOR`). Because the driver implements layers 1 and 2 itself — its own Srp256 client proof and its own ChaCha64 — the attachment can be checked from *both* ends: the server's `MON$ATTACHMENTS` row and the client's own negotiated cipher and protocol, reached through `sql.Conn.Raw` (`WireCipher()`, `ProtocolVersion()`). Unlike node-firebird's `Arc4`, the pure-Go wire is `ChaCha64` over protocol 19. The role is a DSN parameter (`?role=GO_MONITOR`), written as the same `isc_dpb_sql_role_name`; user management still runs in explicit transactions with full commits, because the driver's autocommit mode commits *retaining*. The wrong password comes back as a structured `*firebirdsql.FbError` whose `SQLCode`, `SQLState` and `GDSCodes` carry the chain beside the text.
+
+Verified output:
+
+```text
+admin attachment:      user=SYSDBA auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=NONE  (client: ChaCha64/p19)
+
+SEC$USERS (the security database, through the virtual view):
+    USER             PLUGIN   ADMIN
+    GO_USER          Srp      false
+    SYSDBA           Srp      true
+
+admin sees 1 user attachments in MON$ATTACHMENTS
+user, no role:         user=GO_USER auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=NONE  (client: ChaCha64/p19)
+  -> sees 1 attachment(s): only its own
+user + role:           user=GO_USER auth=Srp256 wirecrypt=ChaCha64 protocol=TCPv4 role=GO_MONITOR  (client: ChaCha64/p19)
+  -> sees 2 attachments: MONITOR_ANY_ATTACHMENT at work
+
+failed login (wrong password) produces:
+    sqlcode -902 / sqlstate 28000 / gds [335544472]
+    Your user name and password are not defined. Ask your database administrator to set up a Firebird login.
+
+temporary user and role dropped. done.
+```
+
 ### Things to try
 
 - Grant `HANDSON_MONITOR` more bits — `set system privileges to MONITOR_ANY_ATTACHMENT, USE_GSTAT_UTILITY` — and re-run the doc's `fbsvcmgr ... action_db_stats` as `HANDSON_USER`: the [services-api document's layer-2 rejection](services-api.md#authorization-two-independent-layers) turns into success.

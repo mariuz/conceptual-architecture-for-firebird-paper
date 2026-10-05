@@ -466,6 +466,32 @@ typed round-trip:
   MAIL  'user@example.com'
 ```
 
+### Go sample — [`samples/go/types/main.go`](samples/go/types/main.go)
+
+The same showcase through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./types`). The metadata is public and standard: `rows.ColumnTypes()` gives each column's `DatabaseTypeName()` (the driver's name for the wire type) and `ScanType()` (the Go type it decodes to), so this is the twin where the description and the values agree. They agree on a modest rung of the ladder, though. Go has no built-in 128-bit integer or decimal type, and the driver adds no dependency for one, so `INT128` and `DECFLOAT(34)` arrive as exact decimal **strings**. The driver decodes the wire bytes itself — `big.Int` for `INT128`, its own IEEE 754 decimal128 decoder for `DECFLOAT` — and leaves the numeric type to the caller. Nothing is rounded through `float64` on the way: `math/big` confirms `2^127 - 1` and an exact `1/10`. `BOOLEAN` is a `bool`, the zoned timestamp is a `time.Time` whose `Location()` keeps the region name (see the [temporal Go twin](temporal-and-time-zones.md#go-sample--samplesgotemporalmaingo) for where that stops), and the domain violation is a `*firebirdsql.FbError` with `SQLCode` and `GDSCodes`.
+
+Verified output:
+
+```text
+domain CHECK rejected 'not-an-address':
+    sqlcode -625, gds 335544347: validation error for column "PUBLIC"."SHOWCASE"."MAIL", value "not-an-address"
+
+column  wire type (DatabaseTypeName)  go type (ScanType)
+------  ---------------------------  ------------------
+FLAG    BOOLEAN                      bool
+BIG     INT128                       string
+MONEY   DECFLOAT(34)                 string
+BORN    TIMESTAMP WITH TIMEZONE      time.Time
+MAIL    VARYING                      string
+
+typed round-trip:
+  FLAG  true
+  BIG   170141183460469231731687303715884105727  == 2^127 - 1 (big.Int) ? true
+  MONEY "0.1"  == 1/10 exactly (big.Rat) ? true  (and float64 0.1? false)
+  BORN  2026-07-21T12:00:00+03:00  Location=Europe/Bucharest
+  MAIL  "user@example.com"
+```
+
 ### Things to try
 
 - Add an `INT128` overflow: insert `1.7e38` cast to `INT128`, or `SELECT 170141183460469231731687303715884105727 + 1` — watch dialect-3 exact arithmetic refuse instead of wrapping.

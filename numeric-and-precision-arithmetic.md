@@ -208,6 +208,32 @@ INT128 max+1: arithmetic exception, numeric overflow, or string truncation (sqlc
 done.
 ```
 
+### Go sample — [`samples/go/numerics/main.go`](samples/go/numerics/main.go)
+
+The same four experiments through [firebirdsql](https://github.com/nakagami/firebirdsql), the pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./numerics`). Its answer to the representation question is the opposite of the JS and Rust twins': every exact type arrives as a decimal **string** the driver formats itself from the wire integer and the scale — scaled `NUMERIC` and `INT128` through `math/big`, `DECFLOAT` through the driver's own decimal64/128 decoder, `Infinity` and `NaN` included. No `float64` ever sits in between, so the 2⁵³ cent survives, and `INT128` and `DECFLOAT` need no server-side `CAST`. The price is the one the Python twin pays differently: the message buffer is private, so the scaled-integer claim is read off `database/sql`'s `ColumnType` metadata (`DatabaseTypeName()` = `INT64`, `DecimalSize()` scale −4) rather than as raw bytes.
+
+Verified output:
+
+```text
+(0.1+0.2)-0.3 in DOUBLE PRECISION : 5.551115123125783e-17  (Go float64)
+(0.1+0.2)-0.3 in DECFLOAT(34)     : 0.0  (Go string)
+
+NUMERIC(18,4) wire format: type=INT64, scale=-4, scan type string
+value                          : 12345.6789
+raw integer (digits, no point) : 123456789  -> 123456789 * 10^-4
+NUMERIC(18,2) past 2^53        : 90071992547409.93  <- exact: raw 9007199254740993 never became a float64
+
+INT128 max  : 170141183460469231731687303715884105727  (Go string)
+INT128 max+1: arithmetic exception, numeric overflow, or string truncation (sqlcode -802, gds [335544321 335544779])
+
+1/0 with default traps : Decimal float divide by zero.  The code attempted to divide a DECFLOAT value by zero. (sqlcode -901, gds [335545139])
+1/0 with traps cleared : Infinity  (Go string)
+
+done.
+```
+
+Strings are exact but not arithmetic: a Go program that wants to compute with these values parses them into `math/big` (`big.Int`, `big.Rat`) itself — the driver deliberately stops at a lossless representation.
+
 ### Things to try
 
 - Add `SET DECFLOAT ROUND CEILING` before a `SELECT CAST(1 AS DECFLOAT(16))/3*3` in either sample — the result becomes `1.000000000000001` (the doc's rounding-mode demo).

@@ -212,6 +212,34 @@ done.
 
 The three plans trimmed from the top are identical to the C++ run's: `DOC_UPPER_TITLE` and `DOC_ACTIVE` as `INDEX`, `DOC_ID_DESC` as `ORDER`.
 
+### Go sample — [`samples/go/indexes/main.go`](samples/go/indexes/main.go)
+
+The same five queries through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./indexes`). Like rsfbclient it has no plan accessor — the driver even defines `isc_info_sql_get_plan` (item 22) but never requests it — so the sample asks the engine through Firebird 6's `RDB$SQL.EXPLAIN`, with one Go-side improvement: the statement text travels as a bound parameter, `RDB$SQL.EXPLAIN(?)`, so no quote-doubling is needed. One detail of the table function surfaces here: `EXPLAIN` returns one row per *record source*, and a table's `ACCESS_PATH` can span several lines (its whole bitmap subtree), so each line is indented by the row's `LEVEL` rather than only the first.
+
+Verified output (trimmed):
+
+```text
+select id from doc where num = 42 or id = 7
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."DOC" Access By ID
+            -> Bitmap Or
+                -> Bitmap
+                    -> Index "PUBLIC"."DOC_NUM" Range Scan (full match)
+                -> Bitmap
+                    -> Index "PUBLIC"."DOC_ID_DESC" Range Scan (full match)
+
+select id from doc where title containing 'itle 12'
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."DOC" Full Scan
+
+CONTAINING is correct but unindexed: matched 111 rows by scanning all 3000
+done.
+```
+
+The three access paths trimmed from the top agree with every other run: `Index "PUBLIC"."DOC_UPPER_TITLE" Range Scan (full match)` for the expression predicate, `Index "PUBLIC"."DOC_ACTIVE" Full Scan` for the partial, and `First N Records` over `Index "PUBLIC"."DOC_ID_DESC" Full Scan` for the descending walk.
+
 ### Things to try
 
 - Drop `doc_active` and re-run: the `status = 'active'` query falls back to... check whether the optimizer picks `doc_num` (it can't) or `NATURAL` — then recreate the partial index with `WHERE status = 'done'` and watch the `'active'` query *ignore* it: a partial index only serves predicates that imply its condition.

@@ -853,6 +853,7 @@ Two fundamentally different approaches appear among Firebird clients, and the No
 Other languages, for reference:
 
 - [Jaybird](https://github.com/FirebirdSQL/jaybird) — the Firebird JDBC driver (Java); another from-scratch wire-protocol implementation, with extensive protocol notes in its source.
+- [firebirdsql](https://github.com/nakagami/firebirdsql) — the Go `database/sql` driver; a from-scratch wire-protocol implementation (protocols 10–19, Srp256, ChaCha64) that also speaks the Services API and events; used by the Go samples.
 - [`firebird-driver`](https://pypi.org/project/firebird-driver/) ([`FirebirdSQL/python3-driver`](https://github.com/FirebirdSQL/python3-driver)) — the official Python driver, a `ctypes` wrapper over `fbclient`.
 
 ## Hands-on: samples, tests and debugging
@@ -933,6 +934,43 @@ detached. bye
 ```
 
 Protocol `P20` and `ChaCha64`, as for the C++ and Pascal clients, where the pure-JavaScript and pure-Rust re-implementations sit at protocol 13 with Arc4.
+
+### Go sample — [`samples/go/protocol/main.go`](samples/go/protocol/main.go)
+
+The same negotiated-session report through [firebirdsql](https://github.com/nakagami/firebirdsql), the Go driver behind `database/sql` (`cd samples/go && go run ./protocol`). On the [driver-strategy](client-apis-and-drivers.md#two-ways-to-build-a-driver) axis it stands with node-firebird and rsfbclient-rust, not with fbintf or firebird-driver. Everything in this document is its own Go code: `op_connect` with a version list of protocols 10–19, `op_cond_accept`, Srp256/Srp/Legacy_Auth, and `op_crypt` with ChaCha64/ChaCha/Arc4. It is also the most current of the three re-implementations. The engine records **`P19`** with **`ChaCha64`**, where node-firebird and rsfbclient-rust sit at P13 with Arc4. MON$CLIENT_VERSION carries the driver's own name, `firebirdsql-go/v0.9.21`. The client side of the same facts comes from the driver connection through `sql.Conn.Raw` (`ProtocolVersion()`, `WireCipher()`).
+
+Because the handshake is the driver's code, the DSN steers it:
+
+- **`wire_crypt_plugin=Arc4`** narrows the cipher list, and the engine records the downgrade to `Arc4`.
+- **`auth_plugin_list=Srp`** offers only the SHA-1 proof, and the attach is *refused* because this server's `AuthServer` is `Srp256` alone (as `RDB$CONFIG` reports). Whether the [SHA-1 downgrade](#what-srp256-improves) in the first exercise below can succeed is decided by the server's `AuthServer` list, not by the client.
+
+Verified output (the second session trimmed to its differing lines):
+
+```text
+== default DSN: firebirdsql's preferences ==
+attached to employee
+engine version : 6.0.0
+protocol       : TCPv4
+wire crypt     : ChaCha64
+authenticated  : SYSDBA
+MON$ATTACHMENTS, as the server recorded the handshake:
+   auth method    : Srp256
+   wire protocol  : P19
+   wire crypt     : ChaCha64
+   client version : firebirdsql-go/v0.9.21
+the client side, from the driver: protocol 19, cipher ChaCha64
+
+== wire_crypt_plugin=Arc4: the client narrows the cipher list ==
+...
+   wire crypt     : Arc4
+the client side, from the driver: protocol 19, cipher Arc4
+
+== auth_plugin_list=Srp: the client offers only the SHA-1 proof ==
+attach refused : Error occurred during login, please check server firebird.log for details
+detached. bye
+```
+
+The protocol is P19 rather than the native clients' P20, because the version list belongs to the client: firebirdsql 0.9.21 offers versions up to 19.
 
 ### Things to try
 

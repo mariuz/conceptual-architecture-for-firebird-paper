@@ -296,6 +296,20 @@ uncommitted rows      : 0   <- rolled back by visibility, not replay
 
 About 2.5 MB of the dead transaction's pages were on disk at the moment of death; the 170 ms includes loading the embedded engine into the parent for the first time, and still no recovery phase.
 
+### Go sample — [`samples/go/careful_writes/main.go`](samples/go/careful_writes/main.go)
+
+[firebirdsql](https://github.com/nakagami/firebirdsql), the pure-Go driver behind `database/sql`, is a wire-protocol client with no embedded mode. Like node-firebird, then, it cannot put the engine inside the process it kills, and this twin (`cd samples/go && go run ./careful_writes`) reproduces the client-side failure domain. The parent recreates the scratch database through the server and re-runs its own binary (`os.Executable()`) with `--writer`. The writer commits a marker row, then pushes 10,000-row `EXECUTE BLOCK` inserts into one transaction that it never commits. The parent watches the `.fdb` grow with `os.Stat`, which needs no read rights on the server-owned file, sends `SIGKILL` once the server has flushed about 2 MB of the uncommitted transaction's pages, then re-attaches and counts. After the run, `MON$ATTACHMENTS` shows no leftover writer attachment: the server noticed the severed connection, and the dead transaction's record versions are simply never visible.
+
+Verified output:
+
+```text
+[writer 47175] marker row committed
+file grew 2408448 -> 5734400 bytes; SIGKILL to writer pid 47175 (a client, not the engine)
+re-attach + both counts took 29 ms
+committed marker rows : 1   <- durable
+uncommitted rows      : 0   <- gone with the killed writer
+```
+
 ### Things to try
 
 - Rerun the C++ sample and then `gfix -v -full -user SYSDBA /tmp/fbhandson/careful_writes.fdb` (embedded, so run it with `FIREBIRD=/opt/firebird` while no server has the file): like the [live test](#crash-safety-live), you may see orphan-page warnings — allocated-but-never-linked pages, the designed leftover — and zero corruption errors.

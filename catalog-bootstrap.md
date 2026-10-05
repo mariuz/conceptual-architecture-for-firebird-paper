@@ -372,6 +372,12 @@ The same four self-description steps through [firebird-driver](https://github.co
 
 Verified: identical to the C++ run on an equally fresh file — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, the `RDB$PAGES` rows down to the incidental TIP on page 287 and generator page on 85, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `0 / 60 / 598` for formats/system relations/system columns, and format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id.
 
+### Go sample — [`samples/go/catalog/main.go`](samples/go/catalog/main.go)
+
+The same four self-description steps through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./catalog`). With no client library underneath, the fresh-database dance is SQL and wire operations all the way: the shared `fbsample.Recreate` attaches and runs `DROP DATABASE`, then reopens through the driver's second registered name, `firebirdsql_createdb`, which sends `op_create` instead of `op_attach` on connect. Listings take their headers from `rows.Columns()`, overridden where the C++ sample renames computed columns, and the `hdr_PAGES` anchor stays as primitive as in every other language — `os.File.ReadAt` at offset 28 and `binary.LittleEndian.Uint32`, below any driver.
+
+Verified: identical to the C++ run on an equally fresh file — relation ids 0/1/2/6 for `RDB$PAGES`/`RDB$DATABASE`/`RDB$FIELDS`/`RDB$RELATIONS`, the `RDB$PAGES` rows down to the incidental TIP on page 287 and generator page on 85, `hdr_PAGES (page 0, offset 28) = 3` matching the `(relation 0, type 4)` row, `0 / 60 / 598` for formats/system relations/system columns, and format rows 1 (16 descriptor bytes) and 2 (28 bytes) for relation id 128, the first user id.
+
 ### Things to try
 
 - Add a third DDL statement (`ALTER TABLE t1 ALTER b TYPE VARCHAR(20)`) and watch `RDB$FORMATS` grow to format 3 — then `SELECT` the table and see all rows decode, the lazy-conversion story of [the metadata-cache document](metadata-cache.md#formats-the-on-disk-half-of-the-same-idea).

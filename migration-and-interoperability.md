@@ -237,6 +237,38 @@ same row fetched natively:
 
 The text face that follows is the C++ run's to the character (`2026-07-21 12:00:00.0000 Europe/Bucharest`, `TRUE`, the same UUID upper-cased by `UUID_TO_CHAR`).
 
+### Go sample — [`samples/go/migration/main.go`](samples/go/migration/main.go)
+
+The same probe through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./migration`), on the same three faces as the Python twin. The DESCRIBE face is `database/sql`'s `rows.ColumnTypes()`. The driver gives its own type name for each wire code, a length (the *display* width for numerics, the byte width for strings), the scale and a Go `ScanType`. The raw `SQL_*` number stays internal. The native face puts this independent decoder near the Python end of the spectrum. `INT128`, `NUMERIC(38,8)` and `DECFLOAT(34)` all arrive as exact decimal strings, and `TIMESTAMP WITH TIME ZONE` arrives as a `time.Time` whose `Location` is the named zone. The one gap is the same as node-firebird's, and the sample traces it to its cause. On a `charset=UTF8` attachment, `CHAR(16) OCTETS` fails with the *server's* `Malformed string`. The driver's output BLR declares CHAR columns as plain `blr_text`, meaning "in the attachment charset", so the engine transliterates OCTETS to UTF-8 and rejects the bytes. The same column read on a `charset=NONE` attachment arrives as a raw `[]byte`.
+
+Verified output (trimmed):
+
+```text
+column   DatabaseTypeName         length scale  ScanType
+C_INT128 INT128                       20     0  string
+C_NUM    INT128                       20    -8  string
+C_DEC    DECFLOAT(34)                 34     0  string
+C_TSTZ   TIMESTAMP WITH TIMEZONE      28     0  time.Time
+C_BOOL   BOOLEAN                       5     0  bool
+C_UUID   TEXT                         16     0  string
+C_VC     VARYING                      80     0  string
+
+same row fetched natively, column by column (charset=UTF8 attachment):
+
+  C_INT128 -> string     170141183460469231731687303715884105727
+  C_NUM    -> string     123456789012345678901234567890.12345678
+  C_DEC    -> string     12345678901.23456789012345678901234
+  C_TSTZ   -> time.Time  2026-07-21 12:00:00 +03:00 [Europe/Bucharest]
+  C_BOOL   -> bool       true
+  C_UUID   -> ERROR: Malformed string
+  C_VC     -> string     naïve ütf8 text
+
+the UUID again, on a charset=NONE attachment:
+  C_UUID   -> []uint8    d28a9f0c-27d4-42a8-9641-8297b22111c3
+```
+
+`NUMERIC(38,8)` describes as `INT128` with scale −8, the same INT128 carrier as in the C++ run. The text face that follows is the C++ run's to the character: `2026-07-21 12:00:00.0000 Europe/Bucharest`, `TRUE`, and the same UUID upper-cased by `UUID_TO_CHAR`.
+
 ### Things to try
 
 - Change the connection `encoding` to `'NONE'` in the JS sample and re-probe `C_UUID` — a 16-byte `Buffer` now, no error: charset coercion happens client-side, per connection.

@@ -207,6 +207,33 @@ done.
 
 The free-space drop of 73408512 bytes is the twins' 73400320-byte scratch file plus two 4 KB filesystem blocks of noise — the spill measured from outside the process, without reading its fd table — and the big sort's MON$ growth (+68 MB) matches every other twin. (The fallback measures the whole filesystem, so another process writing to `/tmp` at the same moment would show up in it.)
 
+### Go sample — [`samples/go/sorting/main.go`](samples/go/sorting/main.go)
+
+The same experiment through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./sorting`). The watcher is a goroutine with its own `*sql.DB` — its own attachment — and needs none of the Python twin's GIL reasoning: the pure-Go driver blocks only the goroutine waiting on its socket, so polling continues while the main goroutine sits in the fetch that performs the sort; each MON$ poll is a fresh `BeginTx`, hence a fresh snapshot. firebirdsql has no plan API, so the Sort node comes from Firebird 6's `RDB$SQL.EXPLAIN` — where, as the sample's comment notes, it shares a row with the `Refetch` above it — and it carries the same record and key lengths as `.detailed_plan`. The scratch half has the same privilege gap as the Python twin and takes the same root-free fallback (`FB_SORT_SUDO=1` switches to `sudo -n`): the free space of `/tmp` drops by exactly the 73400320-byte spill while the big sort runs, and not at all for the small one.
+
+Verified output:
+
+```text
+bulk: 200000 rows, 400-byte ASCII key -> ~82 MB of sort data
+server pid 665, database memory allocated while idle: 26091520 bytes
+
+big sort (200k rows, ~82 MB)
+  -> Sort (record length: 430, key length: 408)
+  top row id = 156868
+  /proc/665/fd not readable; peak drop of free space on /tmp: 73400320 bytes
+  peak database MON$MEMORY_ALLOCATED: 96419840 bytes (+70328320 over idle)
+
+small sort (20k rows, ~8 MB)
+  -> Sort (record length: 430, key length: 408)
+  top row id = 91300
+  /proc/665/fd not readable; peak drop of free space on /tmp: 0 bytes
+  peak database MON$MEMORY_ALLOCATED: 48160768 bytes (+22069248 over idle)
+
+done.
+```
+
+Both MON$ figures are measured against the one idle baseline taken before the first sort, so the small sort's +22 MB also carries whatever the big sort's pools had not yet given back; what matters is the scratch column — a 70 MB spill above `TempCacheLimit`, nothing below it.
+
 ### Things to try
 
 - Drop the `desc` and `first 1` and fetch everything: the numbers barely move — the sort is a pipeline breaker, so the *open* pays for the whole sort whether you fetch one row or all 200,000.

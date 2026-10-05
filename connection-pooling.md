@@ -227,6 +227,36 @@ a.close(): 1 extra row left -- close() really detached (a pool would have kept i
 done.
 ```
 
+### Go sample — [`samples/go/pooling/main.go`](samples/go/pooling/main.go)
+
+Both directions through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./pooling`). In Go the inbound pool is not an extra library. **`database/sql` is a client-side pool**: every `*sql.DB` keeps a set of driver connections (attachments) and lends one out for each statement. The twins elsewhere pin that pool to one connection, so this sample is the one that sizes it.
+
+The outbound half replays the EDS experiment with one finding specific to this driver. Outside an explicit transaction, firebirdsql's "autocommit" is `COMMIT RETAINING`. A block run on the bare `*sql.DB` therefore never reaches a real commit boundary, and its pooled external connection stays `active=1` until the attachment detaches. Only `tx.Commit()` or a detach parks it on the idle list. This is the C++ sample's `COMMIT RETAINING` subtlety, but here it is what an application gets by default.
+
+The inbound half uses `SetMaxOpenConns(2)`. Both connections are taken, and a third `pool.Conn` with a 300 ms context gives up with `context.DeadlineExceeded`. Once one connection is released, the third request gets *the same attachment* back. The driver implements no `ResetSession` hook, so nothing like `ALTER SESSION RESET` runs on release: a `USER_SESSION` context variable set by the first borrower is still there for the next one. fb-cpp's `setSessionResetOnRelease` and the server's own EDS pool both reset the session.
+
+Verified output:
+
+```text
+-- outbound: the server-side EDS pool --
+before:                  size=5 lifetime=30s idle=0 active=0
+inside the block (tx):   idle=0 active=1   (3 calls, 1 outbound connection)
+after tx.Commit():       size=5 lifetime=30s idle=1 active=0
+inside (autocommit):     idle=0 active=1   (3 calls, 1 outbound connection)
+after autocommit:        size=5 lifetime=30s idle=0 active=1
+after detach:            size=5 lifetime=30s idle=1 active=0
+after CLEAR ALL:         size=5 lifetime=30s idle=0 active=0
+-- inbound: database/sql's own client-side pool --
+took 2 (att 409, 412):   open=2 inUse=2 idle=0 waitCount=0
+asked for a 3rd:         timed out after 300 ms (pool exhausted)
+released one:            open=2 inUse=1 idle=1 waitCount=1
+3rd ask served:          CURRENT_CONNECTION = 409, USER_SESSION BORROWER = "first"
+                         (same attachment, previous borrower's session state intact: no reset on release)
+all released:            open=2 inUse=0 idle=2 waitCount=1
+                         2 of this process's attachments still open in MON$ATTACHMENTS (kept idle by the pool)
+done.
+```
+
 ### Things to try
 
 - Run `./build/pooling` twice within 30 seconds: the second run starts with `idle=1` — the pool is per **server process** and outlives your attachment. Wait past the 30-second lifetime (or run `CLEAR OLDEST`) and it starts at `idle=0` again.

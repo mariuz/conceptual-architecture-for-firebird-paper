@@ -434,6 +434,24 @@ done.
 
 The counters are the reproducible part — the same `+20` catalog record inserts, page marks and writes within noise of the other twins; the milliseconds are not (this run shared the host with other sample runs, and execute and commit took several times the C++ figures).
 
+### Go sample — [`samples/go/request_lifecycle/main.go`](samples/go/request_lifecycle/main.go)
+
+The same instrumented round trip, with [Stage 2's](#stage-2-the-remote-module-client-side) client half now pure Go: [firebirdsql](https://github.com/nakagami/firebirdsql) speaks the wire protocol itself behind `database/sql` (`cd samples/go && go run ./request_lifecycle`). Unlike node-firebird, it keeps prepare as a separate step: `tx.Prepare(sql)` is its own timed `op_prepare_statement`, `stmt.Exec()` the execute, `tx.Commit()` Stage 9. `database/sql` reshapes the instrumentation the way Rust's borrow checker did. The worker `*sql.DB` is pinned to one connection, and an open `*sql.Tx` owns it, so nothing else can run on that attachment until the transaction ends. The MON$ samples therefore come from a second, monitor attachment. It reads the worker's counters by attachment id, in a fresh transaction per sample, and gives the outside view of the uncommitted catalog row for free. One gap is honest: the driver reads the statement type at prepare time but keeps it private. A `database/sql` program cannot print the `DDL` verdict the libfbclient twins show.
+
+Verified output:
+
+```text
+prepare    0.24 ms   (statement type: kept private by the driver)
+execute  312.50 ms   catalog record inserts: +20, page marks: +133
+         in this tx:  RDB$RELATIONS has TRACE_DEMO = 1
+         monitor:     RDB$RELATIONS has TRACE_DEMO = 0  (TRA_commit has not happened)
+commit    33.69 ms   page writes: +13  (fetches: +4018 over the whole trip)
+         monitor:     RDB$RELATIONS has TRACE_DEMO = 1
+done.
+```
+
+The same `+20` catalog record inserts and the same page marks, within noise of the other twins. The writes are slightly lower. Fetches came in at `+4018`, against roughly 2,100–2,250 for the libfbclient twins, and a repeat run gave exactly `+4018` again: the difference is stable, not noise. The milliseconds are the least reproducible part.
+
 ### Things to try
 
 - Add a column or a second index to the `CREATE TABLE` and watch the record-insert delta grow by exactly the extra catalog rows.

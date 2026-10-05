@@ -214,6 +214,25 @@ A conflicting update failed as designed:
 done.
 ```
 
+### Go sample — [`samples/go/transactions/main.go`](samples/go/transactions/main.go)
+
+The same scenario through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` — no libfbclient involved (`cd samples/go && go run ./transactions`). Its lesson is the opposite of the Python driver's: the TPB is not yours to build. `database/sql`'s isolation levels map onto fixed TPBs — `LevelRepeatableRead` is `isc_tpb_concurrency`, `LevelReadCommitted` is `read_committed, rec_version`, `LevelSerializable` is `consistency` — all of them **WAIT**, and the only NO WAIT level is the driver's own `LevelReadCommittedNoWait`. So, as with node-firebird, the SNAPSHOT conflict cannot fail fast: the losing update blocks until the holder commits and only then raises the conflict, and the sample commits the blocker after 300 ms to let it surface. `database/sql`'s pool is pinned to one connection per `*sql.DB`, so each `*sql.DB` is exactly one attachment; the error is a structured `*firebirdsql.FbError` carrying `SQLCode`, `SQLState` and the whole `GDSCodes` vector.
+
+Verified output:
+
+```text
+A (SNAPSHOT)       sees amount = 100
+B                  committed amount = 999
+A (same SNAPSHOT)  sees amount = 100   <- still the start-of-tx version
+A (READ COMMITTED) sees amount = 999   <- the committed version
+A conflicting update failed as designed:
+    deadlock
+    update conflicts with concurrent update
+    concurrent transaction number is 13
+    sqlcode -913 / sqlstate 40001 / gds [335544336 335544451 335544878]
+done.
+```
+
 ### Things to try
 
 - Change `isc_tpb_nowait` to `isc_tpb_wait` in step 3 of the C++ sample and watch the update block until `holdB` commits — then fail anyway (SNAPSHOT cannot see the new version).

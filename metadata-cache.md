@@ -477,6 +477,23 @@ unsuccessful metadata update
 
 The last line is the status vector the other twins flatten into text: `isc_no_meta_update`, `isc_dsql_alter_table_failed`, and `isc_random` — the free-text code `newVersionBusy`'s `raiseFmt` travels in.
 
+### Go sample — [`samples/go/metadata_cache/main.go`](samples/go/metadata_cache/main.go)
+
+The same four demonstrations through [firebirdsql](https://github.com/nakagami/firebirdsql), the pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./metadata_cache`). Where the Rust and Python twins have to *refuse* a hidden default transaction, `database/sql` makes the boundaries explicit by construction: each `*sql.DB` is pinned to one attachment, so while a `*sql.Tx` is open that attachment has nothing else to run statements on — every prepare in the experiment visibly belongs to one `*sql.Tx`. B's open SNAPSHOT is `sql.LevelRepeatableRead` (`isc_tpb_concurrency`), and demo 3's failure is a `*firebirdsql.FbError` whose message the driver joins without the `-` prefixes libfbclient's formatter adds, with `SQLCode` and the `GDSCodes` vector alongside.
+
+Verified output (demos 1, 2 and 4 match the C++ run; demo 3):
+
+```text
+== 3. two uncommitted DDLs on one object ==
+B: ALTER failed:
+unsuccessful metadata update
+ALTER TABLE "PUBLIC"."T" failed
+newVersion: table 128 is used by transaction 10
+   (sqlcode -607, gds [335544351 336397287 335544382])
+```
+
+The same three codes the Python twin printed, decoded from the wire by a client that never loaded libfbclient: the status vector — and the cache's verdict — is the server's.
+
 ### Things to try
 
 - In demo 2, move the `SELECT d FROM t` *before* A's second ALTER commits, keep the statement handle, and re-execute it after the commit: an already-prepared statement keeps running against the version it was compiled with — resolution is at *prepare* time, which is the precise wording the document insists on.

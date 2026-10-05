@@ -446,6 +446,37 @@ GROUP POOLS USED       ALLOCATED  WITH_OWN_EXTENTS
 
 The redirection signature (groups 1/2/3 all `allocated = 0`, the one `cmp` pool mapping exactly 65 536 bytes) and the byte-exact nested roll-up both repeat on this independent run.
 
+### Go sample — [`samples/go/memory_pools/main.go`](samples/go/memory_pools/main.go)
+
+The same walk through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./memory_pools`). `database/sql` makes the MON$ freshness rule explicit in the code's shape: every observation is its own `mon.Begin()` … `Commit()`, a fresh snapshot by construction, while the worker's growing transaction is a `*sql.Tx`. The diff against the Python twin is where the ids come from — a pure-wire driver offers no attachment or transaction info calls, so they come from SQL, `current_connection` and `current_transaction`, as in the C++ sample — and against the Rust twin, the summary SQL: `SUM` over the BIGINT columns arrives as INT128, which firebirdsql decodes natively (to a decimal string via `big.Int`), so no `CAST ... AS BIGINT` is needed.
+
+Verified output:
+
+```text
+-- per-level summary (0=db 1=att 2=tra 3=stmt 5=cmp; used > 0 with allocated = 0: parent redirection)
+GROUP POOLS USED       ALLOCATED  WITH_OWN_EXTENTS
+0     1     22736736   26353664   1
+1     4     303840     0          0
+2     2     130640     0          0
+3     1     20976      0          0
+5     1     34848      65536      1
+
+-- worker's pool chain (attachment 3, transaction 10; before the update)
+  database pool:           used=22820512   allocated=26550272
+  worker attachment pool:  used=102144     allocated=0
+  worker transaction pool: used=13616      allocated=0
+
+-- after an uncommitted 3000-row UPDATE in that transaction
+  worker attachment pool:  used=109424     allocated=0
+  worker transaction pool: used=20896      allocated=0
+
+-- after rollback (transaction pool destroyed with its undo log)
+  worker attachment pool:  used=88528      allocated=0
+  attachment used fell by 20896; the dead transaction pool held 20896
+```
+
+The redirection signature (groups 1/2/3 all `allocated = 0`, the one `cmp` pool mapping exactly 65 536 bytes) and the byte-exact nested roll-up repeat once more, on a client with no libfbclient in the process.
+
 ### Things to try
 
 - Prepare (without executing) twenty distinct statements on one connection and re-run the group summary: group 5 (`cmp_statement`) pools multiply, and each that grows past ~48 KB maps its own 64 KB extent — `PARENT_REDIRECT_THRESHOLD` found empirically.

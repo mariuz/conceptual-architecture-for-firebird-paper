@@ -203,6 +203,24 @@ same workload - the private caches paid for coherency in disk I/O.
 
 The same roughly 20-fold jump in physical reads as every other twin that can reach phase 2, with writes near 850–900 in both topologies and no update lost.
 
+### Go sample — [`samples/go/page_cache/main.go`](samples/go/page_cache/main.go)
+
+[firebirdsql](https://github.com/nakagami/firebirdsql) is a pure-Go implementation of the wire protocol — no libfbclient, so no provider to switch and no engine to load in-process — and it lands on node-firebird's side of the divide: phase 1 only (`cd samples/go && go run ./page_cache`). Phase 2 is not a missing feature of the driver but a property of its design; the program says so instead of pretending. The two workers are goroutines rather than processes, each with its own `*sql.DB` pinned to one connection — to the server, two attachments ping-ponging one page through one shared cache — and the 300-round loop binds the row id as a `?` parameter.
+
+Verified output:
+
+```text
+phase 1: two client attachments, ONE SuperServer shared cache
+  worker row 1: 300 commits | page fetches=16092  reads=114  writes=779
+  worker row 2: 300 commits | page fetches=4795   reads=0    writes=815
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+phase 2 (two embedded engines, private caches) needs an in-process engine:
+  a pure wire-protocol driver cannot be one - see the C++, Rust, Pascal and Python twins.
+```
+
+The node-firebird picture again: the second worker's thousands of logical fetches cost **zero** physical reads, served from buffers the first worker's traffic kept hot.
+
 ### Things to try
 
 - Give the two rows their own pages (`create table t (id int primary key, v int, pad char(4000))` forces ~one row per 8K page) and rerun: phase 2's `reads` collapse — no shared page, no ping-pong, the protocol goes quiet.

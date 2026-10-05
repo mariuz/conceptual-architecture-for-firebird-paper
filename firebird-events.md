@@ -232,6 +232,21 @@ after COMMIT: delivered count = 3  (correct - one delivery, count 3)
 PASS
 ```
 
+### Go sample — [`samples/go/events/main.go`](samples/go/events/main.go)
+
+The same three semantics through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./events`). Like node-firebird, it implements the whole [auxiliary-channel dance](#the-wire-the-auxiliary-connection) without a client library, and it is the counterpoint to rsfbclient's pure-Rust backend, which refuses events. `firebirdsql.NewFBEvent(dsn)` is the hub, and each `SubscribeChan` opens its *own* attachment. It sends `op_connect_request`, dials the auxiliary port the server returns, queues the interest with `op_que_events`, and re-queues the one-shot interest after every `op_event`. Where node-firebird hands over the raw running counter, this driver does the `isc_event_counts` arithmetic in Go. It subtracts the previous counts and the engine's `+1` (`event.cpp:884`) and drops zero deltas, so the baseline delivery never reaches the application. Deliveries arrive as `firebirdsql.Event{Name, Count}` values on a Go channel, so each "wait briefly" checkpoint is a `select` with a timer. Because each delivery is a channel message, the sample can count deliveries separately from posts.
+
+Verified output:
+
+```text
+listener subscribed to 'demo_event' (baseline consumed by the driver's delta filter)
+after POST_EVENT + ROLLBACK: delivered count = 0  (correct - rollback swallows posts)
+3 x POST_EVENT executed, not yet committed - waiting briefly...
+before COMMIT: delivered count = 0  (correct - delivery is commit-time)
+after COMMIT: 1 delivery, count = 3  (correct - one delivery, count 3)
+PASS
+```
+
 ### Things to try
 
 - Set `EVENTS_DEMO_PAUSE_MS=5000` and, during the pause, list the demo process's sockets (`ss -tnp | grep events_demo`): two attachments, **three** TCP connections — the third is the aux channel to a non-3050 ephemeral port, the [`RemoteAuxPort` firewall pitfall](#the-wire-the-auxiliary-connection) made visible.

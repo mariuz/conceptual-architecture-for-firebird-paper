@@ -272,6 +272,31 @@ session zone: Asia/Tokyo         CURRENT_TIMESTAMP: 2026-10-06 04:15:13.033000+0
 DPB zone    : America/Sao_Paulo  CURRENT_TIMESTAMP: 2026-10-05 16:15:13.159000-03:00
 ```
 
+### Go sample — [`samples/go/temporal/main.go`](samples/go/temporal/main.go)
+
+The same four steps through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./temporal`). This driver decodes `ISC_TIMESTAMP_TZ` itself, in Go, so it shows a sixth attitude: it keeps the zone *only when it can name it*. The 2-byte id is looked up in the driver's own compiled-in copy of Firebird's region-id table and handed to `time.LoadLocation`, so a region literal arrives as a `time.Time` whose `Location()` is `America/New_York` — with the UTC offset computed by Go's tzdata, not by the engine's ICU. A bare-offset id (`-05:00` is id 1139, i.e. 1439 + minutes) is not in that table, so the driver treats it as unresolvable and falls back to UTC: the *instant* survives, the `-05:00` does not, and the value prints as `17:00:00Z`. The raw message buffer is not exposed either, so the struct line is reconstructed — days and time from the instant, the id from `RDB$TIME_ZONES` or from the offset encoding — and it reproduces the C++ numbers exactly. The attach-time session zone is the DSN's `?timezone=`, which the driver writes as `isc_dpb_session_time_zone` (and also uses to decode zoneless `TIMESTAMP`s on the Go side).
+
+Verified output (this run's server OS zone is `Europe/Bucharest`, hence the first session-zone line):
+
+```text
+named-zone literal:
+  go value     : 2026-07-18T12:00:00-04:00  Location=America/New_York
+  as the struct: UTC days=61239 time=576000000  zone id=65361  (reconstructed)
+offset literal:
+  go value     : 2026-07-18T17:00:00Z  Location=UTC
+  as the struct: UTC days=61239 time=612000000  zone id=1139  (reconstructed)
+
+NY 12:00 in UTC, winter: 2026-01-18 17:00:00.0000 Etc/UTC
+NY 12:00 in UTC, summer: 2026-07-18 16:00:00.0000 Etc/UTC
+10:00 -02:00 = 09:00 -03:00 ? EQUAL
+
+session zone: Europe/Bucharest   CURRENT_TIMESTAMP: 2026-10-05 22:31:55.7560 Europe/Bucharest
+session zone: Asia/Tokyo         CURRENT_TIMESTAMP: 2026-10-06 04:31:55.7580 Asia/Tokyo
+DSN zone    : America/Sao_Paulo  CURRENT_TIMESTAMP: 2026-10-05 16:31:55.7680 America/Sao_Paulo
+
+done.
+```
+
 ### Things to try
 
 - Change the C++ named-zone literal to `2026-11-01 01:30:00 America/New_York` — the doubled DST-overlap hour — and check which of the two possible UTC instants the wire struct holds (the docs promise the *first*, pre-transition occurrence).

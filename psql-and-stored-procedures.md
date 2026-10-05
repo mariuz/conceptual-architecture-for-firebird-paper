@@ -582,6 +582,34 @@ exception 1
 done.
 ```
 
+### Go sample — [`samples/go/psql/main.go`](samples/go/psql/main.go)
+
+The same four module types through [firebirdsql](https://github.com/nakagami/firebirdsql), the pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./psql`). `database/sql` has no call verb — only `Exec` and `Query` — so the executable-vs-selectable divide moves *inside the driver*, onto the wire: when the prepare reports `isc_info_sql_stmt_exec_procedure`, firebirdsql sends `op_execute2`, reads the single output message from `op_sql_response`, and dresses it up as a one-row `*sql.Rows`, so `tx.QueryRow("EXECUTE PROCEDURE hire(?, ?)", ...).Scan(&newID)` reads `NEW_ID` with no cursor behind it; `raises(?)` goes through `op_execute` plus a real `op_fetch` cursor like any table. Identical Go calls, two different protocol conversations. `NUMERIC(10,2)` scans into a `string` that is already the exact decimal, and the exception is a `*firebirdsql.FbError` carrying the full status vector.
+
+Verified output:
+
+```text
+EXECUTE PROCEDURE hire('Ada', 5000)        -> NEW_ID = 1
+EXECUTE PROCEDURE hire('Grace', 6000)      -> NEW_ID = 2
+audit_log rows (trigger emp_bi):              2
+
+SELECT * FROM raises(10):
+ID NAME  NEW_SALARY
+-- ----- ----------
+1  Ada   5500.00
+2  Grace 6600.00
+
+EXECUTE PROCEDURE hire('Poorpay', 500) ->
+exception 1
+"PUBLIC"."LOW_SALARY"
+salary below minimum
+At procedure "PUBLIC"."HIRE" line: 4, col: 29
+(sqlcode -836, sqlstate HY000, gds [335544517 335544382 335544382 335544842])
+done.
+```
+
+The `GDSCodes` line is the status vector the other twins flatten into text: `isc_except`, two `isc_random` string carriers (the exception name and its message), and `isc_stack_trace` — the PSQL call stack is a status-vector entry of its own.
+
 ### Things to try
 
 - Add a nested call (`hire` invoked from an `EXECUTE BLOCK`, or from a second procedure) and watch the stack trace grow to multiple `At procedure ... At block` lines — the `dbginfo` machinery described in the [BLR document](blr-intermediate-language.md#both-directions-of-translation).

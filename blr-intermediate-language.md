@@ -503,6 +503,37 @@ blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(sca
 
 A fifth client stack, byte-for-byte the same stored artifact.
 
+### Go sample — [`samples/go/blr/main.go`](samples/go/blr/main.go)
+
+The same read through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./blr`). Fetching is a plain `Scan(&b)` into a `[]byte`: the driver fetches the sub_type 2 segments itself, with no server-side `CAST`, and `charset=NONE` keeps the bytes untransliterated. The mini-disassembler uses opcode constants transcribed from `blr.h`. The difference from the other twins is the other direction of BLR. A wire-protocol client has no `libfbclient` to describe its parameter rows for it, so firebirdsql *writes* BLR on every `op_execute`. `calcBlr` in its `xsqlvar.go` emits `blr_version5, blr_begin, blr_message 0`, a field count, one type descriptor and a `blr_short` null indicator per column, then `blr_end, blr_eoc`. That is the message syntax this sample decodes at the head of `GET_EMP_PROJ`, with one difference: the driver writes the charset-less `blr_varying`/`blr_text` descriptors, while the stored procedure uses `blr_text2` with a charset.
+
+Verified output:
+
+```text
+== computed column EMPLOYEE.FULL_NAME - RDB$FIELDS.RDB$COMPUTED_BLR
+05 27 27 17 00 09 4c 41 53 54 5f 4e 41 4d 45 15
+0f 00 00 02 00 2c 20 17 00 0a 46 49 52 53 54 5f
+4e 41 4d 45 4c (37 bytes total)
+blr_version5
+   blr_concatenate
+      blr_concatenate
+         blr_field context 0, 'LAST_NAME'
+         blr_literal blr_text2 charset 0, len 2, ", "
+      blr_field context 0, 'FIRST_NAME'
+blr_eoc
+
+== procedure GET_EMP_PROJ - RDB$PROCEDURES.RDB$PROCEDURE_BLR
+05 02 04 00 02 00 07 00 07 00 04 01 03 00 0f 00
+00 05 00 07 00 07 00 0c 00 02 03 00 00 0f 00 00
+... (155 bytes total)
+blr_version5, blr_begin
+blr_message 0, 2 fields: blr_short(scale 0) blr_short(scale 0)
+blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)
+... 132 more bytes - see isql SET BLOB ALL for the full dump
+```
+
+This is a sixth client stack, and the stored artifact is byte-for-byte the same.
+
 ### Things to try
 
 - Point the sample at your own scratch database, create `CREATE TABLE t (a INT, b COMPUTED BY (a * 2 + 1))`, and decode the arithmetic: you will meet `blr_multiply`/`blr_add` (prefix, two operands each) and a `blr_literal blr_long`.

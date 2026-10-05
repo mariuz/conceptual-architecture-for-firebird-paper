@@ -736,6 +736,33 @@ SELECT name_win FROM t WHERE name_bin = 'Café' - same row, two connections:
 done.
 ```
 
+### Go sample — [`samples/go/intl/main.go`](samples/go/intl/main.go)
+
+The same scenario through [firebirdsql](https://github.com/nakagami/firebirdsql), the pure-Go wire-protocol driver behind `database/sql` (`cd samples/go && go run ./intl`). As in rsfbclient and firebird-driver, the DSN's `charset=` does double duty: it is the lc_ctype sent at attach and the codec the driver decodes text with. Its NONE behaviour is the one no other twin shows. With no codec to apply, the driver hands a text column over as `[]byte`, the raw stored bytes untouched. node-firebird decodes them as latin1, and the Rust and Python drivers reject them as invalid UTF-8; Go does neither. The sample adds a third attachment the others lack, `charset=WIN1252`. There the server has nothing to transliterate for this column, and the driver decodes the WIN1252 byte client-side through `golang.org/x/text`, so the conversion happens on the far side of the wire. Every connection picks the row with an ASCII-only predicate, so the SQL text means the same thing under every charset.
+
+Verified output:
+
+```text
+rows matching 'cafe' with UNICODE_CI_AI : 3
+rows matching 'cafe' with UCS_BASIC     : 1
+UPPER('café èñ ß')                      : CAFÉ ÈÑ ß
+
+ORDER BY name_ci_ai: cafe  CAFE  Café
+ORDER BY name_bin  : CAFE  Café  cafe    (binary: uppercase codepoints first)
+
+SELECT name_win ... 'Café' - same row, three connections (Go type, bytes):
+  charset=UTF8:     string  len= 5  43 61 66 C3 A9  "Café"
+  charset=NONE:     []uint8 len= 4  43 61 66 E9     "Caf\xe9"
+  charset=WIN1252:  string  len= 5  43 61 66 C3 A9  "Café"
+  -> the column stores E9 (WIN1252).  UTF8: the server transliterated to C3 A9.
+     NONE: the raw stored byte, as []byte - the driver has no codec to apply.
+     WIN1252: E9 crossed the wire and x/text decoded it into a Go string.
+
+done.
+```
+
+The UTF8 and WIN1252 lines end in identical Go strings but get there by different routes. On the UTF8 connection the server's transliteration produced `C3 A9`; on the WIN1252 connection the client's decoder did. Neither is visible in a `string`, and only the NONE connection's `[]byte` shows what is actually stored.
+
 ### Things to try
 
 - Add `COLLATE UNICODE_CI` (case- but not accent-insensitive) as a third column: `'cafe'` then matches 2 of the 3 rows — the missing middle step between the sample's 3 and 1.

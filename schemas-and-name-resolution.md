@@ -656,6 +656,36 @@ detailed_plan               : Select Expression
                                       -> Table "PUBLIC"."CUSTOMERS" Full Scan
 ```
 
+### Go sample — [`samples/go/schemas/main.go`](samples/go/schemas/main.go)
+
+The same five demonstrations through [firebirdsql](https://github.com/nakagami/firebirdsql), a pure-Go implementation of the wire protocol behind `database/sql` (`cd samples/go && go run ./schemas`). Two things about `database/sql` matter here. The pool is pinned to one connection, because the search path is *attachment* state: with a free pool, a `SET SEARCH_PATH` could land on one connection and the next `SELECT` on another, and the resolution story would silently fall apart. And every `Exec` outside a transaction is the driver's autocommit (a `COMMIT RETAINING`), so the path surviving all those commits makes the attachment-state point again. The plans-and-errors observation puts this driver with rsfbclient: firebirdsql has no plan API (it never asks for `isc_info_sql_get_plan`), so step 5 reads the resolved access path from Firebird 6's `RDB$SQL.EXPLAIN`, from SQL.
+
+Verified output:
+
+```text
+schemas in RDB$SCHEMAS      : APP  PUBLIC  SYSTEM
+default search path         : "PUBLIC", "SYSTEM"
+
+SELECT ORIGIN FROM CUSTOMERS, as the path changes:
+  path PUBLIC,SYSTEM        -> from PUBLIC
+  path APP,PUBLIC           -> from APP
+
+SET SEARCH_PATH TO APP      -> "APP", "SYSTEM"   (SYSTEM auto-appended)
+
+procedure created with path APP,PUBLIC (lands in APP, binds APP.CUSTOMERS)
+  after SET SEARCH_PATH TO PUBLIC:
+    direct SELECT ... FROM CUSTOMERS -> from PUBLIC
+    SELECT SRC FROM APP.WHICH_ONE    -> from APP   <- unmoved
+    RDB$DEPENDENCIES records         -> APP.CUSTOMERS
+
+RDB$SQL.EXPLAIN('SELECT COUNT(*) FROM CUSTOMERS') with path PUBLIC:
+   1  Select Expression
+   2  -> Aggregate
+   3  -> Table "PUBLIC"."CUSTOMERS" Full Scan  <- PUBLIC.CUSTOMERS
+
+done.
+```
+
 ### Things to try
 
 - Add the [shadowing experiment](#shadowing-and-the-hazard-search-paths-always-carry): `CREATE TABLE PUBLIC."RDB$DATABASE" (X INT)` and watch an unqualified `SELECT ... FROM RDB$DATABASE` on a fresh connection find yours; then `SET SEARCH_PATH TO SYSTEM, PUBLIC` to defuse it.
