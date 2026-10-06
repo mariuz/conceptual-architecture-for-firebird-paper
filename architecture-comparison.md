@@ -383,6 +383,42 @@ One JDBC driver: its own wire client, then one libfbclient with two providers.
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/ArchitectureComparison.cs`](samples/csharp/Samples/ArchitectureComparison.cs)
+
+The same three questions through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider (`cd samples/csharp && dotnet run -- ArchitectureComparison`). Like Jaybird it holds both client families in one assembly, picked by the connection string's `ServerType`. `ServerType=Default` is the provider's own managed (pure C#) wire implementation; `ServerType=Embedded` P/Invokes `libfbclient` (`ClientLibrary=/opt/firebird/lib/libfbclient.so`), and a bare local path then makes the Y-valve load the Engine provider into the .NET process. The remote leg through `libfbclient` showed two traps that Jaybird does not have. The connection-string parser splits `inet://host/db`, `host:db` and `host/port:db` into `DataSource` + `Database`, and the embedded path passes only `Database` on. So `inet://localhost/employee` quietly became an in-process engine opening `employee` itself: `NETWORK_PROTOCOL` was NULL and the server pid was our own. `[::1]:employee` is a host form the parser leaves alone, so it reaches the Remote provider intact (this needs the server listening on IPv6, which it does here). Second, the native path never puts `isc_dpb_password` in the DPB, so `libfbclient` has to find `ISC_USER`/`ISC_PASSWORD` in the C environment, and the sample sets them with a `setenv` P/Invoke because .NET's `Environment.SetEnvironmentVariable` does not reach it on Linux. `FbDatabaseInfo.GetProtocolVersion()` repeats the Java/Go finding: the managed client negotiates protocol 16, while `libfbclient` negotiates 20.
+
+Verified output:
+
+```text
+One ADO.NET provider: its own wire client, then one libfbclient with two providers.
+
+[1] ServerType=Default (the provider's managed wire protocol):
+    connection        : ServerType=Default, DataSource=localhost, Database=employee
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : TCPv4
+    MON$SERVER_PID    : 665   (this process is pid 84581)
+    info version      : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+    protocol version  : 16
+
+[2] ServerType=Embedded, [::1]:employee -> libfbclient's Remote provider:
+    connection        : ServerType=Embedded, Database=[::1]:employee (handed to libfbclient)
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : TCPv6
+    MON$SERVER_PID    : 665   (this process is pid 84581)
+    info version      : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+    protocol version  : 20
+
+[3] ServerType=Embedded, local path -> libfbclient's Engine provider:
+    connection        : ServerType=Embedded, Database=/tmp/fbhandson/arch_embedded_cs.fdb (handed to libfbclient)
+    ENGINE_VERSION    : 6.0.0
+    NETWORK_PROTOCOL  : <null>
+    MON$SERVER_PID    : 84581   (this process is pid 84581 -- the engine runs IN this process)
+    info version      : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+    protocol version  : 0
+
+done.
+```
+
 ### Things to try
 
 - Point both attachments at databases of your own and diff the full `MON$ATTACHMENTS` row (`MON$REMOTE_PROTOCOL`, `MON$REMOTE_PROCESS`, `MON$AUTH_METHOD`) between the two providers — embedded also skips server authentication entirely.

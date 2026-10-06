@@ -525,6 +525,42 @@ done.
 
 Demo 3 names table 131 and transaction 47 because the scratch database had already lived through earlier runs (each `recreate table` takes a new `MetaId`). The text and the three codes are the ones the other twins print: `isc_no_meta_update`, `isc_dsql_alter_table_failed` and `isc_random`.
 
+### C# sample — [`samples/csharp/Samples/MetadataCache.cs`](samples/csharp/Samples/MetadataCache.cs)
+
+The same four demonstrations from two attachments through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- MetadataCache`). ADO.NET makes the transaction boundaries explicit twice over. An `FbConnection` holds at most one `BeginTransaction` at a time, and while it holds one, every `FbCommand` must name that `FbTransaction` or the provider refuses to run it. The sample ends by showing that refusal. So every prepare in the experiment carries its transaction in its own argument list. B's open SNAPSHOT is `FbTransactionBehavior.Concurrency`. The status vector arrives as `FbException.Errors`, and the instructive diff from Jaybird is its shape. Jaybird keeps one linked exception per status element. FirebirdClient keeps the raw elements, with a gds `Number` and an empty message for each code and `0` for each string argument, and then appends one summary entry that carries the formatted text. That makes six entries for three codes.
+
+Verified output:
+
+```text
+== 1. uncommitted ALTER: visible to creator only ==
+A (same tx)  : select e from t -> <null>
+B            : select e from t -> ERROR: Dynamic SQL Error; SQL error code = -206; Column unknown; "E"; At line 1, column 8
+
+== 2. committed ALTER: seen even inside B's open SNAPSHOT tx ==
+B (snapshot) : select count(*) from t -> 1
+B (same  tx) : select d from t -> <null>
+   (records are snapshot-isolated; metadata is read-committed -
+    the new statement was prepared against the chain's current head)
+
+== 3. two uncommitted DDLs on one object ==
+B: ALTER failed:
+unsuccessful metadata update
+ALTER TABLE "PUBLIC"."T" failed
+newVersion: table 128 is used by transaction 11
+   (SQLSTATE 42000, 6 FbError entries, gds codes [335544351, 336397287, 335544382])
+
+== 4. RDB$FORMATS after the committed DDL ==
+formats stored for T: 3 (T has lived through that many shapes)
+A  E      D
+1  <null> <null>
+
+ADO.NET: a command without its transaction is refused:
+   Execute requires the Command object to have a Transaction object when the Connection object assigned to the command is in a pending local transaction. The Transaction property of the Command has not been initialized.
+done.
+```
+
+The same three codes the other twins print: `isc_no_meta_update`, `isc_dsql_alter_table_failed` and `isc_random`. This was a first run on a fresh scratch database; later runs name a higher table id and transaction number.
+
 ### Things to try
 
 - In demo 2, move the `SELECT d FROM t` *before* A's second ALTER commits, keep the statement handle, and re-execute it after the commit: an already-prepared statement keeps running against the version it was compiled with — resolution is at *prepare* time, which is the precise wording the document insists on.

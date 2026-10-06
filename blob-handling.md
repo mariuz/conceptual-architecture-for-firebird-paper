@@ -398,6 +398,36 @@ ID OCTETS CHARS CONTENT
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Blobs.cs`](samples/csharp/Samples/Blobs.cs)
+
+The same scenario through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL ADO.NET provider (`cd samples/csharp && dotnet run -- Blobs`), which has **no public segment API**. A blob parameter is a `byte[]` or `string` that the provider writes itself, through `op_create_blob` and then `op_put_segment` in chunks of `PacketSize` bytes (8192 by default) into a *segmented* blob, and a blob column comes back whole from `GetValue()` or as a `Stream` from `GetStream()`. So the three explicit segments are written in SQL, with `RDB$BLOB_UTIL.NEW_BLOB(TRUE, FALSE)` and one `BLOB_APPEND` per segment, and the engine's own `RDB$BLOB_UTIL.READ_DATA(h, NULL)`, which returns one segment per call, confirms that 13/22/5 are stored. The PSQL variable has to be `BINARY`, because declared as a UTF8 text blob the three appends were stored as a single 40-byte segment. Read through the provider's `BlobStream`, the blob behaves as it does in Jaybird: `op_get_segment` packs every segment that fits into one buffer, so the 40 bytes arrive in one `Read`. The provider's own 20000-byte write is stored as `[8192, 8192, 3616]`. `BlobStream.CanSeek` is always true, but `op_seek_blob` works only on stream blobs, so seeking the provider's segmented blob fails with `invalid BLOB type for operation`, raised as the provider's internal `IscException` and not as `FbException`. A stream blob made with `NEW_BLOB(FALSE, ...)` seeks. The run also found a provider bug: `BlobStream.Read(buffer, offset, count)` limits the copy by `buffer.Length - offset` instead of `count`, so `Read(buf, 0, 6)` into a 64-byte buffer returns 27 bytes. This is the case in 10.3.4 and is unchanged on NETProvider master; a buffer of exactly `count` bytes avoids it.
+
+Verified output:
+
+```text
+id 1: 3 segments via RDB$BLOB_UTIL.NEW_BLOB + BLOB_APPEND (no putSegment in the provider)
+  GetStream(): FirebirdSql.Data.Common.BlobStream, Length = 40 (isc_info_blob_total_length)
+  Read(64) #1: 40 bytes  "first segmentsecond, longer segmentthird"
+  stored (RDB$BLOB_UTIL.READ_DATA, server side): 3 segments [13, 22, 5]
+
+id 3: a 20000-byte byte[] parameter (PacketSize = 8192)
+  stored (RDB$BLOB_UTIL.READ_DATA, server side): 3 segments [8192, 8192, 3616]
+  GetValue(): byte[20000], identical = True
+
+id 3 (segmented): CanSeek = True, Seek(13) -> IscException: invalid BLOB type for operation
+id 4 (stream):    Seek(13), Read(byte[6], 0, 6) returned 6 bytes: "second"
+id 4 (stream):    Seek(13), Read(byte[64], 0, 6) returned 27 bytes: "second, longer segmentthird"   <- count ignored
+  stored (RDB$BLOB_UTIL.READ_DATA, server side): 1 segments [40]
+
+-- column subtypes (RDB$FIELDS) --
+DATA  subtype 0  charset <null>
+NOTE  subtype 1  charset UTF8
+
+-- BLOB_APPEND result --
+id 2: 17 octets, 17 chars, GetValue() -> String "part1-part2-part3"
+done.
+```
+
 ### Things to try
 
 - Grow the C++ text blob (e.g. 64 putSegment calls of 4 KB) and watch `getInfo` report the level change indirectly: re-run `gstat -r` on the table and see blob pages appear, then compare `Average record length` — it stays ~15 bytes no matter how big the blobs get.

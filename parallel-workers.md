@@ -443,6 +443,35 @@ done.
 
 The facts match the C++ run: the clamp to 1, 4 pointer pages, the same seven-attachment roster with three `<Worker>` rows at `system_flag 1`, and the workers still pooled after the build. As with the Python run, the 28 s build time on this shared one-core machine proves that the workers engaged, not that the build got faster.
 
+### C# sample — [`samples/csharp/Samples/ParallelWorkers.cs`](samples/csharp/Samples/ParallelWorkers.cs)
+
+The same two phases through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider (`cd samples/csharp && dotnet run -- ParallelWorkers`, about 1 min), using both of its server types. Phase A runs over the managed (pure C#) wire protocol, where the knob is a typed connection-string key, `ParallelWorkers = 4` (`isc_dpb_parallel_workers`). The reply is where it parts from Jaybird: ADO.NET's home for server warnings is the connection's `InfoMessage` event, but the provider does not route the attach response's warning there, so `isc_bad_par_workers` is lost as in fb-cpp and fbintf, and the clamp is read back as data — `MON$ATTACHMENTS.MON$PARALLEL_WORKERS = 1`. Phase B switches the same builder to `ServerType = Embedded` with `ClientLibrary` pointing at `libfbclient.so`, which loads the engine into the .NET process. The private `FIREBIRD` root has to be in the *native* environment before that happens, and here .NET has its own trap: on Unix `Environment.SetEnvironmentVariable` changes only the runtime's managed copy, which the engine's `getenv` never sees. So the sample P/Invokes libc's `setenv` — a one-line `[DllImport("libc")]`, where Jaybird needed JNA for the same hop. The `MON$ATTACHMENTS` poller is a `Task` holding a second embedded attachment; auto-commit gives it a fresh snapshot on every query.
+
+Verified output:
+
+```text
+[A] server attach, ParallelWorkers=4 (isc_dpb_parallel_workers)
+    InfoMessage: (none raised for the attach)
+    server config: ParallelWorkers = 1, MaxParallelWorkers = 1; granted MON$PARALLEL_WORKERS = 1 -> 0 extra workers
+
+[B] embedded attach, FIREBIRD=/tmp/fbhandson/fbroot-parallel-cs
+    engine config: ParallelWorkers = 4, MaxParallelWorkers = 8
+    parade table: 200000 rows of 180 incompressible bytes, 4 pointer pages
+    create index: 25282 ms; max '<Worker>' attachments seen: 3
+    MON$ATTACHMENTS at the widest moment:
+        SYSDBA  (system_flag 0)
+        Cache Writer  (system_flag 1)
+        Garbage Collector  (system_flag 1)
+        SYSDBA  (system_flag 0)
+        <Worker>  (system_flag 1)
+        <Worker>  (system_flag 1)
+        <Worker>  (system_flag 1)
+    after build: workers stay pooled (idle timeout 60 s): 3
+done.
+```
+
+The facts match the C++ and Java runs: the clamp to 1, 4 pointer pages, three `<Worker>` rows at `system_flag 1` beside the two user attachments, and the workers still pooled after the build. (Only the order differs: on this first run against a newly created file the user attachment got a lower id than the Cache Writer and Garbage Collector.) As with the other twins, the 25 s build on this shared one-core machine shows that the workers engaged, not that the build got faster.
+
 ### Things to try
 
 - In the C++ sample's private root, set `ParallelWorkers = 8` and watch `getMaxWorkers()` cap the width at the pointer-page count instead (the output already prints both numbers).

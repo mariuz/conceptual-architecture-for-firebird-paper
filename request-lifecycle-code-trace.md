@@ -470,6 +470,24 @@ done.
 
 The counters match the libfbclient twins: `+20` catalog record inserts, page marks and writes within noise, and `+2248` fetches. A first run, on the database the sample had just created, measured `+4262` fetches and a 766 ms execute, close to the Go twin's `+4018`. The Go figure stayed the same on its repeat run, so the sample does not explain it. Here, at least, the extra fetches went away once the database was no longer brand new. The milliseconds vary from run to run, as before.
 
+### C# sample — [`samples/csharp/Samples/RequestLifecycle.cs`](samples/csharp/Samples/RequestLifecycle.cs)
+
+The same instrumented round trip, with [Stage 2's](#stage-2-the-remote-module-client-side) client half in C#: the managed wire protocol of [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider (`cd samples/csharp && dotnet run -- RequestLifecycle`). Unlike JDBC, ADO.NET needs no lower layer to separate the stages. `BeginTransaction`, `FbCommand.Prepare()`, `ExecuteNonQuery()` and `Commit()` are one call, and one wire operation, each. The trade is visibility. The prepare's verdict, the statement type the Go driver keeps private and Jaybird returns as `StatementType.DDL`, is internal to this provider too. The DDL classification shows only indirectly, as an empty plan and `-1` records affected. ADO.NET's one-transaction rule also shapes the instrumentation. While an `FbConnection` holds a transaction, every command on it must use that transaction, so the MON$ samples cannot share the attachment as they do in the Java twin. A second attachment reads the first one's `MON$IO_STATS` / `MON$RECORD_STATS` by attachment id and doubles as the outside observer. `FbDatabaseInfo` looks like a transaction-free shortcut but is not one here. Its fetches, marks and writes are database-wide: `INF_database_info` answers them from `dbb_stats`, so the observer's own queries would be counted too. `GetInsertCount()` overflows converting the per-table reply into a single `Int32`.
+
+Verified output:
+
+```text
+prepare    1.15 ms   statement type: not exposed by the provider (no plan: '')
+execute  100.77 ms   records affected = -1; catalog record inserts: +20, page marks: +128
+         in this tx:  RDB$RELATIONS has TRACE_DEMO = 1
+         other att:   RDB$RELATIONS has TRACE_DEMO = 0  (TRA_commit has not happened)
+commit    20.85 ms   page writes: +14  (fetches: +2101 over the whole trip)
+         other att:   RDB$RELATIONS has TRACE_DEMO = 1
+done.
+```
+
+The counters match the other twins: `+20` catalog record inserts, page marks and writes within noise, and about 2 100 fetches, the same in a second run (`+2119`). Measuring from a separate attachment leaves the counts unchanged because MON$ reports each attachment's own statistics.
+
 ### Things to try
 
 - Add a column or a second index to the `CREATE TABLE` and watch the record-insert delta grow by exactly the extra catalog rows.

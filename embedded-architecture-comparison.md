@@ -293,6 +293,29 @@ done.
 
 The two remote legs cost the same: the wire is the wire whether `libfbclient` or Java code speaks it. Holding the database open halves the remote attach.
 
+### C# sample — [`samples/csharp/Samples/EmbeddedDemo.cs`](samples/csharp/Samples/EmbeddedDemo.cs)
+
+The three demonstrations through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL ADO.NET provider (`cd samples/csharp && dotnet run -- EmbeddedDemo`). By default it is a managed wire client like firebirdsql and pure Jaybird, but `ServerType=Embedded` makes it P/Invoke `libfbclient` (`ClientLibrary=/opt/firebird/lib/libfbclient.so`), and the plain local path `/tmp/fbhandson/embedded_demo_cs.fdb` makes the Y-valve load `libEngine14` into the .NET process. `/proc/self/maps` shows both arriving with the first embedded attach and neither before it, and the query reports `NETWORK_PROTOCOL` NULL and the process's own pid. Like Jaybird, the provider carries both client families, so the timing table compares three connection strings through one API: embedded; the same `libfbclient` sent to the server; and the managed wire client. It then repeats the managed leg with `employee` held open. The remote `libfbclient` leg is written `Database=[::1]:employee`, with `ISC_USER`/`ISC_PASSWORD` set in the C environment by a `setenv` P/Invoke. The provider's parser splits `inet://…` into `DataSource` + `Database`, the embedded path then drops `DataSource`, and the native path sends no password in the DPB; the [architecture-comparison twin](samples/csharp/Samples/ArchitectureComparison.cs) shows both traps. Pooling stays off (`FbSample`'s default), so every `Close()` really detaches.
+
+Verified output (timings vary from run to run; on a second run the kept-open leg took 53 ms, no faster than the cold legs, so treat that row as indicative only):
+
+```text
+before attach:  libfbclient mapped=no, libEngine14 mapped=no
+after  attach:  libfbclient mapped=yes, libEngine14 mapped=yes
+
+rows=3  max(name)=sprocket  NETWORK_PROTOCOL=<null: in-process>
+engine pid=94664, my pid=94664 - the 'server' is this process
+
+attach+detach avg over 5 runs:
+    embedded                       ServerType=Embedded, /tmp/fbhandson/embedded_demo_cs.fdb    7.26 ms
+    libfbclient -> server          ServerType=Embedded, [::1]:employee                       55.27 ms
+    managed wire client            ServerType=Default, localhost:employee                    55.27 ms
+    managed, employee kept open    ServerType=Default, localhost:employee                    10.60 ms
+done.
+```
+
+The two remote legs cost the same, as in the Java run: the wire is the wire whether `libfbclient` or managed C# speaks it.
+
 ### Things to try
 
 - Run `./build/embedded_demo` while `/opt/firebird/bin/isql /tmp/fbhandson/embedded_demo.fdb` sits attached in another shell — observe the 08001 exclusive-open error from the footnote above; then point both at a `FIREBIRD` root whose `firebird.conf` says `ServerMode = Classic` and watch them coexist.

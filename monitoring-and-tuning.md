@@ -302,6 +302,27 @@ done.
 
 The hierarchy row again shows the marker query that created the snapshot. `MON_WORK sequential reads` jumps from 0 to exactly 10 000 while the MON$ row stays frozen, and the fresh snapshot's `page_fetches` (116 988) lands one fetch short of the info item read a moment earlier (116 989): two channels, one counter.
 
+### C# sample — [`samples/csharp/Samples/Monitoring.cs`](samples/csharp/Samples/Monitoring.cs)
+
+The same walk through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Monitoring`). ADO.NET has the JDBC and JavaScript trap — a command run without a transaction auto-commits, so every MON$ read would be a fresh snapshot — so the demonstration runs inside one explicit `FbTransaction` (`FbTransactionBehavior.Concurrency`, Firebird's SNAPSHOT), and the refresh is a commit and a new transaction. Like Jaybird, the provider carries the *live* channel beside MON$: `FbDatabaseInfo.GetFetches()` and `GetReads()` are `isc_info_fetches` / `isc_info_reads` over `op_info_database`, answered when called. It falls short of Jaybird on the per-relation view, though: `GetReadSeqCount()` decodes `isc_info_read_seq_count`'s list of (relation id, count) pairs as one integer and returns noise (`1975971177164833017` in a first run), so the sample shows whole-attachment fetches instead of `MON_WORK`'s own sequential reads.
+
+Verified output:
+
+```text
+MON$DATABASE:                           oit=17 oat=18 next=18 page_buffers=2048
+attachment -> transaction -> statement: att=10 usr=SYSDBA tx=18 state=1 sql_head=SELECT MON$OLDEST_TRANSACTION
+MON$ snapshot 1:                        seq_reads=17838 idx_reads=1596 inserts=10023 page_fetches=75199 page_reads=194
+info items, before the workload:        isc_info_fetches=75861  isc_info_reads=195
+... running workload: SELECT COUNT(*) full scan + indexed lookup ...
+count = 10000, point = 4242
+same transaction: STILL snapshot 1:     seq_reads=17838 idx_reads=1596 inserts=10023 page_fetches=75199 page_reads=194
+info items, same moment: live:          isc_info_fetches=86188  isc_info_reads=195
+new transaction: fresh snapshot:        seq_reads=27838 idx_reads=1630 inserts=10023 page_fetches=85826 page_reads=194
+done.
+```
+
+The hierarchy row once more shows the marker query that created the snapshot; `seq_reads` stays frozen at 17 838 inside the transaction and lands +10 000 exactly in the fresh one, while `isc_info_fetches` moves by 10 327 at once. (The info item and `MON$PAGE_FETCHES` track each other but are not one counter here: on this reused database the info figure ran a few hundred ahead of the fresh snapshot's, where Jaybird's run on its own database saw them one fetch apart.)
+
 ### Things to try
 
 - Open a second connection running `SELECT COUNT(*) FROM MON_WORK` in a loop and re-run the sample: the hierarchy query (drop the `WHERE ... = CURRENT_CONNECTION`) now shows two attachments, and their statements' `MON$SQL_TEXT` side by side.

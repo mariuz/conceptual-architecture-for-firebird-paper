@@ -274,6 +274,41 @@ done.
 
 The three plans trimmed from the top are identical to the C++ run's: `DOC_UPPER_TITLE` and `DOC_ACTIVE` as `INDEX`, `DOC_ID_DESC` as `ORDER`.
 
+### C# sample — [`samples/csharp/Samples/Indexes.cs`](samples/csharp/Samples/Indexes.cs)
+
+The same five plans through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Indexes`). Like Jaybird, and unlike the two other wire-protocol drivers, it asks the *statement* and offers both forms: after `FbCommand.Prepare()`, `GetCommandPlan()` returns the legacy one-line `PLAN (...)` and `GetCommandExplainedPlan()` the explained tree — the same plan-info items of the prepare-info request, from a client with no libfbclient. The ADO.NET addition lands on the opposite side of Jaybird's: where `DatabaseMetaData.getIndexInfo` carried every variant, the provider's portable catalog — `GetSchema("Indexes")` joined with `GetSchema("IndexColumns")` — shows the descending index only as the raw `INDEX_TYPE = 1` (`RDB$INDEX_TYPE`), the expression index with a `<null>` column and no expression, and the partial index's `WHERE` nowhere at all: none of the eleven collection columns carries `RDB$CONDITION_SOURCE`. A generic tool built on `GetSchema` would see `DOC_ACTIVE` as an ordinary index on `STATUS`.
+
+Verified output (trimmed):
+
+```text
+select id from doc where num = 42 or id = 7
+PLAN ("PUBLIC"."DOC" INDEX ("PUBLIC"."DOC_NUM", "PUBLIC"."DOC_ID_DESC"))
+explained:
+  Select Expression
+      -> Filter
+          -> Table "PUBLIC"."DOC" Access By ID
+              -> Bitmap Or
+                  -> Bitmap
+                      -> Index "PUBLIC"."DOC_NUM" Range Scan (full match)
+                  -> Bitmap
+                      -> Index "PUBLIC"."DOC_ID_DESC" Range Scan (full match)
+
+select id from doc where title containing 'itle 12'
+PLAN ("PUBLIC"."DOC" NATURAL)
+
+CONTAINING is correct but unindexed: matched 111 rows by scanning all 3000
+
+GetSchema("Indexes") + GetSchema("IndexColumns") for DOC:
+  DOC_ACTIVE       column=STATUS   INDEX_TYPE=0
+  DOC_ID_DESC      column=ID       INDEX_TYPE=1
+  DOC_NUM          column=NUM      INDEX_TYPE=0
+  DOC_UPPER_TITLE  column=<null>   INDEX_TYPE=0
+  (collection columns: TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, IS_INACTIVE, IS_UNIQUE, UNIQUE_KEY, IS_SYSTEM_INDEX, INDEX_TYPE, DESCRIPTION, IS_PRIMARY)
+done.
+```
+
+The three plans trimmed from the top are identical to the C++ run's: `DOC_UPPER_TITLE` and `DOC_ACTIVE` as `INDEX`, `DOC_ID_DESC` as `ORDER`.
+
 ### Things to try
 
 - Drop `doc_active` and re-run: the `status = 'active'` query falls back to... check whether the optimizer picks `doc_num` (it can't) or `NATURAL` — then recreate the partial index with `WHERE status = 'done'` and watch the `'active'` query *ignore* it: a partial index only serves predicates that imply its condition.

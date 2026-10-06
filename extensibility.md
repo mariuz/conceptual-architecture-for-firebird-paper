@@ -242,6 +242,12 @@ The same UDR walk through [Jaybird](https://github.com/FirebirdSQL/jaybird), the
 
 Verified: `gen_rows(?, ?)` with `[1, 5]` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, `DatabaseMetaData` prints `getProcedures: GEN_ROWS  procedureReturnsResult` / `getFunctions:  SUM_ARGS  functionNoTable`, and the `RDB$CONFIG` roster is identical to the C++ run — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
 
+### C# sample — [`samples/csharp/Samples/Extensibility.cs`](samples/csharp/Samples/Extensibility.cs)
+
+The same UDR walk through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Extensibility`). As with Jaybird, no libfbclient in the process and nothing lost: the `udr_engine` loads the native module inside the server. The calls bind named `@start_n` / `@n1` parameters, which the provider rewrites to positional `?` before the prepare. The contrast with Java's `DatabaseMetaData` is a shade different here: ADO.NET's portable catalog API, `GetSchema`, lists both routines, and its `"Functions"` collection happens to carry `RDB$ENTRYPOINT` in the legacy-UDF column `FUNCTION_ENTRY_POINT` — so `udrcpp_example!sum_args` does show through — but `"Procedures"` has no such column (`SOURCE` is simply `<null>`) and neither collection names `ENGINE udr`. Telling a UDR from PSQL still means asking the `RDB$` tables.
+
+Verified: `gen_rows(@start_n, @end_n)` with `[1, 5]` yields `1` through `5`, `sum_args(19, 20, 3)` returns `42`, the system tables echo `GEN_ROWS -> udrcpp_example!gen_rows (engine UDR)` and `SUM_ARGS -> udrcpp_example!sum_args (engine UDR)`, `GetSchema("Procedures")` reports `GEN_ROWS` with `INPUTS 2`, `OUTPUTS 1`, `SOURCE <null>`, `GetSchema("Functions")` reports `SUM_ARGS` with `FUNCTION_ENTRY_POINT udrcpp_example!sum_args`, and the `RDB$CONFIG` roster is identical to the C++ run — `Providers Remote, Engine14, Loopback` through `WireCryptPlugin ChaCha64, ChaCha, Arc4`.
+
 ### Things to try
 
 - Declare more of the shipped module: `gen_rows2` (same logic via typed `FB_UDR_MESSAGE`s), `mult`, or the `replicate` UDR *trigger* ([`extern/firebird/examples/udr/`](extern/firebird/examples/udr/) shows each declaration in a comment above its implementation).

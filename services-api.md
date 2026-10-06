@@ -591,6 +591,25 @@ the file /tmp/fbhandson/services_java.fbk now exists on the SERVER: 3072 bytes, 
 
 The same `isc_info_svc_to_eof` drain explains what the [trace twin](trace-and-audit.md) saw: for a live trace stream, "fill the buffer first" means the output arrives in delayed bursts.
 
+### C# sample — [`samples/csharp/Samples/Services.cs`](samples/csharp/Samples/Services.cs)
+
+The same session through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, which speaks the Services protocol itself on its managed wire (`cd samples/csharp && dotnet run -- Services`). As with the Go, JavaScript and Java drivers, `localhost` can only mean the remote `service_mgr`. `FirebirdSql.Data.Services` has one class per action. `FbServerProperties.GetServerVersion()` is the `isc_info_svc_server_version` request. `FbBackup` takes the database from its connection string and the `.fbk` from `BackupFiles` (both server paths) plus `Verbose = true`, and `Execute()` starts `isc_action_svc_backup` and drains the output **on the calling thread**, raising `ServiceOutput` once per line. The drain is the C++ loop, not Jaybird's. Each line is its own `isc_info_svc_line` query (`FbService.GetNextLine`), so the 74 verbose lines cost 74 `op_service_info` round trips plus the empty answer that ends the stream, the 75 every non-Java twin pays, here in about a third of a second on loopback. The `.fbk` is written by the server's user (`firebird`, mode `rw-r--r--`); the client never touches it.
+
+Verified output (middle trimmed):
+
+```text
+service       : localhost:service_mgr (managed wire)
+server version: LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+backup started (verbose) - FbBackup drains with isc_info_svc_line:
+  gbak:readied database /tmp/fbhandson/services_cs.fdb for backup
+  gbak:creating file /tmp/fbhandson/services_cs.fbk
+  gbak:starting transaction
+  ...
+  gbak:closing file, committing, and finishing. 3072 bytes written
+done: 74 gbak lines = 74 ServiceOutput events = 74 isc_info_svc_line round trips (+1 empty) in 335 ms
+the file /tmp/fbhandson/services_cs.fbk now exists on the SERVER: 3072 bytes, mode rw-r--r-- (written by the server's user, not by this client)
+```
+
 ### Things to try
 
 - Drop `isc_spb_verbose` from the C++ start block: the backup completes in a handful of polls with almost no lines — the non-verbose escape hatch from [the pipe section](#the-service-thread-and-the-1-kb-pipe).

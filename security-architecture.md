@@ -364,6 +364,33 @@ failed login (wrong password) produces:
 temporary user and role dropped. done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Security.cs`](samples/csharp/Samples/Security.cs)
+
+The same four steps through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Security`), under its own names (`CS_USER`, `CS_MONITOR`). Like Jaybird and the Go and JavaScript drivers, the provider implements layers 1 and 2 itself: its own Srp256 client proof and its own wire encryption, switched by the connection string's `WireCrypt` (`Disabled` / `Enabled` / `Required`). The cipher is the client's choice once more. FirebirdClient 10.3.4 ships only an `Arc4` plugin, so `MON$WIRE_CRYPT_PLUGIN` reads **`Arc4`**, as with node-firebird, where fbclient and the pure-Go driver negotiate `ChaCha64` and Jaybird `ChaCha`. The role is the builder's `Role` property (written as `isc_dpb_sql_role_name`). Each DDL statement runs without an explicit transaction, so the provider commits it at once, and that full commit is the point at which user management (deferred work) runs. As in the Java twin, the cleanup checks `SEC$USERS` / `RDB$ROLES` first, because a `DROP USER` of a missing user fails only at commit. The wrong password is a plain `FbException` (ADO.NET has no SQLSTATE-class subtypes like JDBC's `SQLInvalidAuthorizationSpecException`) with `SQLSTATE` 28000, gds 335544472 in `ErrorCode`, and the two-entry status vector in `Errors`.
+
+Verified output:
+
+```text
+admin attachment:      user=SYSDBA auth=Srp256 wirecrypt=Arc4 protocol=TCPv4 role=NONE
+
+SEC$USERS (the security database, through the virtual view):
+    USER             PLUGIN   ADMIN
+    CS_USER          Srp      False
+    SYSDBA           Srp      True
+
+admin sees 1 user attachments in MON$ATTACHMENTS
+user, no role:         user=CS_USER auth=Srp256 wirecrypt=Arc4 protocol=TCPv4 role=NONE
+  -> sees 1 attachment(s): only its own
+user + role:           user=CS_USER auth=Srp256 wirecrypt=Arc4 protocol=TCPv4 role=CS_MONITOR
+  -> sees 2 attachments: MONITOR_ANY_ATTACHMENT at work
+
+failed login (wrong password) produces:
+    SQLSTATE 28000 / gds 335544472 (FbException, 2 status entries)
+    Your user name and password are not defined. Ask your database administrator to set up a Firebird login.
+
+temporary user and role dropped. done.
+```
+
 ### Things to try
 
 - Grant `HANDSON_MONITOR` more bits — `set system privileges to MONITOR_ANY_ATTACHMENT, USE_GSTAT_UTILITY` — and re-run the doc's `fbsvcmgr ... action_db_stats` as `HANDSON_USER`: the [services-api document's layer-2 rejection](services-api.md#authorization-two-independent-layers) turns into success.

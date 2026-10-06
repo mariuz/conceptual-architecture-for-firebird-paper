@@ -314,6 +314,41 @@ Verified output (excerpt):
 
 The `MON$DATABASE` and `RDB$CONFIG` layers match the Go run row for row: ODS `14.0`, page size `8192`, 2048 buffers, sweep interval `20000`, forced writes `1`, 70 settings, `ServerMode Super`, and the same `ExternalFileAccess = Restrict /tmp/fbhandson` as the only explicitly set entry.
 
+### C# sample — [`samples/csharp/Samples/Deployment.cs`](samples/csharp/Samples/Deployment.cs)
+
+The same three SQL layers through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL ADO.NET provider, on its managed wire implementation (`cd samples/csharp && dotnet run -- Deployment`), plus the two info APIs. Where Jaybird hands out raw clumplets, this provider has typed wrappers like the Python twin. `FbDatabaseInfo` has one method per `isc_info_*`/`fb_info_*` item (`GetOdsVersion`, `GetPageSize`, `GetNumBuffers`, `GetForcedWrites` as a `bool`, `GetAllocationPages`, `GetWireCrypt`, `GetProtocolVersion`). `FbServerProperties` returns the service manager's install tree and, through `GetDatabasesInfo()`, the databases attached right now. The session facts differ from the other twins in one place. The managed client negotiates protocol 16 and wire-crypt **`Arc4`** (with the default `WireCrypt=Enabled`), the same as node-firebird, where `libfbclient` and firebirdsql pick `ChaCha64` and Jaybird picks `ChaCha`. `RDB$CONFIG_IS_SET` arrives as a `System.Boolean`.
+
+Verified output (excerpt):
+
+```text
+== SYSTEM context: this engine, this session ==
+  ENGINE_VERSION         6.0.0
+  DB_NAME                /opt/firebird/examples/empbuild/employee.fdb
+  NETWORK_PROTOCOL       TCPv4
+  WIRE_CRYPT_PLUGIN      Arc4
+  CLIENT_ADDRESS         127.0.0.1/57080
+
+== FbDatabaseInfo: isc_info_* items, no SQL ==
+  ODS                    14.0
+  page size              8192
+  page buffers           2048
+  sweep interval         20000
+  forced writes          True
+  pages allocated        401
+  wire crypt plugin      Arc4   (protocol 16, connection string WireCrypt=Enabled)
+  db crypt plugin        <none>
+
+== FbServerProperties: the install tree, from service_mgr ==
+  server version         LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+  architecture           Firebird/Linux/AMD/Intel/x64
+  home directory         /opt/firebird/
+  lock directory         /tmp/firebird/
+  message directory      /opt/firebird/
+  attached now           1 attachments, 1 databases: /opt/firebird/examples/empbuild/employee.fdb
+```
+
+The `MON$DATABASE` and `RDB$CONFIG` layers match the Go and Java runs row for row: ODS `14.0`, page size `8192`, 2048 buffers, sweep interval `20000`, forced writes `1`, 70 settings, `ServerMode Super`, and `ExternalFileAccess = Restrict /tmp/fbhandson` as the only explicitly set entry.
+
 ### Things to try
 
 - Run the C++ sample with an `xnet://` or `inet6://` URL (or embedded, with a direct path and `FIREBIRD=` set) and watch `NETWORK_PROTOCOL`, `CLIENT_ADDRESS` and `WIRE_CRYPT_PLUGIN` change while `RDB$CONFIG` stays identical — deployment facts vs session facts.

@@ -1,7 +1,8 @@
 # Samples
 
-Runnable C++, JavaScript, Rust, Free Pascal, Python, Go and Java examples
-that exercise the architecture described in the [paper](../README.md). The C++ programs use the modern
+Runnable C++, JavaScript, Rust, Free Pascal, Python, Go, Java and C#
+examples that exercise the architecture described in the
+[paper](../README.md). The C++ programs use the modern
 object-oriented client API (`firebird/Interface.h`) that is the supported
 interface in Firebird 3 and later, including the Firebird 6 development
 branch; the JavaScript programs use [node-firebird](https://github.com/hgourvest/node-firebird),
@@ -115,6 +116,23 @@ and debugging"** section built on a pair of samples here:
   `org.firebirdsql.management` (backup, statistics, maintenance, nbackup,
   trace, users), events, execution plans, and the wire-level GDS-ng API
   for info requests.
+- **`csharp/Samples/<Topic>.cs`** — the C# twin, written against
+  [FirebirdClient](https://github.com/FirebirdSQL/NETProvider)
+  (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET
+  provider: one console project, one static class per topic picked by
+  name on the command line, sharing [`FbSample.cs`](csharp/FbSample.cs).
+  Its default server type is a managed (pure C#) wire-protocol
+  implementation — protocol 16 at most, and Arc4 as its only wire
+  cipher; `ServerType=Embedded` loads the native client library
+  and the engine in-process. It is the closest sibling of the Java twin,
+  with one notable difference in each direction: the TPB is spelled item
+  by item as the `[Flags]` enum `FbTransactionBehavior`, and ADO.NET
+  connection pooling is **on** by default — `FbSample` turns it off so
+  that one `FbConnection` is one attachment, and the pooling twin turns
+  it back on as its lesson. The Services API lives in
+  `FirebirdSql.Data.Services` (backup, restore, statistics, validation,
+  configuration, trace, security, nbackup), next to `FbRemoteEvent`,
+  `FbCommand.GetCommandPlan` and `FbDatabaseInfo`.
 
 Each document's Hands-on section shows its pair's *verified* output, a
 "things to try" list, and gdb breakpoints into the engine functions the
@@ -340,6 +358,24 @@ mvn -q compile exec:exec -Dsample=Transactions -Dargs=/tmp/fbhandson/other.fdb
 The first run downloads Jaybird and JNA into the local Maven repository.
 Scratch databases go to `/tmp/fbhandson/<topic>_java.fdb` like the other
 twins; `FB_HOST`, `ISC_USER` and `ISC_PASSWORD` override the defaults.
+
+## C# samples
+
+The [`csharp/`](csharp/) directory holds the per-document twins in C#.
+With the .NET 8 SDK or later (the managed protocol needs no Firebird
+client library; the embedded twins load `libfbclient` from
+`/opt/firebird/lib`):
+
+```sh
+cd samples/csharp
+dotnet run -- Transactions              # or any other class in Samples/
+dotnet run -- Transactions /tmp/fbhandson/other.fdb
+dotnet run                              # lists the samples
+```
+
+The first run restores FirebirdClient from NuGet. Scratch databases go to
+`/tmp/fbhandson/<topic>_cs.fdb` like the other twins; `FB_HOST`,
+`ISC_USER` and `ISC_PASSWORD` override the defaults.
 
 ## Debugging
 

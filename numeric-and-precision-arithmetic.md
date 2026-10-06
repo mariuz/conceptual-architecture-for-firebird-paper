@@ -262,6 +262,34 @@ done.
 
 `getErrorCode()` on the INT128 overflow is 335544779 (`isc_exception_integer_overflow`), not the 335544321 the other twins print. Jaybird reports the most specific code in the vector and keeps the generic one in the message. Its `double` rendering of the NUMERIC(18,2) value is .94, not node-firebird's .92: `BigDecimal.doubleValue()` rounds the exact decimal to the nearest double (…409.9375), where the JS driver divided an already-rounded integer.
 
+### C# sample — [`samples/csharp/Samples/Numerics.cs`](samples/csharp/Samples/Numerics.cs)
+
+The same four experiments through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Numerics`). .NET's `System.Decimal` is itself a scaled integer: a 96-bit coefficient plus a power-of-ten scale. So `NUMERIC` never passes through binary floating point on its way in, and `decimal.GetBits` shows the same `0x075bcd15` / scale 4 the C++ twin read out of the message buffer, now as the client type's own representation. The schema table reports `ProviderType=Numeric`, `ColumnSize=8` and `NumericScale=4`. `INT128` arrives as `BigInteger`. `DECFLOAT` arrives as the provider's own `FbDecFloat`, a `BigInteger` coefficient plus an exponent, so the residue prints as `0E-1`. Unlike Jaybird's `BigDecimal`, it has an `Infinity`, so the untrapped 1/0 is fetched as an ordinary value. There are two instructive costs. First, the 96-bit coefficient is narrower than `NUMERIC(38)`'s `INT128`: 10³⁰ fails on the client with `OverflowException`. That failure comes mid-fetch and leaves the attachment's implicit transaction unusable, so the next statement on it fails with `invalid transaction handle`, which is why the sample runs that probe on its own attachment. Second, the provider has no DPB property for the trap set, so traps are cleared in SQL only.
+
+Verified output:
+
+```text
+(0.1+0.2)-0.3 in DOUBLE PRECISION : 5.551115123125783E-17  (Double)
+(0.1+0.2)-0.3 in DECFLOAT(34)     : 0E-1  (FbDecFloat: coefficient 0, exponent -1)
+
+NUMERIC(18,4) metadata   : ProviderType=Numeric, ColumnSize=8, NumericScale=4, DataType=System.Decimal
+System.Decimal bits      : lo=0x075bcd15 mid=0 hi=0 scale=4
+raw integer              : 123456789
+value = raw * 10^-scale  : 123456789 * 10^-4 = 12345.6789
+NUMERIC(18,2) past 2^53  : 90071992547409.93 as decimal, 90071992547409.92 as (double)decimal, 90071992547409.94 parsed
+
+INT128 max  : 170141183460469231731687303715884105727  (BigInteger, == 2^127-1: True)
+INT128 max+1: arithmetic exception, numeric overflow, or string truncation; Integer overflow.  The result of an integer operation caused the most significant bit of the result to carry. (gds 335544321)
+
+1/0 with default traps : Decimal float divide by zero.  The code attempted to divide a DECFLOAT value by zero. (gds 335545139)
+1/0 with traps cleared : inf  (FbDecFloat, == PositiveInfinity: True)
+NUMERIC(38,0) = 10^30 : client-side OverflowException: Value was either too large or too small for a Decimal.
+  same, cast to INT128 : invalid transaction handle (expecting explicit transaction start) (gds 335544332)
+done.
+```
+
+The 2⁵³ cent survives as `decimal`. The two `double` renderings differ, though. Parsing the decimal's text gives the correctly rounded nearest double (…409.94, Jaybird's answer). .NET's explicit `(double)decimal` conversion lands on a neighbouring double (…409.92, node-firebird's answer), so even the conversion operator is a precision decision. `ErrorCode` here is the generic 335544321 that the libfbclient twins print, where Jaybird surfaced the more specific 335544779.
+
 ### Things to try
 
 - Add `SET DECFLOAT ROUND CEILING` before a `SELECT CAST(1 AS DECFLOAT(16))/3*3` in either sample — the result becomes `1.000000000000001` (the doc's rounding-mode demo).

@@ -657,6 +657,51 @@ done.
 
 All three views agree on ODS 14.0, 8192-byte pages, the markers and the GUID (info API vs `hdr_guid`), and `allocation` 294 equals the census count.
 
+### C# sample — [`samples/csharp/Samples/OdsHeader.cs`](samples/csharp/Samples/OdsHeader.cs)
+
+The same acts through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed wire protocol (`cd samples/csharp && dotnet run -- OdsHeader`). Like the Python and Java twins, it reads the server-owned file, so run it on the server machine as a member of the `firebird` group. The middle view sits at the opposite end from Jaybird's raw buffer. `FbDatabaseInfo` has **one typed method per `isc_info_*` item**: `GetOdsVersion()`, `GetPageSize()`, `GetAllocationPages()`, the four transaction markers as `Int64`, and `GetDbGuid()` as a `System.Guid`. Each call is its own `isc_database_info` round trip, and the clumplets are decoded inside the provider, so the 4-byte encoding of small 64-bit markers that the Java twin exposes stays hidden here. The file act is a `FileStream` plus `BinaryPrimitives` little-endian reads at the `ods.h` offsets. `hdr_guid` needs no hand formatting, because its on-disk Win32 GUID layout is exactly the byte layout `new Guid(ReadOnlySpan<byte>)` expects, and the sample compares the two `Guid` values directly.
+
+Verified output (first run, freshly created database):
+
+```text
+-- server's view (MON$DATABASE) --
+page_size ods_major ods_minor oit oat ost next = 8192 14 0 3 4 4 4
+
+-- the same through the info API (FbDatabaseInfo, typed) --
+  GetOdsVersion()=14  GetOdsMinorVersion()=0  GetPageSize()=8192  GetAllocationPages()=294
+  GetOldestTransaction()=3  GetOldestActiveTransaction()=4  GetOldestActiveSnapshot()=4  GetNextTransaction()=4
+  GetDbGuid()={CE498B5C-F573-40C8-918F-3DBCEA31416B}  GetForcedWrites()=True
+
+-- header page, parsed from /tmp/fbhandson/ods_cs.fdb (offsets per ods.h) --
+pag_type      @0   = 1 (pag_header)
+pag_flags     @1   = 0
+hdr_page_size @16  = 8192
+hdr_ods_version @18 = 0x800e -> ODS 14 (FIREBIRD flag 0x8000 set), minor @20 = 0
+hdr_flags     @22  = 0x12 (force_write SQL_dialect_3)
+hdr_PAGES     @28  = 3   <- pointer page of RDB$PAGES (catalog bootstrap anchor)
+hdr_next_transaction   @40 = 4
+hdr_oldest_transaction @48 = 3 (OIT)
+hdr_oldest_active      @56 = 4 (OAT)
+hdr_oldest_snapshot    @64 = 4 (OST)
+hdr_guid      @84  = {CE498B5C-F573-40C8-918F-3DBCEA31416B}
+
+-- page-type census: 294 pages of 8192 bytes --
+  type  0  undefined                  6
+  type  1  pag_header                 1
+  type  2  pag_pages (PIP)            1
+  type  3  pag_transactions (TIP)     1
+  type  4  pag_pointer               40
+  type  5  pag_data                  97
+  type  6  pag_root                  40
+  type  7  pag_index (b-tree)       106
+  type  9  pag_ids (generators)       1
+  type 10  pag_scns                   1
+GetDbGuid() == hdr_guid ? True
+done.
+```
+
+All three views agree on ODS 14.0, 8192-byte pages and the markers, `GetAllocationPages()` 294 equals the census count, and the info API's `Guid` equals `hdr_guid`.
+
 ### Things to try
 
 - Point both samples at a copy of `employee.fdb` (`gbak` it, or use any restored copy) and compare the census: user data changes the data/index page mix, not the fixed skeleton.

@@ -299,6 +299,43 @@ same row fetched natively (getObject):
 
 The text face that follows is the C++ run's to the character (`2026-07-21 12:00:00.0000 Europe/Bucharest`, `TRUE`, the same UUID upper-cased by `UUID_TO_CHAR`).
 
+### C# sample — [`samples/csharp/Samples/Migration.cs`](samples/csharp/Samples/Migration.cs)
+
+The same probe through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Migration`), on the same three faces as the Java twin. The describe face is `GetSchemaTable` — the provider's `FbDbType`, the CLR `DataType`, size, precision and scale, what a generic .NET copier maps target types from — and it already shows the trouble to come: `NUMERIC(38,8)` publishes precision 38 *and* `System.Decimal`, a type whose 96-bit mantissa holds 28–29 digits. The native face then fails twice, both times *inside the fetch*, which leaves that attachment's wire stream out of step (the next command on it reports `invalid transaction handle`) — so the sample reads each column on an attachment of its own. `C_NUM` throws `OverflowException` while the row is being decoded; the cure is server-side, the Firebird 4+ session coercion `SET BIND OF NUMERIC(38) TO VARCHAR`, which delivers the 38 digits as exact text. `C_UUID` is described as `System.Guid`, yet on the default UTF8 connection the server rejects the fetch with `Malformed string` — the provider declares the `OCTETS` column in the connection character set in the message it asks for, so the engine tries to transliterate 16 random bytes into UTF8 (node-firebird hit the same error); on a `Charset=NONE` attachment it arrives as a `Guid`, and `CAST(... AS BLOB SUB_TYPE BINARY)` sidesteps it on any connection. The rest is decoded exactly and in Firebird's own terms: `INT128` as `BigInteger`, `DECFLOAT(34)` as `FbDecFloat` (coefficient and exponent), `TIMESTAMP WITH TIME ZONE` as `FbZonedDateTime` — a UTC `DateTime` plus the zone *name*, which Jaybird's default `OffsetDateTime` drops.
+
+Verified output (trimmed):
+
+```text
+GetSchemaTable of SELECT * FROM TYPE_PROBE:
+
+column   ProviderType   GetDataTypeName          size prec scale  DataType
+C_INT128 Int128         INT128                     16 <null> <null>  System.Numerics.BigInteger
+C_NUM    Numeric        NUMERIC                    16   38     8  System.Decimal
+C_DEC    Dec34          DECFLOAT                   16 <null> <null>  FirebirdSql.Data.Types.FbDecFloat
+C_TSTZ   TimeStampTZ    TIMESTAMP WITH TIME ZONE   12 <null> <null>  FirebirdSql.Data.Types.FbZonedDateTime
+C_BOOL   Boolean        BOOLEAN                     1 <null> <null>  System.Boolean
+C_UUID   Guid           CHAR                       16 <null> <null>  System.Guid
+C_VC     VarChar        VARCHAR                    20 <null> <null>  System.String
+
+same row fetched natively (GetValue, a fresh attachment per column):
+
+  C_INT128 -> BigInteger      170141183460469231731687303715884105727
+  C_NUM    -> OverflowException: Value was either too large or too small for a Decimal.
+  C_DEC    -> FbDecFloat      1234567890123456789012345678901234E-23  (coefficient 1234567890123456789012345678901234, exponent -23)
+  C_TSTZ   -> FbZonedDateTime 2026-07-21 09:00:00 UTC, zone Europe/Bucharest
+  C_BOOL   -> Boolean         True
+  C_UUID   -> FbException: Malformed string
+  C_VC     -> String          naïve ütf8 text
+
+the two failures, worked around:
+
+  C_NUM    -> String          123456789012345678901234567890.12345678   [SET BIND OF NUMERIC(38) TO VARCHAR]
+  C_UUID   -> Byte[]          d69f2ebc-8840-49ae-a12f-90ff8f6ccbf8  (16 bytes -> new Guid(b, bigEndian: true))   [CAST(C_UUID AS BLOB SUB_TYPE BINARY)]
+  C_UUID   -> Guid            d69f2ebc-8840-49ae-a12f-90ff8f6ccbf8   [Charset=NONE]
+```
+
+The text face that follows is the C++ run's to the character (`2026-07-21 12:00:00.0000 Europe/Bucharest`, `TRUE`, the same UUID upper-cased by `UUID_TO_CHAR`).
+
 ### Things to try
 
 - Change the connection `encoding` to `'NONE'` in the JS sample and re-probe `C_UUID` — a 16-byte `Buffer` now, no error: charset coercion happens client-side, per connection.

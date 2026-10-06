@@ -327,6 +327,21 @@ uncommitted rows      : 0   <- rolled back by visibility, not replay
 
 The 539 ms includes loading JNA, `libfbclient` and the engine into the parent JVM for the first time, and there is still no recovery phase.
 
+### C# sample — [`samples/csharp/Samples/CarefulWrites.cs`](samples/csharp/Samples/CarefulWrites.cs)
+
+The same engine-kill experiment through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL ADO.NET provider (`cd samples/csharp && dotnet run -- CarefulWrites`). Its default server type is a managed wire client, but `ServerType=Embedded` P/Invokes `libfbclient` (`ClientLibrary=/opt/firebird/lib/libfbclient.so`), and a plain local path makes the Y-valve load the Engine provider into the .NET process, which puts this twin in the C++ failure domain together with Jaybird's embedded leg. .NET has no `fork()`, so the parent uses `Process.Start` to start a second copy of itself (`Environment.ProcessPath`, with `FIREBIRD=/opt/firebird` in its `ProcessStartInfo.Environment`) running the class with `--writer`. It polls `FileInfo.Length` while the writer's uncommitted 500,000-row `execute block` grows the file, then sends `SIGKILL` with `Process.Kill()`. Re-attaching is an ordinary embedded `FbConnection.Open()` on the same path, and as in every twin there is no recovery call to make. The 230 ms includes loading `libfbclient` and the engine into the parent process for the first time.
+
+Verified output:
+
+```text
+[writer 92697] marker row committed (embedded engine in this process)
+file grew 1466368 -> 4481024 bytes; SIGKILL to engine pid 92697
+re-attach + both counts took 230 ms
+committed marker rows : 1   <- survived the crash
+uncommitted rows      : 0   <- rolled back by visibility, not replay
+(4767744 bytes on disk after the crash)
+```
+
 ### Things to try
 
 - Rerun the C++ sample and then `gfix -v -full -user SYSDBA /tmp/fbhandson/careful_writes.fdb` (embedded, so run it with `FIREBIRD=/opt/firebird` while no server has the file): like the [live test](#crash-safety-live), you may see orphan-page warnings — allocated-but-never-linked pages, the designed leftover — and zero corruption errors.

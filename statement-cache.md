@@ -457,6 +457,19 @@ Verified output (second of two consecutive runs; the first gave 0.42 / 1.67 / 1.
 4. identical text after DDL   100 prepares:  521.1 ms  (5.21 ms/prepare) - misses
 ```
 
+### C# sample — [`samples/csharp/Samples/StmtCache.cs`](samples/csharp/Samples/StmtCache.cs)
+
+The same four timing runs through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed wire protocol (`cd samples/csharp && dotnet run -- StmtCache`). Like Jaybird, the provider sits on the clean side of the wrapper split. `FbCommand.Prepare()` is a real prepare-without-execute, `Dispose()` frees the statement handle, and the provider keeps no client-side statement cache. ADO.NET's pooling is of connections, not statements, so nothing stands between the timings and the server's cache. The shape matches the Java and Go twins: the prepares run in one explicit `FbTransaction`, run 4's `RECREATE TABLE` comes from a *second attachment* that auto-commits, and the .NET JIT is warmed with 2,000 prepares of a trivial text so that run 1 times the server. A hit costs 0.15–0.24 ms, between the pure-Go twin and Jaybird.
+
+Verified output (second of two consecutive runs; the first gave 0.24 / 1.22 / 1.15 / 4.67 ms per prepare, with the same ordering):
+
+```text
+1. identical text             100 prepares:   14.8 ms  (0.15 ms/prepare) - hits
+2. + i trailing spaces        100 prepares:  112.7 ms  (1.13 ms/prepare) - misses
+3. distinct literal           100 prepares:  112.2 ms  (1.12 ms/prepare) - misses
+4. identical text after DDL   100 prepares:  248.4 ms  (2.48 ms/prepare) - misses
+```
+
 ### Things to try
 
 - Change run 2 to vary *case* instead of whitespace (`Select` / `sElect`…) — same misses, same reason.

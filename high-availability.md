@@ -306,6 +306,25 @@ attached with set_db_replica=0:  replica mode = 0 (NONE - a primary)
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Ha.cs`](samples/csharp/Samples/Ha.cs)
+
+The same lifecycle through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Ha`). The shadow half is the Java, Go and Python twins' once more — fresh scratch database (`ha_cs.fdb`/`ha_cs.shd`), `CREATE SHADOW`/`DROP SHADOW` as plain DSQL, `FileInfo.Length` playing `stat()` — and the sizes match the C++ runs byte for byte. The replica half is where this provider and Jaybird part: Jaybird reaches `isc_dpb_set_db_replica` because it maps every DPB item it knows to a connection property, while FirebirdClient's connection string is a fixed, typed set of keys with no entry for that item (and the grammar has no SQL form of `gfix -replica`), so the demote/promote round trip is out of reach and the sample only *reads* the mode — `FbDatabaseInfo.GetReplicaMode()` asks the `isc_info_replica_mode` info item and agrees with `MON$DATABASE`. The shadow's recovery verbs are on the Services side: `FbConfiguration.ActivateShadows()` is `gfix -activate`, `FbValidationFlags.KillShadows` is `gfix -kill` — named in the sample's comment because showing them needs a lost main file.
+
+Verified output:
+
+```text
+CREATE SHADOW 1 done - the engine dumped every page to the mirror
+RDB$FILES: /tmp/fbhandson/ha_cs.shd  shadow_number=1  flags=1
+after CREATE SHADOW:         main =  2564096 bytes, shadow =  2433024 bytes
+after 5000 inserts:          main =  2899968 bytes, shadow =  2818048 bytes
+DROP SHADOW 1 DELETE FILE done
+after DROP SHADOW:           main =  2899968 bytes, shadow =       -1 bytes
+RDB$FILES rows left: 0
+
+FbDatabaseInfo.GetReplicaMode(): NONE  (MON$REPLICA_MODE = 0)
+done.
+```
+
 ### Things to try
 
 - Create the shadow with `CREATE SHADOW 1 AUTO` vs `MANUAL` and read `RDB$FILE_FLAGS` again — the flag bits encode the [conditional/manual modes](#firebird-ha-building-blocks) that decide what happens when the shadow becomes unavailable.

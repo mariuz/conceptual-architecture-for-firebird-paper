@@ -262,6 +262,21 @@ after COMMIT: 1 delivery, count = 3  (correct - one delivery, count 3)
 PASS
 ```
 
+### C# sample — [`samples/csharp/Samples/Events.cs`](samples/csharp/Samples/Events.cs)
+
+The same three semantics through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Events`). It is the fourth client, after node-firebird, the Go driver and Jaybird, to run the [auxiliary-channel dance](#the-wire-the-auxiliary-connection) with no client library, and it does the client-side bookkeeping itself as they do: no baseline delivery reaches the application (zero deliveries after the rollback), the `isc_event_counts` delta is computed for you, and the one-shot interest is re-queued. The shape is idiomatic .NET. The listener is `FbRemoteEvent`, built from a connection string; `QueueEvents` registers the names, and each delivery is raised as the `RemoteEventCounts` event, `{Name, Counts}`, on the provider's event thread. The sample hands them to the main thread through a `BlockingCollection`, so each "wait briefly" checkpoint is a timed `TryTake`. On where the channel hangs, it sides with the Go driver rather than Jaybird: `FbRemoteEvent.Open()` makes an attachment *of its own*, with no `createFor(connection)` to borrow an existing one, so `MON$ATTACHMENTS` counts two remote attachments during the run (poster and listener).
+
+Verified output:
+
+```text
+listener registered for 'demo_event' (baseline consumed by FbRemoteEvent)
+after POST_EVENT + ROLLBACK: delivered count = 0  (correct - rollback swallows posts)
+3 x POST_EVENT executed, not yet committed - waiting briefly...
+before COMMIT: delivered count = 0  (correct - delivery is commit-time)
+after COMMIT: 1 delivery, count = 3  (correct - one delivery, count 3)
+PASS
+```
+
 ### Things to try
 
 - Set `EVENTS_DEMO_PAUSE_MS=5000` and, during the pause, list the demo process's sockets (`ss -tnp | grep events_demo`): two attachments, **three** TCP connections — the third is the aux channel to a non-3050 ephemeral port, the [`RemoteAuxPort` firewall pitfall](#the-wire-the-auxiliary-connection) made visible.

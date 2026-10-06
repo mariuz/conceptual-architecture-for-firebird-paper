@@ -390,6 +390,26 @@ done.
 
 The refused write is `isc_read_only_trans` (gds 335544361), the error a `READ ONLY` transaction gets, as in the Go twin. The info item and the monitoring table agree at every step.
 
+### C# sample — [`samples/csharp/Samples/Replication.cs`](samples/csharp/Samples/Replication.cs)
+
+The same state walk through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Replication`). The DDL half is plain ADO.NET, with each step an auto-commit `ExecuteNonQuery`. The replica end is covered on the read side only, and it reads more easily than in Jaybird. `FbDatabaseInfo.GetReplicaMode()` sends `fb_info_replica_mode` and decodes the reply itself, returning `NONE`, where the Java twin had to unpack the item byte, length and VAX integer by hand. The write side is where this provider stops. `FbConfiguration`, its Services class for database properties, has setters for the dialect, sweep interval, page buffers, forced writes, reserve space, access mode, shutdown and shadows, but none for replica mode. Unlike Jaybird's `FBMaintenanceManager`, it cannot be extended to add one, because the request-building hooks (`BuildSpb`, `StartTask`) are internal. So `isc_spb_prp_replica_mode`, the `gfix -replica` switch the Java and Go twins send, cannot be sent through the provider, and the read-only-replica act stays with those twins.
+
+Verified output:
+
+```text
+-- initial state (publication exists but is inactive)
+RDB$DEFAULT   ACTIVE_FLAG 0   AUTO_ENABLE 0    published: (none)
+-- after ENABLE PUBLICATION
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: (none)
+-- after INCLUDE TABLE REPL_ORDERS
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 0    published: PUBLIC.REPL_ORDERS
+-- after INCLUDE ALL (auto-enable: future tables join automatically)
+RDB$DEFAULT   ACTIVE_FLAG 1   AUTO_ENABLE 1    published: PUBLIC.REPL_ORDERS, PUBLIC.REPL_SCRATCH
+
+MON$REPLICA_MODE = 0, FbDatabaseInfo.GetReplicaMode() = NONE  (not a replica: this side publishes)
+done.
+```
+
 ### Things to try
 
 - Create a new table *after* `INCLUDE ALL` and re-read `RDB$PUBLICATION_TABLES` — `RDB$AUTO_ENABLE` means it appears without any further DDL.

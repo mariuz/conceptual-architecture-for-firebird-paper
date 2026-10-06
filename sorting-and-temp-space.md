@@ -261,6 +261,33 @@ small sort (20k rows, ~8 MB)
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Sorting.cs`](samples/csharp/Samples/Sorting.cs)
+
+The same experiment through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed wire protocol (`cd samples/csharp && dotnet run -- Sorting`). The watcher is a dedicated `Thread` with its own `FbConnection`, which means its own attachment, and every poll runs in a fresh `FbTransaction`, so it gets a new MON$ snapshot. As with Jaybird and the pure-Go driver, the managed protocol blocks only the thread waiting on its socket, so polling continues while the main thread sits in the first `Read()`, which performs the sort. Both plan forms come from the prepared `FbCommand`: `GetCommandPlan()` gives `PLAN SORT (...)` and `GetCommandExplainedPlan()` gives the tree whose Sort node carries the record and key lengths. The scratch half has the familiar privilege gap. The sample tries the server's `/proc/<pid>/fd` first (a link's `LinkTarget`, then `File.OpenHandle` + `RandomAccess.GetLength` on the unlinked file) and otherwise watches `/tmp`'s free space through `DriveInfo.AvailableFreeSpace`. The big sort's peak drop is the 73400320-byte spill plus some 5 MB of noise from other work on the shared `/tmp` during this run. The small sort stays in memory.
+
+Verified output:
+
+```text
+bulk: 200000 rows, 400-byte ASCII key -> ~82 MB of sort data
+server pid 665, database memory allocated while idle: 24776704 bytes
+
+big sort (200k rows, ~82 MB)
+  PLAN SORT ("PUBLIC"."BULK" NATURAL)
+  -> Sort (record length: 430, key length: 408)
+  top row id = 55132
+  /proc/665/fd not readable; peak drop of free space on /tmp: 78778368 bytes
+  peak database MON$MEMORY_ALLOCATED: 92545024 bytes (+67768320 over idle)
+
+small sort (20k rows, ~8 MB)
+  PLAN SORT ("PUBLIC"."BULK" NATURAL)
+  -> Sort (record length: 430, key length: 408)
+  top row id = 24890
+  /proc/665/fd not readable; peak drop of free space on /tmp: 8192 bytes
+  peak database MON$MEMORY_ALLOCATED: 44417024 bytes (+19640320 over idle)
+
+done.
+```
+
 ### Things to try
 
 - Drop the `desc` and `first 1` and fetch everything: the numbers barely move — the sort is a pipeline breaker, so the *open* pays for the whole sort whether you fetch one row or all 200,000.

@@ -258,6 +258,27 @@ after sweepDatabase():             OIT=27 OAT=29 OST=29 Next=29 (sweep interval 
 
 The record-stats trajectory is the C++ run's to the counter, and the header lines have the Python run's shape two transaction numbers earlier (auto-commit DDL used fewer transactions): the stump is transaction 26, the rollback freezes the OIT on it, and the sweep moves the OIT on to 27.
 
+### C# sample — [`samples/csharp/Samples/GcSweep.cs`](samples/csharp/Samples/GcSweep.cs)
+
+The same experiment through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- GcSweep`), on a freshly recreated database. Like Jaybird it reaches every lever, and with less ceremony, because each one is public API: the pin and the stump are `FbTransactionOptions` whose `TransactionBehavior` flags *are* the TPB items — `Concurrency | Read | Wait` for the snapshot, `Concurrency | Write | NoWait | NoAutoUndo` for the stump — so there is no isolation-level indirection to install a hand-built TPB behind; the four header counters are `FbDatabaseInfo` calls (`GetOldestTransaction`, `GetOldestActiveTransaction`, `GetOldestActiveSnapshot`, `GetNextTransaction`: the `isc_info_*` items over `op_info_database`, starting no transaction); and the sweep is `FbValidation` with `Options = FbValidationFlags.SweepDatabase`, the Services API's `gfix -sweep` run inside the server. The twelve updates are one `FbCommand` with a typed `@val` parameter re-executed under auto-commit.
+
+Verified output:
+
+```text
+pinned SNAPSHOT reads val = 0
+before updates:                    upd=9    imgc=0   purges=0   expunges=0   backreads=0
+after 12 updates (snapshot open):  upd=21   imgc=10  purges=0   expunges=0   backreads=32
+pinned SNAPSHOT still reads val = 0
+snapshot released; new reader sees val = 12
+after release + scan + 1.5s:       upd=21   imgc=10  purges=1   expunges=0   backreads=35
+after DELETE + scan + 1.5s:        upd=21   imgc=10  purges=1   expunges=1   backreads=37
+header counters before rollback:   OIT=26 OAT=27 OST=27 Next=27 (sweep interval 20000)
+after no_auto_undo rollback:       OIT=27 OAT=28 OST=28 Next=28 (sweep interval 20000)
+after FbValidation SweepDatabase:  OIT=28 OAT=30 OST=30 Next=30 (sweep interval 20000)
+```
+
+Every delta is the C++ and Java runs' — twelve updates, `imgc=10`, one purge, one expunge, back-version reads 32 → 35 → 37 — only from a lower baseline (`upd=9` rather than 47): the provider's static `FbConnection.CreateDatabase` detaches straight after creating the file, so the database-level counters, which live only as long as the database stays open in the server, start again at the sample's own attach and miss the creation-time system-table updates. The stump is transaction 27; the rollback freezes the OIT on it and the sweep moves it on to 28.
+
 ### Things to try
 
 - Set the updates loop to 100: `imgc` grows to ~98 but `max versions` stays 2 (check with `fbsvcmgr localhost:service_mgr -user SYSDBA -password masterkey action_db_stats dbname /tmp/fbhandson/gc_sweep.fdb sts_record_versions`).

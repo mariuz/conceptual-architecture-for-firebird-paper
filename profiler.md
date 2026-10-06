@@ -562,6 +562,43 @@ done.
 
 The counters match every other twin: 5001/10001 fetches through the hash join, 20,000 executions of line 8 and 20,001 for the `WHILE` on line 6. Line 8 dominates again, this time at 30 ms.
 
+### C# sample — [`samples/csharp/Samples/Profiler.cs`](samples/csharp/Samples/Profiler.cs)
+
+The same session through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Profiler`). It is the eighth driver to lose nothing to a SQL-package control surface. The profile id comes back as an `Int64` and is bound into both views as a named `@id` parameter. The procedure is a C# raw string literal. The column of the closing `"""` sets how much indentation to strip, and the relative indentation survives, so the column numbers are real, as in the Java, Pascal, Python and Go twins. As in the Java and Go twins, the autonomous-flush pitfall is *shown* rather than avoided. ADO.NET's explicit `FbTransaction` makes the setup natural: the session runs in one SNAPSHOT (`FbTransactionBehavior.Concurrency`) transaction, a count of the profile's `PLG$PROF_PSQL_STATS` rows in that same transaction after `FINISH_SESSION(TRUE)` is **0**, and after a real `Commit()` a new transaction reads full views.
+
+Verified output:
+
+```text
+profile session 1 finished and flushed
+PSQL stat rows visible inside the SNAPSHOT that ran it: 0  <- the flush committed autonomously, after the snapshot
+
+record sources of the join (PLG$PROF_RECORD_SOURCE_STATS_VIEW):
+ACCESS_PATH                                               OPENS FETCHES TOTAL_NS
+--------------------------------------------------------- ----- ------- --------
+Select Expression                                         1     2       7125500
+  -> Aggregate                                            1     2       7124300
+    -> Filter                                             1     5001    6634000
+      -> Hash Join (inner) (keys: 1, total key length: 4) 1     5001    5929900
+        -> Table "PUBLIC"."NUMS" as "A" Full Scan         1     5001    1261600
+        -> Record Buffer (record length: 25)              1     10001   2516000
+          -> Table "PUBLIC"."NUMS" as "B" Full Scan       1     5001    1094000
+
+hotspot procedure, per PSQL line (PLG$PROF_PSQL_STATS_VIEW):
+LINE_NUM COLUMN_NUM COUNTER TOTAL_NS AVG_NS
+-------- ---------- ------- -------- ------
+8        5          20000   91386600 4569
+9        5          20000   5448000  272
+10       5          20000   5115100  255
+6        3          20001   3418300  170
+3        3          1       3200     3200
+5        3          1       1200     1200
+2        3          1       200      200
+12       3          1       200      200
+done.
+```
+
+The counters are again identical to every other twin's (5001/10001 fetches, 20,000 runs of line 8, 20,001 of the `WHILE`). The times vary with the host's load; line 8 dominates as always.
+
 ### Things to try
 
 - Add an index on `nums.val`, rerun, and watch the `Hash Join` in the captured plan tree become a nested loop with an `Index Scan` — the profiler as a before/after harness for the [optimizer](query-optimizer-and-execution.md).

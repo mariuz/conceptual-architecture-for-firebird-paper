@@ -902,6 +902,45 @@ Select Expression
 
 The elided middle matches the other twins: `PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."RDB$PRIMARY3"))` with a `Unique Scan` for `id = 42`, and `PLAN SORT (JOIN ("D" NATURAL, "E" INDEX ("PUBLIC"."EMP_DEPT")))` over a `Sort (record length: 108, key length: 8)`. The record length is the Rust run's 108, not the Pascal and Python runs' 228. Jaybird's `createDatabaseIfNotExist` leaves the database default character set at `NONE`, so the two `VARCHAR(20)` columns take 20 bytes each, not UTF8's 80.
 
+### C# sample — [`samples/csharp/Samples/Plans.cs`](samples/csharp/Samples/Plans.cs)
+
+The same five experiments through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Plans`). Like Jaybird, it is a wire-protocol driver that requests the plan info items itself, so it needs no `RDB$SQL.EXPLAIN` detour. After `FbCommand.Prepare()`, `GetCommandPlan()` sends `isc_info_sql_get_plan` and `GetCommandExplainedPlan()` sends `isc_info_sql_explain_plan`, both over `op_info_sql`. ADO.NET has no notion of a plan, so these are provider extensions on `FbCommand`. Where Jaybird needs `unwrap(FirebirdPreparedStatement.class)`, here the concrete command type already carries them. Each statement is prepared in its own transaction, which is rolled back without ever executing it.
+
+Verified output (trimmed to the plan flip and the hash join):
+
+```text
+== SELECT name FROM emp WHERE dept_id = 5
+legacy:  PLAN ("PUBLIC"."EMP" NATURAL)
+detailed:
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."EMP" Full Scan
+
+-- CREATE INDEX emp_dept ON emp (dept_id) --
+
+== SELECT name FROM emp WHERE dept_id = 5
+legacy:  PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."EMP_DEPT"))
+detailed:
+Select Expression
+    -> Filter
+        -> Table "PUBLIC"."EMP" Access By ID
+            -> Bitmap
+                -> Index "PUBLIC"."EMP_DEPT" Range Scan (full match)
+...
+== SELECT COUNT(*) FROM emp a JOIN emp b ON a.salary = b.salary
+legacy:  PLAN HASH ("A" NATURAL, "B" NATURAL)
+detailed:
+Select Expression
+    -> Aggregate
+        -> Filter
+            -> Hash Join (inner) (keys: 1, total key length: 4)
+                -> Table "PUBLIC"."EMP" as "A" Full Scan
+                -> Record Buffer (record length: 25)
+                    -> Table "PUBLIC"."EMP" as "B" Full Scan
+```
+
+The elided middle has `PLAN ("PUBLIC"."EMP" INDEX ("PUBLIC"."RDB$PRIMARY1"))` with a `Unique Scan` for `id = 42`, and `PLAN SORT (JOIN ("D" NATURAL, "E" INDEX ("PUBLIC"."EMP_DEPT")))` over a `Sort (record length: 228, key length: 8)`. The 228 matches the Pascal and Python runs, not Jaybird's 108. `FbConnection.CreateDatabase` with `Charset=UTF8` also makes UTF8 the database's default character set, so each `VARCHAR(20)` takes 80 bytes.
+
 ### Things to try
 
 - Add `ROWS 10` or an `ORDER BY id` to the `dept_id = 5` query and re-prepare: watch `FirstRowsStream` appear, or the plan switch to `ORDER` (index-order walk) instead of `SORT`.

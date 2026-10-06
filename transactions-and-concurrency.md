@@ -250,6 +250,25 @@ A conflicting update failed as designed:
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Transactions.cs`](samples/csharp/Samples/Transactions.cs)
+
+The same scenario through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire-protocol implementation (`cd samples/csharp && dotnet run -- Transactions`). ADO.NET's `IsolationLevel` maps onto fixed TPBs, but the provider also takes the TPB item by item: `FbTransactionOptions.TransactionBehavior` is a `[Flags]` enum whose members *are* the `isc_tpb_*` items — `Concurrency | Write | NoWait`, `ReadCommitted | RecVersion | Write | NoWait` — so the TPB the C++ sample packs by hand becomes a flags expression and the conflict fails fast. The `FbException` keeps the status vector as a collection (`Errors`, five entries here) beside `SQLSTATE` and the first gds code in `ErrorCode`.
+
+Verified output:
+
+```text
+A (SNAPSHOT)       sees amount = 100
+B                  committed amount = 999
+A (same SNAPSHOT)  sees amount = 100   <- still the start-of-tx version
+A (READ COMMITTED) sees amount = 999   <- the committed version
+A conflicting update failed as designed:
+    deadlock
+    update conflicts with concurrent update
+    concurrent transaction number is 11
+    SQLSTATE 40001 / gds 335544336 / 5 status entries
+done.
+```
+
 ### Things to try
 
 - Change `isc_tpb_nowait` to `isc_tpb_wait` in step 3 of the C++ sample and watch the update block until `holdB` commits — then fail anyway (SNAPSHOT cannot see the new version).

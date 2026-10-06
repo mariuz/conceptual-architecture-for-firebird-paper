@@ -288,6 +288,37 @@ PooledConnection.close(): 0 attachment(s) left -- a real detach
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Pooling.cs`](samples/csharp/Samples/Pooling.cs)
+
+Both directions through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL ADO.NET provider (`cd samples/csharp && dotnet run -- Pooling`). The outbound half is the EDS experiment again. `FbTransaction.CommitRetaining()` keeps the external connection `active=1`, and only `Commit()` parks it. A block run with no `FbTransaction` parks it at once, because the provider's implicit transaction ends with a hard commit, as Jaybird's auto-commit does and not as the Go driver's `COMMIT RETAINING` does.
+
+The inbound half is where this twin differs from all the others. In ADO.NET, pooling is **on by default**: the other samples set `Pooling=false` in `FbSample` so that one `FbConnection` is one attachment. FirebirdClient implements the pool itself, inside the client process, and keys it on the connection string. `Close()` hands the attachment back instead of detaching, the next `Open()` pops it again, `MaxPoolSize` (default 100) caps the busy attachments with an `InvalidOperationException`, and `ConnectionLifetime` (0 = forever) together with a two-second cleanup timer prunes the idle ones. On return the provider rolls back any open transaction and frees prepared statements, but it runs no `ALTER SESSION RESET`. The first borrower's `USER_SESSION` variable therefore reaches the second borrower, as with Jaybird's `PooledConnection` and the Go pool. A connection string that differs in any key, even only `PacketSize`, gets a pool of its own. `FbConnection.ClearAllPools()` is the only thing that really detaches pooled connections, so the sample calls it in a `finally` before it exits. The attachment counts come from `MON$ATTACHMENTS`, filtered on the `ApplicationName` the pool's connections send as `isc_dpb_process_name`. One trap appeared while writing the sample: `rdb$set_context` inside a `SELECT` run with `ExecuteNonQuery()` never fires, because nothing fetches the row, so it has to go through `ExecuteScalar()`.
+
+Verified output:
+
+```text
+-- outbound: the server-side EDS pool --
+before:                      size=5 lifetime=30s idle=0 active=0
+inside the block:            idle=0 active=1   (3 calls, 1 outbound connection)
+after CommitRetaining():     size=5 lifetime=30s idle=0 active=1
+after Commit():              size=5 lifetime=30s idle=1 active=0
+inside (implicit tx):        idle=0 active=1
+after the implicit commit:   size=5 lifetime=30s idle=1 active=0
+after CLEAR ALL:             size=5 lifetime=30s idle=0 active=0
+
+-- inbound: FirebirdClient's own client-side pool --
+1st Open():                  CURRENT_CONNECTION = 753, sets USER_SESSION BORROWER = 'first'
+after Close():               1 attachment(s) of fbsamples-pooling-cs still open
+2nd Open():                  CURRENT_CONNECTION = 753, BORROWER = first   <- same attachment, state leaked
+after ALTER SESSION RESET:   BORROWER = <null>
+two open at once:            2 attachment(s)
+a third (MaxPoolSize=2):     InvalidOperationException: Connection pool is full.
+both closed:                 2 attachment(s) idle in the pool
+another connection string:   3 attachment(s) - a second pool
+FbConnection.ClearAllPools:  0 attachment(s) left -- real detaches
+done.
+```
+
 ### Things to try
 
 - Run `./build/pooling` twice within 30 seconds: the second run starts with `idle=1` — the pool is per **server process** and outlives your attachment. Wait past the 30-second lifetime (or run `CLEAR OLDEST`) and it starts at `idle=0` again.

@@ -520,6 +520,35 @@ typed round-trip:
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Types.cs`](samples/csharp/Samples/Types.cs)
+
+The same showcase table through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed wire protocol (`cd samples/csharp && dotnet run -- Types`). There are three faces per column. The first is the provider's own type, `GetSchemaTable()`'s `ProviderType`, an `FbDbType` whose members mirror the wire's `SQL_*` codes (`Int128`, `Dec34`, `TimeStampTZ`) while the numeric code itself stays inside the provider. The second is the Firebird type name (`GetDataTypeName`), and the third is the CLR type (`GetFieldType`). C# sits high on the ladder, though not on the BCL alone. `INT128` is a `System.Numerics.BigInteger`, exactly 2^127 − 1, and `BOOLEAN` is a `bool`. .NET has no 34-digit decimal float and no zoned timestamp, so the provider brings its own structs. `DECFLOAT(34)` arrives as an `FbDecFloat` holding `Coefficient` (a `BigInteger`) and `Exponent`, here exactly 1 × 10⁻¹, where a `double` would hold 0.10000000000000001. `TIMESTAMP WITH TIME ZONE` arrives as an `FbZonedDateTime`, a UTC `DateTime` plus the zone name (see the [temporal twin](temporal-and-time-zones.md) for the offset-zone gap). The domain violation is an `FbException` with `SQLSTATE` 23000 and gds 335544347.
+
+Verified output:
+
+```text
+domain CHECK rejected 'not-an-address':
+    SQLSTATE 23000, gds 335544347: validation error for column "PUBLIC"."SHOWCASE"."MAIL", value "not-an-address"
+
+column FbDbType (ProviderType)  GetDataTypeName           GetFieldType
+------ -----------------------  ------------------------- ------------
+FLAG   Boolean                  BOOLEAN                   System.Boolean
+BIG    Int128                   INT128                    System.Numerics.BigInteger
+MONEY  Dec34                    DECFLOAT                  FirebirdSql.Data.Types.FbDecFloat
+BORN   TimeStampTZ              TIMESTAMP WITH TIME ZONE  FirebirdSql.Data.Types.FbZonedDateTime
+MAIL   VarChar                  VARCHAR                   System.String
+
+typed round-trip:
+  FLAG  True  (Boolean)
+  BIG   170141183460469231731687303715884105727  == 2^127 - 1 ? True
+  MONEY 1E-1  (FbDecFloat: Coefficient=1, Exponent=-1)  == new FbDecFloat(1, -1) ? True
+        as double 0.1 the same value would be 0.10000000000000001
+  BORN  2026-07-21 09:00:00Z Europe/Bucharest  (FbZonedDateTime)
+  MAIL  "user@example.com"
+
+done.
+```
+
 ### Things to try
 
 - Add an `INT128` overflow: insert `1.7e38` cast to `INT128`, or `SELECT 170141183460469231731687303715884105727 + 1` — watch dialect-3 exact arithmetic refuse instead of wrapping.

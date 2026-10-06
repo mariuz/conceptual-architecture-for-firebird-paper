@@ -82,7 +82,7 @@ Both paths reach the same server; the choice is a trade-off between zero-depende
 |---|---|---|---|
 | **C / C++** | fbclient OO API / ISC API | native (is the library) | [`Interface.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/include/firebird/Interface.h) / [`ibase.h`](https://github.com/FirebirdSQL/firebird/blob/master/src/include/firebird/ibase.h); the samples here |
 | **Java** | [Jaybird](https://github.com/FirebirdSQL/jaybird) (JDBC) | **pure** (+ optional native) | Pure-Java wire protocol; the reference JDBC driver; jaybird-native adds NATIVE / EMBEDDED protocols over fbclient via JNA; used by the Java samples |
-| **.NET** | [FirebirdSql.Data.FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (ADO.NET) | **pure** | Managed provider ([NuGet](https://www.nuget.org/packages/FirebirdSql.Data.FirebirdClient)); Entity Framework support |
+| **.NET** | [FirebirdSql.Data.FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (ADO.NET) | **pure** (+ optional native) | Managed provider ([NuGet](https://www.nuget.org/packages/FirebirdSql.Data.FirebirdClient)); `ServerType=Embedded` drives fbclient through P/Invoke; Entity Framework support; used by the C# samples |
 | **Python** | [firebird-driver](https://github.com/FirebirdSQL/python3-driver) | native (OO API via ctypes) | Official; [PyPI](https://pypi.org/project/firebird-driver/); DB-API 2.0; used by the Python samples |
 | **Node.js / TS** | [node-firebird](https://github.com/hgourvest/node-firebird) | **pure** JS | Path B; used by the samples |
 | | [node-firebird-driver-native](https://github.com/asfernandes/node-firebird-drivers) | native (OO API) | TypeScript, wraps fbclient |
@@ -259,6 +259,31 @@ Verified output:
     I/O error during "open" operation for file "/nonexistent/x.fdb"; Error while trying to open file; No such file or directory [SQLState:08001, ISC error code:335544344]
     getErrorCode() 335544344  getSQLState() 08001
 one driver: its own wire protocol AND libfbclient's ISC API. done.
+```
+
+### C# sample — [`samples/csharp/Samples/ApiStyles.cs`](samples/csharp/Samples/ApiStyles.cs)
+
+The .NET twin through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the .NET row of the [driver table](#the-driver-ecosystem-by-language) (`cd samples/csharp && dotnet run -- ApiStyles`). The table lists it as pure, and its default is pure, but like Jaybird it holds both strategies in one package, and the twin goes down through its levels:
+
+- **Portable ADO.NET.** `FirebirdClientFactory.Instance` used as a plain `DbProviderFactory`/`DbConnection`/`DbCommand`, with no Firebird type in the code.
+- **The provider's own types on the same managed wire client.** `FbCommand`, a typed `FbDataReader` and `FbDatabaseInfo`, which carries the `isc_info_*` items. Underneath is an internal class per protocol version, here `Managed.Version16.GdsDatabase` at protocol 16, read by reflection.
+- **`ServerType=Embedded`.** The same ADO.NET calls reach `Native.FesDatabase`, which P/Invokes `libfbclient` through the *legacy ISC API* (`isc_attach_database`, `isc_dsql_prepare`, XSQLDA), the calls in the C++ sample's first half. The public `FirebirdSql.Data.Client.Native.IFbClient` interface lists them. As in the [architecture comparison's C# twin](samples/csharp/Samples/ArchitectureComparison.cs), the remote route has to be written `[::1]:employee`, and the credentials go to `libfbclient` as `ISC_USER`/`ISC_PASSWORD`, because the native path sends no password in the DPB.
+- **The Services API** (`FbServerProperties`), which the managed client also implements itself.
+
+In the error model, the status vector becomes one `FbException`. `Message` holds the interpreted lines, `ErrorCode` the first GDS code, `SQLSTATE` the SQL state, and `Errors` the raw entries, including argument slots, which come back with `Number` 0.
+
+Verified output:
+
+```text
+[ADO.NET DbProviderFactory] engine version = 6.0.0
+[FbCommand / FbDataReader ] engine version = 6.0.0   (VARCHAR, protocol 16, Managed.Version16.GdsDatabase)
+[ServerType=Embedded      ] engine version = 6.0.0   (Native.FesDatabase: isc_* calls via P/Invoke)
+[FbServerProperties       ] server version = LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+[error model              ] attach /nonexistent/x.fdb -> FbException
+    I/O error during "open" operation for file "/nonexistent/x.fdb"
+    Error while trying to open file
+    ErrorCode 335544344  SQLSTATE 08001  Errors[6].Number = 335544344 0 0 335544734 0 335544344
+one provider: its own wire protocol AND libfbclient's ISC API. done.
 ```
 
 ### Things to try

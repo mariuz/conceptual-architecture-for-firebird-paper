@@ -509,6 +509,38 @@ GROUP POOLS USED       ALLOCATED  WITH_OWN_EXTENTS
 
 The redirection signature and the byte-exact nested roll-up repeat on a second pure-wire client.
 
+### C# sample — [`samples/csharp/Samples/MemoryPools.cs`](samples/csharp/Samples/MemoryPools.cs)
+
+The same walk through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- MemoryPools`). Every monitor read runs in a transaction of its own, so each observation is a fresh `MON$` snapshot, and the worker's growing transaction is an explicit `FbTransaction`. The diff against Jaybird is in where the ids come from: FirebirdClient's `FbDatabaseInfo` wraps several dozen `isc_info_*` items but not `isc_info_attachment_id`, and `FbTransaction` publishes no transaction id, so the sample reads `CURRENT_CONNECTION` / `CURRENT_TRANSACTION` in SQL as the C++ sample does — no reaching past the public API. What `FbDatabaseInfo` does add is the engine's own counters, `GetCurrentMemory()` / `GetMaxMemory()` (`isc_info_current_memory` / `isc_info_max_memory` over `op_info_database`), printed beside the database pool's `MON$` row. The `SUM`s over BIGINT arrive as INT128, which the provider maps to `System.Numerics.BigInteger`.
+
+Verified output:
+
+```text
+-- per-level summary (0=db 1=att 2=tra 3=stmt 5=cmp; used > 0 with allocated = 0: parent redirection)
+GROUP POOLS USED       ALLOCATED  WITH_OWN_EXTENTS
+0     1     21197984   24580096   1
+1     4     272000     0          0
+2     1     99936      0          0
+3     1     20976      0          0
+5     1     34848      65536      1
+
+-- worker's pool chain (attachment 4, transaction 8; before the update)
+  database pool:           used=21281760   allocated=24776704
+  (FbDatabaseInfo: current memory 21167072, max 22457024)
+  worker attachment pool:  used=71792      allocated=0
+  worker transaction pool: used=13616      allocated=0
+
+-- after an uncommitted 3000-row UPDATE in that transaction
+  worker attachment pool:  used=79072      allocated=0
+  worker transaction pool: used=20896      allocated=0
+
+-- after rollback (transaction pool destroyed with its undo log)
+  worker attachment pool:  used=58176      allocated=0
+  attachment used fell by 20896; the dead transaction pool held 20896
+```
+
+The redirection signature, the single 65 536-byte `cmp_statement` extent and the byte-exact nested roll-up repeat on a third pure-wire client.
+
 ### Things to try
 
 - Prepare (without executing) twenty distinct statements on one connection and re-run the group summary: group 5 (`cmp_statement`) pools multiply, and each that grows past ~48 KB maps its own 64 KB extent — `PARENT_REDIRECT_THRESHOLD` found empirically.

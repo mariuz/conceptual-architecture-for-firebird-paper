@@ -1020,6 +1020,39 @@ attach refused : Incompatible wire encryption levels requested on client and ser
 detached. bye
 ```
 
+### C# sample — [`samples/csharp/Samples/Protocol.cs`](samples/csharp/Samples/Protocol.cs)
+
+The same negotiated-session report through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL ADO.NET provider (`cd samples/csharp && dotnet run -- Protocol`). On the [driver-strategy](client-apis-and-drivers.md#two-ways-to-build-a-driver) axis its default `ServerType` stands with firebirdsql and pure Jaybird. Everything in this document is C# code there: `op_connect`, `op_cond_accept`, Srp256/Srp/Legacy_Auth, `op_crypt` and zlib compression. The engine records the oldest session of all the wire twins, **`P16`** with **`Arc4`**. Version 10.3.4's newest protocol class is `Version16`, and `Arc4` is the only cipher it implements, so it cannot follow Jaybird to `ChaCha` or `libfbclient`/firebirdsql to `ChaCha64`. `MON$CLIENT_VERSION` holds just the provider's assembly version, `10.3.4.0`. Connection-string keys steer the handshake. `Compression=true` adds zlib on top of the cipher, and the engine records `MON$WIRE_COMPRESSED = True`. `WireCrypt=Required` gives the same session as the default, and `WireCrypt=Disabled` is refused because the server requires encryption. Unlike Jaybird's `authPlugins` and the Go driver's cipher choice, the provider has no key for choosing the auth plugin or the cipher. The client side of the session is available through `FbDatabaseInfo`: `GetServerVersion()` (the first `isc_info_firebird_version` line only), `GetProtocolVersion()` and `GetWireCrypt()`.
+
+Verified output (the compressed and `Required` sessions trimmed):
+
+```text
+== defaults: WireCrypt=Enabled, the provider's preferences ==
+attached to localhost:employee  (WireCrypt=Enabled, Compression=False)
+engine version : 6.0.0
+protocol       : TCPv4
+wire crypt     : Arc4
+authenticated  : SYSDBA
+MON$ATTACHMENTS, as the server recorded the handshake:
+   auth method    : Srp256
+   wire protocol  : P16
+   wire crypt     : Arc4
+   compressed     : False
+   client version : 10.3.4.0
+the client side (FbDatabaseInfo):
+   server version : LI-T6.0.0.2182 Firebird 6.0 3e1aacb
+   -> protocol 16, wire crypt Arc4
+
+== Compression=true: zlib on top of the cipher ==
+...
+   compressed     : True
+...
+== WireCrypt=Disabled: the client refuses to encrypt ==
+attach refused : Incompatible wire encryption levels requested on client and server [SQLSTATE 28000, gds 335545064]
+
+detached. bye
+```
+
 ### Things to try
 
 - In `srp-handshake.js`, offer only `Srp` instead of `Srp256,Srp` in `CNCT_plugin_list` — the server accepts and the proof drops to SHA-1: the downgrade the in-tree README [warns about](#what-srp256-improves), performed by hand.

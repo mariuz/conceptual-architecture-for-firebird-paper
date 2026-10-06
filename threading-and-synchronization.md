@@ -435,6 +435,22 @@ after they detach:        16 threads (pooled, not destroyed)
   18   1  Garbage Collector  <internal>
 ```
 
+### C# sample — [`samples/csharp/Samples/Threading.cs`](samples/csharp/Samples/Threading.cs)
+
+The same census through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed wire protocol (`cd samples/csharp && dotnet run -- Threading`). The twelve workers are `Task`s started `LongRunning`, which gives each one a dedicated thread, and each opens its own `FbConnection`. A `CountdownEvent`, the Java twin's `CountDownLatch`, takes the "during" census once all twelve have attached and queried, and a `ManualResetEventSlim` keeps them attached until it has. The .NET rule is the ADO.NET one: an `FbConnection` is **not** thread-safe, so one connection per thread is the design, by documentation rather than by a lock (Jaybird) or the compiler (Rust). The cheap way to get one per thread is ADO.NET's connection pool, which is on by default; the sample keeps it off (`Pooling=false`), so every `Open()` is a real attachment and every `Dispose()` a detach. `MON$REMOTE_PROCESS` shows the opposite default to Jaybird's. **FirebirdClient always sends `isc_dpb_process_name`** (by default the entry assembly's path, e.g. `.../bin/Debug/net8.0/fbsamples.dll`, plus the pid), and the builder's `ApplicationName` replaces the name, which is how the sample's row names itself.
+
+Verified output (a cooler pool this time: 9 threads idle, the twelve attachments added 7):
+
+```text
+engine process: pid 665, 9 threads (1 attachment open)
+with 12 extra attachments: 16 threads | 13 user attachments, 1 distinct server pid
+after they detach:        17 threads (pooled, not destroyed)
+  ID SYS  USER               REMOTE_PROCESS
+   7   0  SYSDBA             FbSamples.Threading
+   8   1  Cache Writer       <internal>
+   9   1  Garbage Collector  <internal>
+```
+
 ### Things to try
 
 - Raise the worker count above the pool size (e.g. 40) and watch the thread count climb by exactly the shortfall.

@@ -565,6 +565,38 @@ blr_message 0, 4 fields: blr_short(scale 0) blr_short(scale 0) blr_text2(cs 0, l
 blr_end, blr_eoc
 ```
 
+### C# sample — [`samples/csharp/Samples/Blr.cs`](samples/csharp/Samples/Blr.cs)
+
+The same read through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL ADO.NET provider, on its managed wire implementation (`cd samples/csharp && dotnet run -- Blr`). `FbDataReader.GetValue()` returns the sub_type 2 blob as a `byte[]`, so the stored-BLR dumps are byte-for-byte those of the other twins. The opcode values are copied from `blr.h`, since the provider keeps its own `blr_*` constants internal. The third part also shows the other direction. Like Jaybird and the Go driver, the managed client has no `libfbclient` to describe rows, so it *writes* message BLR: for the input parameters on every `op_execute`, and also for the output row on `op_execute2`/`op_fetch`. The provider has no public API for it, as Jaybird has with `DefaultBlrCalculator`. The sample therefore uses reflection to reach the prepared statement's descriptors (`FbCommand._statement` → `Parameters`/`Fields` → `Descriptor.ToBlr()`), which works only against these 10.3.4 internals and is done only to show the bytes. The result is the same value + `blr_short` null-indicator pairing as Jaybird's. The difference is that the provider writes the charset-less `blr_text`, as firebirdsql does, where Jaybird writes `blr_text2`.
+
+Verified output (trimmed; the computed-column part is identical to the Java twin's):
+
+```text
+== procedure GET_EMP_PROJ - RDB$PROCEDURES.RDB$PROCEDURE_BLR
+05 02 04 00 02 00 07 00 07 00 04 01 03 00 0f 00
+00 05 00 07 00 07 00 0c 00 02 03 00 00 0f 00 00
+... (155 bytes total)
+blr_version5, blr_begin
+blr_message 0, 2 fields: blr_short(scale 0) blr_short(scale 0)
+blr_message 1, 3 fields: blr_text2(cs 0, len 5) blr_short(scale 0) blr_short(scale 0)
+... 132 more bytes - see isql SET BLOB ALL for the full dump
+
+== BLR FirebirdClient writes for the parameters (op_execute) of
+   select proj_id from employee_project where emp_no = @emp and proj_id = @proj
+05 02 04 00 04 00 07 00 07 00 0e 05 00 07 00 ff
+4c (17 bytes total)
+blr_version5, blr_begin
+blr_message 0, 4 fields: blr_short(scale 0) blr_short(scale 0) blr_text(len 5) blr_short(scale 0)
+blr_end, blr_eoc
+
+== BLR FirebirdClient writes for the output row (op_fetch) of
+   select proj_id from employee_project where emp_no = @emp and proj_id = @proj
+05 02 04 00 02 00 0e 05 00 07 00 ff 4c (13 bytes total)
+blr_version5, blr_begin
+blr_message 0, 2 fields: blr_text(len 5) blr_short(scale 0)
+blr_end, blr_eoc
+```
+
 ### Things to try
 
 - Point the sample at your own scratch database, create `CREATE TABLE t (a INT, b COMPUTED BY (a * 2 + 1))`, and decode the arithmetic: you will meet `blr_multiply`/`blr_add` (prefix, two operands each) and a `blr_literal blr_long`.

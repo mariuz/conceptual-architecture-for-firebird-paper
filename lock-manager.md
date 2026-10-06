@@ -519,6 +519,26 @@ the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the s
 
 This is the bare reservation-path dialect (`isc_lock_conflict` / `isc_lock_timeout`), the same one the libfbclient twins see. The 0.104 s NO WAIT is the JVM loading Jaybird's error-handling classes on the first failure. A second run measured 0.021 s, and the engine's refusal itself is immediate.
 
+### C# sample — [`samples/csharp/Samples/LockManager.cs`](samples/csharp/Samples/LockManager.cs)
+
+The same three probes and the same deadlock through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- LockManager`). Like Jaybird it is a pure-wire driver that *can* express the reservation, but it needs neither SQL nor a byte-level TPB builder: `FbTransactionOptions` is the TPB as typed properties. `LockTables = { ["T1"] = LockWrite | Protected }` encodes `isc_tpb_lock_write "T1"` + `isc_tpb_protected`, `TransactionBehavior` carries `NoWait` or `Wait`, and `WaitTimeout = TimeSpan.FromSeconds(3)` becomes `isc_tpb_lock_timeout` — the bare-item-then-valued-item mistake Jaybird's first draft made cannot be written here. Holder and probes use the same options object, so each probe is a `BeginTransaction` that either returns (granted) or throws `FbException`, with the gds code in `ErrorCode`. The deadlock act crosses two SNAPSHOT WAIT updates, one from a `Task`.
+
+Verified output:
+
+```text
+holder: t1 reserved FOR PROTECTED WRITE (LCK_relation at LCK_EX)
+NO WAIT:         failed after 0.001 s: lock conflict on no wait transaction (gds 335544345)
+LOCK TIMEOUT 3:  failed after 3.001 s: lock time-out on wait transaction (gds 335544510)
+holder: committed (2 s later) -> lock released
+WAIT:            granted after 2.008 s
+building deadlock: A updates row 1, B updates row 2, then cross...
+deadlock: A failed after 10.5 s: deadlock
+deadlock: B's update proceeded after 10.5 s (A was the victim)
+the wait is DeadlockTimeout (10 s default): the cycle sat undetected until the scan.
+```
+
+The bare reservation-path dialect once more. The deadlock landed at 10.5 s in this run where the other twins measured 10.0 s; the order of magnitude is still the scan interval, not the 0.3 s it took to close the cycle, and like the Python twin's stretched timeout it shows that a waiter's clock is only checked when its thread wakes.
+
 ### Things to try
 
 - While the C++ holder has `t1` reserved, run `fb_lock_print -d /tmp/fbhandson/lock_manager.fdb -o -r` *(or `-f` on the `fb_lock_*` file)*: the reservation appears as an `LCK_relation`-series request at state 6 (EX), and the LOCK TIMEOUT probe shows up as `Pending` for exactly three seconds.

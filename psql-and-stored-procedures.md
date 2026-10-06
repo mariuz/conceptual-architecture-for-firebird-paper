@@ -639,6 +639,34 @@ done.
 
 The four codes are the ones the Go twin decoded from the same wire: `isc_except`, two `isc_random` carriers, and `isc_stack_trace`.
 
+### C# sample — [`samples/csharp/Samples/Psql.cs`](samples/csharp/Samples/Psql.cs)
+
+The same four module types through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Psql`). ADO.NET has a call verb of its own: `CommandType.StoredProcedure`, with the bare procedure name as `CommandText`. The instructive diff from Jaybird is who decides which side of the divide a call lands on. Jaybird reads `RDB$PROCEDURE_TYPE` from the catalog. FirebirdClient takes the decision from the *method* called. `ExecuteNonQuery` builds `EXECUTE PROCEDURE hire ...` and fills the `ParameterDirection.Output` parameter from the single output message. `ExecuteReader` builds `SELECT * FROM raises(...)` and opens a cursor. The divide is therefore the caller's to respect, and the sample shows what happens when it is not: calling the selectable `raises` through `ExecuteNonQuery` runs it as `EXECUTE PROCEDURE`, which returns only the values at the first `SUSPEND`.
+
+Verified output:
+
+```text
+ExecuteNonQuery hire('Ada', 5000)          -> NEW_ID = 1
+ExecuteNonQuery hire('Grace', 6000)        -> NEW_ID = 2
+audit_log rows (trigger emp_bi):              2
+
+ExecuteReader raises(10):
+ID NAME  NEW_SALARY
+-- ----- ----------
+1  Ada   5500.00  (Decimal)
+2  Grace 6600.00  (Decimal)
+ExecuteNonQuery raises(10)                 -> ID = 1, NAME = Ada, NEW_SALARY = 5500   (first SUSPEND only)
+
+ExecuteNonQuery hire('Poorpay', 500) ->
+"PUBLIC"."LOW_SALARY"
+salary below minimum
+At procedure "PUBLIC"."HIRE" line: 4, col: 29
+(SQLSTATE HY000, gds [335544517, 1, 335544382, 335544842])
+done.
+```
+
+Two details differ from the other twins. The provider's message drops the `exception 1` line, but the number is still there: the `Errors` collection keeps the vector's `isc_arg_number` argument as an entry with `Number = 1`, between `isc_except` and the `isc_random` / `isc_stack_trace` carriers. And the output parameter's `NUMERIC(10,2)` came back as `5500`, a `decimal` without the scale-2 trailing zeros that the cursor's `5500.00` keeps. The value is equal, but the representation is not.
+
 ### Things to try
 
 - Add a nested call (`hire` invoked from an `EXECUTE BLOCK`, or from a second procedure) and watch the stack trace grow to multiple `At procedure ... At block` lines — the `dbginfo` machinery described in the [BLR document](blr-intermediate-language.md#both-directions-of-translation).

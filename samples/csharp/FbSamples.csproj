@@ -1,0 +1,31 @@
+<!--
+  C# twins of the per-document hands-on samples (see ../README.md).
+
+  One console project; every companion document is one class under
+  Samples/ with a static Run(string[] args), picked by name on the
+  command line (see Program.cs and ../README.md for the run command).
+
+  FirebirdSql.Data.FirebirdClient is the FirebirdSQL project's ADO.NET
+  provider.  Its default ServerType=Default is a managed (pure C#)
+  implementation of the wire protocol; ServerType=Embedded loads
+  libfbclient / the engine in-process like the C++ samples.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>FbSamples</RootNamespace>
+    <AssemblyName>fbsamples</AssemblyName>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FirebirdSql.Data.FirebirdClient" Version="10.3.4" />
+  </ItemGroup>
+
+</Project>

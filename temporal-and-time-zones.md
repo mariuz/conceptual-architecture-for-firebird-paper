@@ -330,6 +330,32 @@ session zone: America/Sao_Paulo  CURRENT_TIMESTAMP: 2026-10-05 19:10:15.9210 Ame
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Temporal.cs`](samples/csharp/Samples/Temporal.cs)
+
+The same four steps through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed wire protocol (`cd samples/csharp && dotnet run -- Temporal`). The provider decodes the wire struct itself and keeps it out of reach. A fetch yields an `FbZonedDateTime`, which holds a UTC `DateTime` (`Kind=Utc`) plus the zone *name*, resolved from the id through the provider's compiled-in copy of Firebird's zone table. So the region survives, which `OffsetDateTime` does not in Jaybird's default face. The `days`/`time` numbers are therefore recomputed from that `DateTime`, and the id is looked up in the server's own `RDB$TIME_ZONES`; they reproduce the C++ numbers. The instructive difference is the **offset literal**. The provider's table knows only the named regions, so a value whose zone id is offset-encoded (1439 + minutes = 1139 for `-05:00`) fails the fetch with `ArgumentException: Unknown time zone ID.` The failure happens in the middle of decoding a row, which leaves the attachment's wire stream out of step: in a probe, the next query on the same attachment failed with an `IndexOutOfRangeException` and the one after it with `invalid transaction handle`. The sample therefore reads that column on a separate, throw-away attachment and falls back to a `VARCHAR` cast. `SET BIND OF TIME ZONE TO EXTENDED` adds the offset to named-zone values (`FbZonedDateTime.Offset`) but does not cure the offset case. Session zone: the provider sends **no `isc_dpb_session_time_zone`** and has no connection-string key for it, so the session starts in the server's zone, the opposite of Jaybird's JVM-zone default. Running with `TZ=Australia/Sydney` changes the .NET zone but leaves the session in `Europe/Bucharest`.
+
+Verified output (this machine's .NET and server OS zones are both `Europe/Bucharest`):
+
+```text
+named-zone literal:
+  as fetched  : FbZonedDateTime DateTime=2026-07-18 16:00:00 (Kind=Utc) TimeZone=America/New_York
+  as ISC      : UTC days=61239 time=576000000  zone id=65361  (recomputed; id from RDB$TIME_ZONES)
+  wall clock  : 2026-07-18 12:00:00 America/New_York  (via .NET's tz database)
+offset literal:
+  as fetched  : ArgumentException: Unknown time zone ID.
+  as VARCHAR  : 2026-07-18 12:00:00.0000 -05:00  (offset id = 1439 + -300 = 1139)
+
+NY 12:00 in UTC, winter: 2026-01-18 17:00:00 Etc/UTC
+NY 12:00 in UTC, summer: 2026-07-18 16:00:00 Etc/UTC
+10:00 -02:00 = 09:00 -03:00 ? EQUAL
+
+client (.NET) zone: Europe/Bucharest
+session zone: Europe/Bucharest   CURRENT_TIMESTAMP: 2026-10-06 02:56:21.1450 Europe/Bucharest   <- provider default (server's zone)
+session zone: Asia/Tokyo         CURRENT_TIMESTAMP: 2026-10-06 08:56:21.1520 Asia/Tokyo   <- SET TIME ZONE
+
+done.
+```
+
 ### Things to try
 
 - Change the C++ named-zone literal to `2026-11-01 01:30:00 America/New_York` — the doubled DST-overlap hour — and check which of the two possible UTC instants the wire struct holds (the docs promise the *first*, pre-transition occurrence).

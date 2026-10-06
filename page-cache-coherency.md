@@ -243,6 +243,28 @@ same workload - the private caches paid for coherency in disk I/O.
 
 The same roughly 20-fold jump in physical reads (31–83 against ~1 030) appears whenever a twin can reach phase 2, and no update is lost in either topology. Here one program reached both topologies by changing the URL.
 
+### C# sample — [`samples/csharp/Samples/PageCache.cs`](samples/csharp/Samples/PageCache.cs)
+
+Both phases through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider (`cd samples/csharp && dotnet run -- PageCache`). Like Jaybird, it puts both driver families in one package. Where Jaybird switches with the URL prefix, FirebirdClient switches with a connection-string key. Phase 1 runs on the default `ServerType=Default`, the provider's managed C# wire protocol, with no native code in the process. Phase 2 sets `ServerType=Embedded` and `ClientLibrary=/opt/firebird/lib/libfbclient.so`, gives a local path with no `DataSource`, and P/Invokes libfbclient, and with it a whole engine, into the child. The children are this same program relaunched with a role argument through `ProcessStartInfo` (`Environment.ProcessPath`, plus the entry assembly when the host is `dotnet`). Phase 2's `ProcessStartInfo.Environment["FIREBIRD"]` points the in-process engine at a SuperClassic sandbox (`/tmp/fbhandson/fbemb_cs`, built with `File.CreateSymbolicLink`). One provider wart surfaced on the way: `FbConnection.DropDatabase` on a database that does not exist throws a `NullReferenceException` from the managed layer's detach path, not an `FbException`, so the sample relies on `CreateDatabase(overwrite: true)` instead.
+
+Verified output:
+
+```text
+phase 1: two client processes, ONE SuperServer shared cache
+  worker pid 86309  row 1: 300 commits | page fetches=5575   reads=7    writes=841
+  worker pid 86310  row 2: 300 commits | page fetches=15355  reads=103  writes=840
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+phase 2: two EMBEDDED engine processes, PRIVATE page caches
+  worker pid 86463  row 2: 300 commits | page fetches=16607  reads=1033 writes=906
+  worker pid 86462  row 1: 300 commits | page fetches=16465  reads=1028 writes=904
+  final: id=1 v=300 (expected 300)
+  final: id=2 v=300 (expected 300)
+same workload - the private caches paid for coherency in disk I/O.
+```
+
+The shared cache's reads split unevenly (7 against 103) because whichever worker attaches first pays for the startup metadata. Their total, about 110, is again an order of magnitude below the ~2 060 the two private caches paid, and no update is lost in either topology. A second run gave 21 / 89 and 1 033 / 1 028.
+
 ### Things to try
 
 - Give the two rows their own pages (`create table t (id int primary key, v int, pad char(4000))` forces ~one row per 8K page) and rerun: phase 2's `reads` collapse — no shared page, no ping-pong, the protocol goes quiet.

@@ -406,6 +406,44 @@ West   300.0  1
 
 The explained plan has the same five `Window Partition` nodes over one `Table "PUBLIC"."SALES" Full Scan`, but its sort keys are 24, 24, 12 and 28 bytes. That is because Jaybird's `createDatabaseIfNotExist` creates the database with default character set NONE, so `REGION` takes one byte per character. The other results match the earlier twins: East `1`, `100.00,150.00,200.00`, `40.82`, West `3`, `250.00,300.00,400.00`, `62.36`, and row 2's neighbour average is `125.00`.
 
+### C# sample — [`samples/csharp/Samples/Windows.cs`](samples/csharp/Samples/Windows.cs)
+
+The same six-row table and four query groups through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL ADO.NET provider, on its managed wire implementation (`cd samples/csharp && dotnet run -- Windows`). The rows go in through `FbBatchCommand`, which is Firebird 4's batch interface on the wire (one prepared `INSERT`, six parameter sets, one round trip, a per-row result that `EnsureSuccess()` checks). Like Jaybird, the provider has a plan API: `FbCommand.GetCommandPlan()` returns the legacy plan and `GetCommandExplainedPlan()` the structured one, with no `RDB$SQL.EXPLAIN`. Every `NUMERIC` arrives as an exact `System.Decimal`, the INT128-wide running `SUM` included, so it needs no `CAST`. Unlike `BigDecimal`, though, the value comes back normalised: `100.00` prints as `100`, so the declared scale is lost on display, though not in value. Only `LISTAGG`, which builds its string inside the engine, keeps the `.00`. Its sort keys are 56, 56, 12 and 60 bytes, the same as the Free Pascal and Python runs, because `FbSample` attaches with a UTF8 client charset.
+
+Verified output (trimmed):
+
+```text
+batch: 6 rows in one FbBatchCommand, all succeeded = True
+
+== window functions ==
+REGION AMOUNT RN OVERALL_RANK RUNNING_TOTAL PREV_AMOUNT
+------ ------ -- ------------ ------------- -----------
+East   100    1  6            100           <null>
+East   200    3  4            300           100
+East   150    2  5            450           200
+West   300    2  2            300           <null>
+West   250    1  3            550           300
+West   400    3  1            950           250
+
+plan:PLAN SORT (SORT (SORT (SORT ("PUBLIC"."SALES" NATURAL))))
+
+explained plan:Select Expression
+    -> Window
+        -> Window Partition
+            -> Record Buffer (record length: 325)
+                -> Sort (record length: 338, key length: 56)
+...
+running_total arrives as System.Decimal
+
+== aggregates: FILTER / LISTAGG / STDDEV_POP ==
+REGION N BIG_SALES AMOUNTS              STDDEV
+------ - --------- -------------------- ------
+East   3 1         100.00,150.00,200.00 40.82
+West   3 3         250.00,300.00,400.00 62.36
+```
+
+The median is `150` / `300` with `RANK(175)` `3` / `1`, and the `EXCLUDE CURRENT ROW` neighbour average for row 2 is `125`, as in the other twins.
+
 ### Things to try
 
 - Change the FB6 exclusion to `EXCLUDE TIES` or `EXCLUDE GROUP` after adding a duplicate amount — the frame drops peers instead of the current row.

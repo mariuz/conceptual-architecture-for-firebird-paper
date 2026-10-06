@@ -394,6 +394,44 @@ Dynamic SQL Error; SQL error code = -206; Column unknown; "FRST_NAME"; At line 1
 
 The `WHERE ORDER BY 1` case (omitted above) reports `Token unknown - line 3, column 7; ORDER` with the same four codes as `SELEC`.
 
+### C# sample — [`samples/csharp/Samples/ParserErrors.cs`](samples/csharp/Samples/ParserErrors.cs)
+
+The same six statements through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its default managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- ParserErrors`). `FbCommand.Prepare()` is a genuine prepare-only step, and `ExecuteReader(CommandBehavior.SchemaOnly)` turns the prepare response's *output* descriptors into a schema table without executing anything (verified separately: a `SchemaOnly` read of `NEXT VALUE FOR` leaves the sequence untouched) — so `EMP_NO` comes back as `SmallInt size=2`, the C++ run's 2-byte `SQL_SHORT`. What the provider keeps internal is the *input* side: there is no public statement type and no descriptor for the `?` (the sample can only add an untyped slot for it), so here it sits with the Go twin, short of Jaybird's `ParameterMetaData`. The error channel goes the other way and is the most literal of all the twins: `FbException.Errors` is the status vector item by item — gds codes *and* the `isc_arg_number` arguments as bare numbers (string arguments arrive as `0`, and the provider appends a final entry carrying the formatted text) — so the sample tells `isc_dsql_token_unk_err` from `isc_dsql_field_err` and reads the token's line and column as integers, where fbintf could only find them pre-formatted in the message. `ErrorCode` is the outer `isc_dsql_error` (`335544569`, as in fb-cpp, not Jaybird's most-specific code), and `SQLSTATE` is `42000` for both kinds.
+
+Verified output (excerpt):
+
+```text
+---- SELECT first_name FROM employee WHERE emp_no = ?
+  parsed OK: bound slots=1, output columns=1
+    column 0: FIRST_NAME VarChar size=15
+---- SELECT FIRST 1 emp_no FROM employee
+  parsed OK: bound slots=0, output columns=1
+    column 0: EMP_NO SmallInt size=2
+---- SELECT first FROM (SELECT 1 AS first FROM rdb$database)
+  parsed OK: bound slots=0, output columns=1
+    column 0: FIRST Integer size=4
+---- SELEC 1 FROM rdb$database
+  prepare failed (syntax; SQLSTATE 42000, gds 335544569):
+Dynamic SQL Error
+SQL error code = -104
+Token unknown - line 1, column 1
+SELEC
+  Errors[].Number: 335544569 335544436 -104 335544634 1 1 335544382 0 335544569
+  position from the vector: line 1, column 1
+---- SELECT frst_name
+FROM employee
+  prepare failed (semantic; SQLSTATE 42000, gds 335544569):
+Dynamic SQL Error
+SQL error code = -206
+Column unknown
+"FRST_NAME"
+At line 1, column 8
+  Errors[].Number: 335544569 335544436 -206 335544578 335544382 0 336397208 1 8 335544569
+  position from the vector: line 1, column 8
+```
+
+The `WHERE ORDER BY 1` case (omitted above) reports `Token unknown - line 3, column 7 / ORDER`, and the vector yields `line 3, column 7`.
+
 ### Things to try
 
 - Feed the C++ sample a statement using a *reserved* word as an identifier (`SELECT order FROM rdb$database`) and compare with the non-reserved `FIRST` case; the token lists at the top of [`parse.y`](https://github.com/FirebirdSQL/firebird/blob/master/src/dsql/parse.y) explain the difference.

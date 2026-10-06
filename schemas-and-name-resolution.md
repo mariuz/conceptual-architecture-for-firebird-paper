@@ -723,6 +723,41 @@ JDBC DatabaseMetaData (Jaybird JCA/JDBC driver 6.0.6):
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Schemas.cs`](samples/csharp/Samples/Schemas.cs)
+
+The same five demonstrations through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed wire protocol (`cd samples/csharp && dotnet run -- Schemas`). Every statement runs without an explicit transaction, so each `SET SEARCH_PATH` and each probe auto-commits on its own and the path still carries over, which is the attachment-state point once more. The plan surface matches Jaybird's: the statement is prepared, never executed, and `FbCommand.GetCommandPlan()` gives the legacy one-liner while `GetCommandExplainedPlan()` gives the tree. The sixth step asks **ADO.NET's own metadata layer**, `DbConnection.GetSchema("Tables")`, and finds the same gap as JDBC's. FirebirdClient 10 predates Firebird 6 schemas, so the `TABLE_SCHEMA` column exists but is `NULL`, and the two same-named tables come back as two indistinguishable `CUSTOMERS` rows. Tools built on `GetSchema` need a schema-aware release before they can tell `PUBLIC.CUSTOMERS` from `APP.CUSTOMERS`.
+
+Verified output:
+
+```text
+schemas in RDB$SCHEMAS      : APP  PUBLIC  SYSTEM
+default search path         : "PUBLIC", "SYSTEM"
+
+SELECT ORIGIN FROM CUSTOMERS, as the path changes:
+  path PUBLIC,SYSTEM        -> from PUBLIC
+  path APP,PUBLIC           -> from APP
+
+SET SEARCH_PATH TO APP      -> "APP", "SYSTEM"   (SYSTEM auto-appended)
+
+procedure created with path APP,PUBLIC (lands in APP, binds APP.CUSTOMERS)
+  after SET SEARCH_PATH TO PUBLIC:
+    direct SELECT ... FROM CUSTOMERS -> from PUBLIC
+    SELECT SRC FROM APP.WHICH_ONE    -> from APP   <- unmoved
+    RDB$DEPENDENCIES records         -> APP.CUSTOMERS
+
+plan for unqualified SELECT : PLAN ("PUBLIC"."CUSTOMERS" NATURAL)
+explained plan              : Select Expression
+                                  -> Aggregate
+                                      -> Table "PUBLIC"."CUSTOMERS" Full Scan
+
+ADO.NET GetSchema("Tables") (FirebirdClient 10.3.4.0):
+  columns: TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, ...
+  -> TABLE_SCHEMA=<null> TABLE_NAME=CUSTOMERS
+  -> TABLE_SCHEMA=<null> TABLE_NAME=CUSTOMERS
+
+done.
+```
+
 ### Things to try
 
 - Add the [shadowing experiment](#shadowing-and-the-hazard-search-paths-always-carry): `CREATE TABLE PUBLIC."RDB$DATABASE" (X INT)` and watch an unqualified `SELECT ... FROM RDB$DATABASE` on a fresh connection find yours; then `SET SEARCH_PATH TO SYSTEM, PUBLIC` to defuse it.

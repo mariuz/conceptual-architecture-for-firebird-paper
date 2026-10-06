@@ -669,6 +669,55 @@ done.
 
 Same `Natural` = 60 and 68 fetches as every twin. Two records are worth reading closely. First, the `ATTACH_DATABASE` event has no second line naming the remote process, because Jaybird sends no `isc_dpb_process_name` unless asked (see the [threading twin](threading-and-synchronization.md)). Second, the stream shows Jaybird's two transactions: a driver-internal `READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY` one (`TRA_8`, rolled back at detach) and the JDBC auto-commit transaction for the marker. JDBC's default `TRANSACTION_READ_COMMITTED` asks for `rec_version`, and the trace reports `READ_CONSISTENCY`, the server's `ReadConsistency = 1` overriding it, exactly as in the Go run.
 
+### C# sample — [`samples/csharp/Samples/Trace.cs`](samples/csharp/Samples/Trace.cs)
+
+The full two-service session through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider) (`FirebirdSql.Data.FirebirdClient`), the FirebirdSQL project's ADO.NET provider, on its default managed wire protocol (`cd samples/csharp && dotnet run -- Trace`). The trace family is a class, `FirebirdSql.Data.Services.FbTrace`, and two things set it apart from the other twins. First, the **configuration is typed**. The sample builds an `FbDatabaseTraceConfiguration` whose `Events` is a `[Flags]` enum (`Connections | Transactions | StatementFinish | PrintPlan | PrintPerf`), and the provider renders the `isc_spb_trc_cfg` text itself. That text spells out every switch, `false` ones included, and the sample prints it. Second, `Start(name)` is **synchronous**: it sends `isc_action_svc_trace_start` and then drains the stream on the calling thread, raising `ServiceOutput` once per line, until the session ends. So service A runs on a thread of the sample's own, and `Stop(id)` / `List()` on fresh `FbTrace` objects play service B. The drain asks for `isc_info_svc_line`, one line per round trip, the C++ loop rather than Jaybird's `isc_info_svc_to_eof`. The "Trace session ID 1 started" line therefore arrives 31 ms after the start, before any traced work, and the sample takes the id straight from the stream (with `List()` as the fallback). The stop sits in a `finally`, and a last `List()` confirms that no session of this name is left on the server.
+
+Verified output (trimmed; the configuration listing is cut and the client-process line, which carries the full path of `fbsamples.dll`, is shortened):
+
+```text
+[main ] the provider's isc_spb_trc_cfg text:
+[main ]   database = "/tmp/fbhandson/trace_cs.fdb"{
+[main ]   enabled = true
+[main ]   log_connections = true
+[main ]   connection_id = 0
+[main ]   log_transactions = true
+[main ]   log_statement_prepare = false
+...
+[main ]   }
+[main ] +0 ms FbTrace.Start("hands-on-cs") running on its own thread
+[trace] ---- output arrives at +31 ms ----
+[trace] Trace session ID 1 started
+[main ] +32 ms session id from the stream: 1
+[worker] +178 ms marker query says: 60
+[trace] ---- output arrives at +281 ms ----
+[trace] 2026-10-06T02:57:41.6120 (665:0x7399c8fd7dc0) ATTACH_DATABASE
+[trace] 	/tmp/fbhandson/trace_cs.fdb (ATT_7, SYSDBA:NONE, UTF8, TCPv4:127.0.0.1/38668)
+[trace] 	.../csharp/bin/Debug/net8.0/fbsamples.dll:89219
+...
+[trace] 		(TRA_6, READ_COMMITTED | REC_VERSION | WAIT | READ_ONLY)
+...
+[trace] 		(TRA_7, READ_COMMITTED | READ_CONSISTENCY | NOWAIT | READ_WRITE)
+[trace] Statement 294:
+[trace] -------------------------------------------------------------------------------
+[trace] SELECT COUNT(*) FROM RDB$RELATIONS /* traced! */
+[trace] ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[trace] PLAN ("SYSTEM"."RDB$RELATIONS" NATURAL)
+[trace] 1 records fetched
+[trace]       0 ms, 68 fetch(es)
+...
+[trace] "SYSTEM"."RDB$RELATIONS"                60
+...
+[trace] 2026-10-06T02:57:41.6710 (665:0x7399c8fd7dc0) DETACH_DATABASE
+...
+[main ] +1752 ms FbTrace.Stop(1)
+[stop ] Trace session ID 1 stopped
+[main ] sessions named "hands-on-cs" left on the server: none
+done.
+```
+
+Same `Natural` = 60 and 68 fetches as every twin. The records differ from Jaybird's in two places. `ATTACH_DATABASE` has the second line naming the client process, because the provider sends `isc_dpb_process_name` by default (see the [threading twin](threading-and-synchronization.md)). And the marker's implicit transaction is `NOWAIT`: ADO.NET's default `IsolationLevel.ReadCommitted` maps to `read_committed | rec_version | nowait`, and the server's `ReadConsistency = 1` again overrides `rec_version`. Next to it is the same `READ_ONLY` read-committed transaction (`TRA_6`) that the Java run showed beside its marker.
+
 ### Things to try
 
 - Misspell a config element (`log_statement_finish` → `log_statement_finnish`) and re-run: the session starts, the stream reports the parse error for that database, and the workload runs untraced — the [configuration-error posture](#trace-is-a-plugin-and-a-plugin-that-misbehaves-is-ejected) reproduced at will.

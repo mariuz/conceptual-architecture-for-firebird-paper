@@ -786,6 +786,37 @@ SELECT name_win ... 'Café' - same row, three connections:
 done.
 ```
 
+### C# sample — [`samples/csharp/Samples/Intl.cs`](samples/csharp/Samples/Intl.cs)
+
+The same scenario through [FirebirdClient](https://github.com/FirebirdSQL/NETProvider), the FirebirdSQL project's ADO.NET provider, on its managed (pure C#) wire protocol (`cd samples/csharp && dotnet run -- Intl`). Like Jaybird, it keeps the two halves of "charset" apart. The `Charset` connection-string key is `isc_dpb_lc_ctype`, and the provider decodes each column with the charset the server describes it with, so on a `Charset=NONE` connection the stored `E9` is decoded on the client as windows-1252. The .NET-specific twist is that modern .NET ships *without* the legacy code pages. windows-1252 exists in the process only after `Encoding.RegisterProvider(CodePagesEncodingProvider.Instance)`, and the registration must come before the provider's first use, because the provider builds its charset table once per process. A first draft registered it halfway through and changed nothing. Run with `--no-codepages` and the gap is visible: the NONE connection receives `U+FFFD` where the `é` was, and a `Charset=WIN1252` connection is refused by the client (`ArgumentException`) before any packet is sent. The provider never exposes a text column's wire bytes, since `GetBytes` wants a binary column, so the stored bytes come from `HEX_ENCODE` on the server and the received text is shown as code points.
+
+Verified output (default run, then the tail of `dotnet run -- Intl --no-codepages`):
+
+```text
+rows matching 'cafe' with UNICODE_CI_AI : 3
+rows matching 'cafe' with UCS_BASIC     : 1
+UPPER('café èñ ß')                      : CAFÉ ÈÑ ß
+ORDER BY name_ci_ai: cafe  CAFE  Café
+ORDER BY name_bin  : CAFE  Café  cafe    (binary: uppercase codepoints first)
+
+stored bytes of name_win (HEX_ENCODE)  : 436166E9
+SELECT name_win ... 'Café' - same row, three connections:
+ (CodePagesEncodingProvider registered: windows-1252 available)
+  Charset=UTF8:            "Café"  U+0043 U+0061 U+0066 U+00E9
+  Charset=NONE:            "Café"  U+0043 U+0061 U+0066 U+00E9
+  Charset=WIN1252:         "Café"  U+0043 U+0061 U+0066 U+00E9
+  -> UTF8: the server transliterated E9 to C3 A9.  NONE: E9 crossed the wire and
+     the provider decoded it with the column's own charset (windows-1252).
+done.
+
+ (--no-codepages: .NET has no windows-1252)
+  Charset=UTF8:            "Café"  U+0043 U+0061 U+0066 U+00E9
+  Charset=NONE:            "Caf�"  U+0043 U+0061 U+0066 U+FFFD
+  Charset=WIN1252:         refused by the client: Invalid character set specified.
+```
+
+One detour is worth recording. The first way of reading the stored bytes, `CAST(name_win AS VARCHAR(30) CHARACTER SET OCTETS)`, works in isql on the same database, but through the provider it failed with `Malformed string`, so the sample uses `HEX_ENCODE` instead.
+
 ### Things to try
 
 - Add `COLLATE UNICODE_CI` (case- but not accent-insensitive) as a third column: `'cafe'` then matches 2 of the 3 rows — the missing middle step between the sample's 3 and 1.
