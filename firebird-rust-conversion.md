@@ -248,7 +248,8 @@ reads, validates with `gfix` and round-trips through `gbak`. The engine
 those differentials run against is LI-T6.0.0.2182, adopted as the
 reference build when the divergence backlog was re-measured in November
 2026 (17 stale entries struck, 16 confirmed live, 3 regressions bisected
-to one commit each).
+to one commit each and fixed - two fail-closed BLR-route declines, one
+restored WITH LOCK check).
 
 ## Conversion pointers: document → C++ → Rust
 
