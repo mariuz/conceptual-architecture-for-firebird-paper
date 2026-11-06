@@ -244,7 +244,11 @@ whole method: every claim is a differential against the live engine over
 the same transport, and a gate is only trusted once it has been shown to
 *fail* on the code it was written to catch. The suite is at 527 gates and
 about 25,400 checks, run against a server whose files the engine then
-reads, validates with `gfix` and round-trips through `gbak`.
+reads, validates with `gfix` and round-trips through `gbak`. The engine
+those differentials run against is LI-T6.0.0.2182, adopted as the
+reference build when the divergence backlog was re-measured in November
+2026 (17 stale entries struck, 16 confirmed live, 3 regressions bisected
+to one commit each).
 
 ## Conversion pointers: document → C++ → Rust
 
